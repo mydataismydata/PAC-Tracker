@@ -1,3 +1,11 @@
+# Full stack for Docker Desktop: `docker compose up -d` gives you Postgres,
+# applies migrations, and serves the app on http://localhost:3000.
+#
+# The scraper is not run automatically — it hits a live government service, so
+# it stays an explicit action. See the `cli` service at the bottom.
+
+x-db-url: &db-url postgres://pactracker:pactracker@db:5432/pactracker
+
 services:
   db:
     image: postgres:16-alpine
@@ -8,6 +16,8 @@ services:
       POSTGRES_PASSWORD: pactracker
       POSTGRES_DB: pactracker
     ports:
+      # Published so host-side tooling (psql, `pnpm ingest`) still works.
+      # 5439 avoids clashing with a local Postgres on the default port.
       - '5439:5432'
     volumes:
       - pactracker-pgdata:/var/lib/postgresql/data
@@ -16,6 +26,67 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # One-shot: applies migrations and creates the pg_trgm extension and its
+  # indexes, then exits. `app` waits for this to succeed before starting.
+  migrate:
+    build:
+      context: .
+      target: tools
+    image: pactracker-tools
+    container_name: pactracker-migrate
+    environment:
+      DATABASE_URL: *db-url
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: 'no'
+    command: ['db:migrate']
+
+  app:
+    build:
+      context: .
+      target: runner
+    image: pactracker-app
+    container_name: pactracker-app
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: *db-url
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Ingest CLI. Not started by `up` — invoke it on demand:
+  #   docker compose run --rm cli ingest registry
+  #   docker compose run --rm cli ingest committee "Florida Chamber"
+  #   docker compose run --rm cli ingest expand 3
+  #   docker compose run --rm cli ingest rebuild
+  cli:
+    build:
+      context: .
+      target: tools
+    image: pactracker-tools
+    profiles: ['cli']
+    environment:
+      DATABASE_URL: *db-url
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   pactracker-pgdata:
