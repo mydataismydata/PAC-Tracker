@@ -5,7 +5,9 @@
  *   pnpm ingest committee "Florida Chamber"      # money into matching committees
  *   pnpm ingest contributor "SECURE FLORIDA"     # money out of a contributor
  *   pnpm ingest candidate  "DeSantis"            # money into a candidate
- *   pnpm ingest registry                         # sweep the committee registry
+ *   pnpm ingest registry                         # sweep the state committee registry
+ *   pnpm ingest county stjohns                   # sweep a county (VoterFocus)
+ *   pnpm ingest counties                         # list supported counties
  *   pnpm ingest expand 2                         # auto-expand frontier N rounds
  *
  * Options: --election=20241105-GEN --limit=2000 --min=1000
@@ -18,11 +20,16 @@ import { FlDoeAdapter } from '@/lib/ingest/fl-doe/adapter';
 import { FlDoeClient, NAME_MATCH } from '@/lib/ingest/fl-doe/client';
 import {
   ensureFloridaSource,
+  ensureCountySource,
   ingestContributionRows,
+  ingestTransactionRows,
   startRun,
   finishRun,
   rebuildAll,
 } from '@/lib/ingest/pipeline';
+import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
+import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
+import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
 import { EntityResolver } from '@/lib/ingest/resolve';
 
 const argv = process.argv.slice(2);
@@ -89,6 +96,17 @@ async function main() {
         .where(eq(entities.id, r.entityId));
     }
     console.log(`\n${committees.length} committees in registry, ${created} new entities.`);
+    process.exit(0);
+  }
+
+  if (mode === 'county') {
+    await ingestCounty(term || 'stjohns', flags.election);
+    process.exit(0);
+  }
+
+  if (mode === 'counties') {
+    console.log('VoterFocus counties available:');
+    for (const c of VOTERFOCUS_COUNTIES) console.log(`  ${c.slug.padEnd(16)} ${c.name}`);
     process.exit(0);
   }
 
@@ -183,6 +201,56 @@ async function expand(
       }
     }
   }
+  await summarize();
+}
+
+/**
+ * Sweep one VoterFocus county: every candidate and committee in a cycle,
+ * persisted as each export completes so a long sweep survives interruption.
+ */
+async function ingestCounty(slug: string, electionId?: string) {
+  const county = findCounty(slug);
+  if (!county) {
+    console.error(`unknown county "${slug}". Run \`pnpm ingest counties\` for the list.`);
+    process.exit(1);
+  }
+
+  const { sourceId, jurisdictionId } = await ensureCountySource(db, county);
+  const adapter = new VoterFocusAdapter(county.slug, new VoterFocusClient());
+  const resolver = new EntityResolver(db);
+  const runId = await startRun(db, sourceId, { county: county.slug, election: electionId });
+
+  console.log(`\nSweeping ${county.name} County${electionId ? ` (e=${electionId})` : ''}…`);
+
+  let totalRows = 0;
+  let totalInserted = 0;
+  let totalCreated = 0;
+  let withData = 0;
+
+  try {
+    for await (const { entity, rows } of adapter.sweep(electionId)) {
+      if (rows.length === 0) continue;
+      withData++;
+      const res = await ingestTransactionRows(db, rows, { sourceId, jurisdictionId, resolver });
+      totalRows += rows.length;
+      totalInserted += res.rowsInserted;
+      totalCreated += res.entitiesCreated;
+      console.log(
+        `  ${(entity.isCommittee ? '[C] ' : '    ') + entity.name.slice(0, 36).padEnd(38)}` +
+          `${String(rows.length).padStart(4)} rows -> +${res.rowsInserted} txns, ` +
+          `+${res.entitiesCreated} nodes${entity.office ? `  · ${entity.office.slice(0, 28)}` : ''}`,
+      );
+    }
+    await finishRun(db, runId, { rowsFetched: totalRows, rowsInserted: totalInserted });
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
+
+  console.log(
+    `\n  ${withData} filers with data, ${totalRows} rows, ` +
+      `${totalInserted} new transactions, ${totalCreated} new entities`,
+  );
   await summarize();
 }
 
