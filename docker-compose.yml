@@ -1,0 +1,21 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: pactracker-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pactracker
+      POSTGRES_PASSWORD: pactracker
+      POSTGRES_DB: pactracker
+    ports:
+      - '5439:5432'
+    volumes:
+      - pactracker-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pactracker -d pactracker']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pactracker-pgdata:
