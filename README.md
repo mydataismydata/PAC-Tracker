@@ -20,34 +20,68 @@ outward as the data streams in.
 - **PNG snapshot** of the current view.
 - **Shareable URLs** — the address bar always reflects the current crawl.
 
-## Quick start
+## Quick start — Docker
+
+Everything runs in Docker Desktop. This starts Postgres, applies migrations, and serves
+the app on <http://localhost:3000>:
 
 ```bash
-pnpm install
+docker compose up -d --build
+```
+
+The database starts empty. Load data with the `cli` service — the committee registry
+first (~7,600 committees, a few minutes), then a seed and a couple of expansion rounds:
+
+```bash
+docker compose run --rm cli ingest registry
 ```
 
 ```bash
-docker compose up -d
+docker compose run --rm cli ingest committee "Florida Chamber" --election=20241105-GEN
 ```
 
 ```bash
-cp .env.example .env && pnpm db:migrate
+docker compose run --rm cli ingest expand 3
 ```
 
-Load some data — the committee registry first, then a seed and a couple of expansion
-rounds:
+Other useful commands:
 
 ```bash
-pnpm ingest registry
-```
-
-```bash
-pnpm ingest committee "Florida Chamber" --election=20241105-GEN && pnpm ingest expand 3
+docker compose logs -f app
 ```
 
 ```bash
-pnpm dev
+docker compose down
 ```
+
+Data lives in the `pactracker-pgdata` volume and survives `down`. To wipe it, use
+`docker compose down -v`.
+
+### Services
+
+| Service | Role |
+| --- | --- |
+| `db` | Postgres 16. Published on host port **5439** so host tooling still works. |
+| `migrate` | One-shot. Applies migrations and creates `pg_trgm`, then exits. `app` waits on it. |
+| `app` | The Next.js server on **3000**. |
+| `cli` | Ingest CLI, `cli` profile — not started by `up`. Run it on demand as above. |
+
+The scraper is never run automatically. It hits a live government service, so it stays an
+explicit action.
+
+## Quick start — local Node
+
+If you would rather run the app on the host and keep only Postgres in Docker:
+
+```bash
+pnpm install && docker compose up -d db
+```
+
+```bash
+cp .env.example .env && pnpm db:migrate && pnpm dev
+```
+
+`.env.example` points at `localhost:5439`, which is the same database the containers use.
 
 ## Data sources
 
@@ -166,6 +200,8 @@ single $1.25M edge rather than five.
 | `pnpm probe:fldoe` | Live smoke test of the scraping contract, no DB needed. |
 
 Common flags: `--election=20241105-GEN`, `--limit=2000`, `--min=1000`, `--frontier=12`.
+
+In Docker, the same commands run as `docker compose run --rm cli ingest <args>`.
 
 ## Caveats
 

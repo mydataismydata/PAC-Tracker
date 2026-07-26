@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+.env
+.env.local
+npm-debug.log*
+.DS_Store
+README.md
+
+# NOTE: drizzle/ must NOT be excluded — the migrator reads drizzle/meta/_journal.json
+# at runtime to decide which migrations have been applied.
