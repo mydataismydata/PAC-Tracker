@@ -11,7 +11,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:push": "drizzle-kit push",
-    "ingest": "tsx --env-file-if-exists=.env scripts/ingest.ts"
+    "ingest": "tsx --env-file-if-exists=.env scripts/ingest.ts",
+    "probe:voterfocus": "tsx --env-file-if-exists=.env scripts/probe-voterfocus.ts"
   },
   "dependencies": {
     "cytoscape": "^3.34.0",

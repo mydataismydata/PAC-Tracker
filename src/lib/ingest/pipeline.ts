@@ -12,6 +12,7 @@ import * as schema from '@/db/schema';
 import { transactions, entities, sources, jurisdictions, ingestRuns } from '@/db/schema';
 import { EntityResolver, refreshTraversability } from './resolve';
 import type { RawContributionRow } from './fl-doe/parse';
+import type { RawTransactionRow } from './types';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -48,6 +49,57 @@ export async function ensureFloridaSource(db: Db): Promise<{
         'State-level races and state-registered committees only. County, municipal, ' +
         'school board and special-district filings live with the 67 county Supervisors ' +
         'of Elections and with city clerks.',
+    })
+    .onConflictDoUpdate({ target: sources.key, set: { jurisdictionId: j.id } })
+    .returning({ id: sources.id });
+
+  return { jurisdictionId: j.id, sourceId: s.id };
+}
+
+/**
+ * Ensure a county jurisdiction and its VoterFocus source exist.
+ *
+ * Counties hang off the Florida row as their parent, so a crawl can tell a
+ * county filing apart from a state one — but entity resolution deliberately
+ * ignores jurisdiction, which is what lets a committee giving at both levels
+ * collapse to one node and the graph span tiers.
+ */
+export async function ensureCountySource(
+  db: Db,
+  county: { slug: string; name: string; code: string },
+): Promise<{ jurisdictionId: string; sourceId: string }> {
+  const [state] = await db
+    .insert(jurisdictions)
+    .values({ code: 'FL', name: 'Florida (statewide)', level: 'state', state: 'FL' })
+    .onConflictDoUpdate({ target: jurisdictions.code, set: { name: 'Florida (statewide)' } })
+    .returning({ id: jurisdictions.id });
+
+  const [j] = await db
+    .insert(jurisdictions)
+    .values({
+      code: county.code,
+      name: `${county.name} County`,
+      level: 'county',
+      state: 'FL',
+      parentId: state.id,
+    })
+    .onConflictDoUpdate({
+      target: jurisdictions.code,
+      set: { name: `${county.name} County`, parentId: state.id },
+    })
+    .returning({ id: jurisdictions.id });
+
+  const [s] = await db
+    .insert(sources)
+    .values({
+      key: `voterfocus-${county.slug}`,
+      name: `${county.name} County Supervisor of Elections — VoterFocus`,
+      url: `https://www.voterfocus.com/CampaignFinance/candidate_pr.php?c=${county.slug}`,
+      jurisdictionId: j.id,
+      notes:
+        'County, municipal and special-district filings: county commission, school ' +
+        'board, city commission, mosquito control, airport authority. Includes both ' +
+        'contributions and expenditures.',
     })
     .onConflictDoUpdate({ target: sources.key, set: { jurisdictionId: j.id } })
     .returning({ id: sources.id });
@@ -131,6 +183,110 @@ export async function ingestContributionRows(
     } catch (err) {
       skipped++;
       console.warn(`  ! row failed (${row.contributorRaw} -> ${row.recipientName}):`, err);
+    }
+  }
+
+  if (touched.size > 0) {
+    await rebuildEdgeRollups(db, [...touched]);
+    await refreshEntityTotals(db, [...touched]);
+  }
+  await refreshTraversability(db);
+
+  const stats = resolver.getStats();
+  return {
+    rowsFetched: rows.length,
+    rowsInserted: inserted,
+    rowsSkipped: skipped,
+    entitiesCreated: stats.created - before,
+    resolverStats: stats,
+  };
+}
+
+/**
+ * Persist normalized rows from any adapter.
+ *
+ * Handles both directions: a contribution flows counterparty → filer, an
+ * expenditure flows filer → counterparty. The filer is always a candidate or
+ * committee and therefore always traversable, so it is resolved as a recipient
+ * regardless of which way the money went.
+ */
+export async function ingestTransactionRows(
+  db: Db,
+  rows: RawTransactionRow[],
+  ctx: { sourceId: string; jurisdictionId: string; resolver?: EntityResolver },
+): Promise<IngestResult> {
+  const resolver = ctx.resolver ?? new EntityResolver(db);
+  const before = resolver.getStats().created;
+
+  let inserted = 0;
+  let skipped = 0;
+  const touched = new Set<string>();
+
+  for (const row of rows) {
+    try {
+      const filer = await resolver.resolve({
+        rawName: row.filerRaw,
+        role: 'recipient',
+        committeeType: row.filerTypeTag,
+        office: row.filerOffice,
+        party: row.filerParty,
+        jurisdictionId: ctx.jurisdictionId,
+        sourceId: ctx.sourceId,
+      });
+
+      const counterparty = await resolver.resolve({
+        rawName: row.counterpartyRaw,
+        role: 'contributor',
+        kindHint: row.counterpartyKind,
+        city: row.city,
+        state: row.state,
+        zip: row.zip,
+        address: row.address,
+        occupation: row.occupation,
+        jurisdictionId: ctx.jurisdictionId,
+        sourceId: ctx.sourceId,
+      });
+
+      const isContribution = row.direction === 'contribution';
+      const from = isContribution ? counterparty : filer;
+      const to = isContribution ? filer : counterparty;
+
+      const result = await db
+        .insert(transactions)
+        .values({
+          fromEntityId: from.entityId,
+          toEntityId: to.entityId,
+          rawFromName: isContribution ? row.counterpartyRaw : row.filerRaw,
+          rawToName: isContribution ? row.filerRaw : row.counterpartyRaw,
+          amount: row.amount,
+          txnDate: row.date,
+          direction: row.direction,
+          txnTypeCode: row.typeCode,
+          inkindDescription: row.description,
+          // Address detail describes the counterparty in both directions.
+          fromAddress: row.address,
+          fromCity: row.city,
+          fromState: row.state,
+          fromZip: row.zip,
+          fromOccupation: row.occupation,
+          sourceId: ctx.sourceId,
+          sourceRowHash: row.rowHash,
+          fromConfidence: from.confidence,
+          toConfidence: to.confidence,
+        })
+        .onConflictDoNothing({ target: transactions.sourceRowHash })
+        .returning({ id: transactions.id });
+
+      if (result.length > 0) {
+        inserted++;
+        touched.add(from.entityId);
+        touched.add(to.entityId);
+      } else {
+        skipped++;
+      }
+    } catch (err) {
+      skipped++;
+      console.warn(`  ! row failed (${row.counterpartyRaw} / ${row.filerRaw}):`, err);
     }
   }
 

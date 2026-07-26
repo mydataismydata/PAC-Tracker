@@ -1,9 +1,15 @@
 # Ingestion adapters
 
-Each source is one adapter that produces `RawContributionRow`s. The pipeline
-(`pipeline.ts`) then resolves entities, writes transactions and rebuilds rollups —
+Each source is one adapter that produces `RawTransactionRow`s (`../types.ts`). The
+pipeline (`pipeline.ts`) then resolves entities, writes transactions and rebuilds rollups —
 adapters never touch the graph tables directly, so adding a jurisdiction never means
 touching resolution or traversal logic.
+
+Rows are normalized to **filer + counterparty + direction** rather than donor/recipient,
+because sources disagree about what a row is. The state feed lists contributions only,
+described from the recipient's side. County feeds interleave contributions and
+expenditures, described from the filer's side. One shape covers both and keeps
+expenditures — money leaving a committee — in the graph.
 
 ## Implemented
 
@@ -13,47 +19,76 @@ State-level races plus every state-registered committee. See the root README for
 contract. Rate-limited and serialized; the upstream is a single SQL Server box behind
 Cloudflare.
 
-## The local-race gap
+### `voterfocus-<county>` — county Supervisors of Elections
 
-Florida splits campaign finance filing across three tiers, and only the first is covered:
+Covers the county tier: county commission, school board, city commission, and special
+districts (mosquito control, airport authority, port and waterway, CDDs).
 
-| Tier | Offices | Files with |
-| --- | --- | --- |
-| State | Governor, Cabinet, **state House and Senate**, statewide judicial, all state PAC/CCE/ECO/IXO | Division of Elections |
-| County | County commission, **school board**, sheriff, clerk, property appraiser, **special districts** (mosquito control, airport authority, hospital, water management) | County Supervisor of Elections (**67 of them**) |
-| Municipal | Mayor, city council, city referenda | City clerk (**400+ municipalities**) |
+VoterFocus (VR Systems) hosts the portal for a large share of Florida's 67 counties, and
+**the county is a single query parameter** — so one adapter serves all of them. Twenty
+slugs are verified in `voterfocus/counties.ts`, including Miami-Dade, Broward, Palm Beach,
+Hillsborough, Orange and Duval.
 
-So state representative and state senator races are already covered by `fl-doe`. County,
-school board, city council and special-district races are **not**, and no aggregator
-covers them well — this is the part that has to be built jurisdiction by jurisdiction.
+```bash
+pnpm ingest counties          # list supported counties
+pnpm ingest county stjohns    # sweep one
+```
 
-### Adding a county or municipal adapter
+Contract details worth knowing:
 
-1. Insert a `jurisdictions` row (`level: 'county' | 'municipal' | 'special_district'`,
-   `parentId` pointing at Florida) and a `sources` row.
-2. Implement a class exposing the same three primitives as `FlDoeAdapter`:
-   - `contributionsToCommittee(name, opts)` — the upstream hop
-   - `contributionsToCandidate(last, first, opts)` — the upstream hop for candidates
-   - `contributionsFromContributor(name, opts)` — the downstream hop
-3. Emit `RawContributionRow`s. `rowHash` must be stable across re-ingests and must
-   incorporate a scope key, so the same filing seen through two queries dedupes to one
-   transaction.
-4. Pass the rows to `ingestContributionRows(db, rows, { sourceId, jurisdictionId })`.
+| Endpoint | Purpose |
+| --- | --- |
+| `candidate_pr.php?c=<slug>&e=<election>` | Candidate/committee index for a cycle. |
+| `export.php?op=CFINANCE&cand_id=<id>&county=<slug>` | Per-entity CSV, contributions **and** expenditures. |
 
-Nothing else needs to change: resolution, rollups and the crawler are source-agnostic.
+- The `/ws/WScand/` path 302s to `/CampaignFinance/`. POST there directly — following the
+  redirect drops the body and the origin answers `411`.
+- A PHP session cookie is required, so the form page is fetched once before any export.
+- **Use the per-entity export, not the transaction search form.** The search is scoped to
+  whatever election the session has selected and returns an empty result set more often
+  than not; `export.php` is addressed by id and just works.
+- The index page carries `Office:` headings above each group of candidates, so office
+  comes free without a request per candidate. Names live in the first `role="gridcell"`
+  div — taking the anchor's whole text appends a screen-reader "status" to every name.
+- Committees are flagged by `committee=Y` in the link, and are not filed against an office.
 
-### Practical notes
+This source is **richer than the state feed**: ISO dates, expenditures inline, and a real
+`cont. type` code (`I` individual, `B` business, `C` committee, `P` party, `O` other,
+`S` self). That code feeds `ResolveInput.kindHint`, so a county committee is identified as
+a committee from evidence rather than from a name heuristic.
 
-- Several Florida counties run the same vendor software, so one adapter can often cover
-  many counties by varying a base URL. Survey before writing 67 of them.
-- Entity resolution is deliberately scoped by *name*, not jurisdiction, so a committee
-  that gives at both state and county level resolves to a single node and the graph spans
-  tiers automatically. That is the main payoff of doing this properly.
-- Watch for the same truncation and address-drift problems documented in `normalize.ts`;
-  county systems are usually worse, not better.
+## The remaining gap
+
+| Tier | Offices | Files with | Status |
+| --- | --- | --- | --- |
+| State | Governor, Cabinet, state House and Senate, statewide judicial, all state PAC/CCE/ECO/IXO | Division of Elections | **covered** |
+| County | County commission, school board, sheriff, clerk, special districts | County Supervisor of Elections (67) | **covered where VoterFocus is used** |
+| Municipal | Mayor, city council, city referenda | City clerk (400+) | partly — larger cities appear in the county portal, standalone clerks do not |
+
+Counties not on VoterFocus need their own adapter. Survey the vendor before writing one:
+several run the same software under a different domain, so the existing parser may only
+need a new base URL.
+
+### Adding an adapter
+
+1. Insert a `jurisdictions` row and a `sources` row — `ensureCountySource` in
+   `pipeline.ts` shows the shape.
+2. Emit `RawTransactionRow`s. `rowHash` must be stable across re-ingests and must include
+   a source-scoped key, so the same filing seen twice dedupes to one transaction.
+3. Pass them to `ingestTransactionRows(db, rows, { sourceId, jurisdictionId })`.
+
+Nothing else changes: resolution, rollups and the crawler are source-agnostic.
+
+### Why this spans tiers automatically
+
+Entity resolution matches on **name, deliberately ignoring jurisdiction**. So a committee
+that gives at both levels collapses to one node and the graph crosses tiers by itself —
+the Republican Party of Florida's $6,000 to the St. Johns County Republican Executive
+Committee links a $13M state committee to a county school board race with no special
+handling.
 
 ## Licensed sources
 
-`Transparency USA` sells CSV/JSON/API access covering 25 states at state level. If
-licensed, it slots in as another adapter. It does **not** solve the local-race gap above —
-their FAQ scopes coverage to entities active in a state capital.
+Transparency USA sells CSV/JSON/API access covering 25 states at state level. If licensed,
+it slots in as another adapter. It does **not** solve the local-race gap — their FAQ scopes
+coverage to entities active in a state capital.

@@ -24,6 +24,7 @@ import { sql, eq } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { entities, entityAliases } from '@/db/schema';
 import * as schema from '@/db/schema';
+import type { CounterpartyKind } from './types';
 import {
   normalizeName,
   scoreMatch,
@@ -40,6 +41,17 @@ export interface ResolveInput {
   rawName: string;
   /** Recipients are filers and therefore authoritative; donors are messy. */
   role: 'recipient' | 'contributor';
+  /**
+   * What the source says this counterparty is.
+   *
+   * County VoterFocus exports carry a real contributor-type code, so a
+   * `committee` here is direct evidence rather than a guess. The state feed
+   * offers nothing equivalent, which is why `classifyContributor` exists.
+   */
+  kindHint?: CounterpartyKind;
+  /** Office sought, when the source reports it. */
+  office?: string | null;
+  party?: string | null;
   committeeType?: string | null;
   city?: string | null;
   state?: string | null;
@@ -68,7 +80,32 @@ interface Candidate {
 }
 
 /**
- * Classify a contributor string.
+ * Trust the source's own type code when it gives one.
+ *
+ * Returns undefined for hints that carry no entity information — `self` just
+ * means the candidate funded their own campaign, and `other`/`unknown` are
+ * where the heuristic has to take over.
+ */
+function kindFromHint(
+  hint?: CounterpartyKind,
+): 'committee' | 'party' | 'organization' | 'individual' | undefined {
+  switch (hint) {
+    case 'committee':
+      return 'committee';
+    case 'party':
+      return 'party';
+    case 'business':
+      return 'organization';
+    case 'individual':
+    case 'self':
+      return 'individual';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Classify a contributor string when the source offers no type code.
  *
  * Occupation is the strongest available signal — Florida requires it for
  * individuals, and organizations put a sector description there instead
@@ -268,7 +305,8 @@ export class EntityResolver {
       ? input.committeeType
         ? ('committee' as const)
         : ('candidate' as const)
-      : classifyContributor(input.rawName, input.occupation);
+      : (kindFromHint(input.kindHint) ??
+        classifyContributor(input.rawName, input.occupation));
 
     const displayName =
       kind === 'individual' ? personDisplayName(input.rawName) : input.rawName.trim();
@@ -292,6 +330,8 @@ export class EntityResolver {
         zip: input.zip ?? null,
         address: input.address ?? null,
         occupation: input.occupation ?? null,
+        office: input.office ?? null,
+        party: input.party ?? null,
         sourceId: input.sourceId ?? null,
       })
       .returning({ id: entities.id });

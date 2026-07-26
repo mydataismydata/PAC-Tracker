@@ -114,15 +114,27 @@ Contract details that are not obvious and cost real time to rediscover:
 The backend is a single SQL Server box behind Cloudflare, so requests are serialized and
 rate-limited (`FLDOE_REQUEST_DELAY_MS`, default 1500 ms).
 
-### County, municipal and special-district races (not yet implemented)
+### County Supervisors of Elections — VoterFocus (implemented)
 
-**The Division of Elections does not hold these filings.** County commission, school
-board, city council and special-district races — mosquito control, airport authority,
-hospital and water management districts — are filed with the **67 county Supervisors of
-Elections** and with individual city clerks, each with its own system.
+The Division of Elections does **not** hold county filings. County commission, school
+board, city commission and special-district races — mosquito control, airport authority,
+port and waterway, community development districts — are filed with the 67 county
+Supervisors of Elections.
 
-Covering them means one adapter per jurisdiction behind the `sources` / `jurisdictions`
-tables, which already model the distinction. See
+VoterFocus (VR Systems) hosts the portal for a large share of them, and **the county is a
+single query parameter**, so one adapter covers all of them:
+
+```bash
+pnpm ingest counties          # list supported counties
+pnpm ingest county stjohns    # sweep one
+```
+
+Twenty county slugs are verified, including Miami-Dade, Broward, Palm Beach, Hillsborough,
+Orange and Duval. This source is richer than the state feed: ISO dates, expenditures
+inline with contributions, and an explicit contributor-type code that tells resolution
+when a donor is itself a committee.
+
+Counties not on VoterFocus, and standalone city clerks, still need their own adapters. See
 [`src/lib/ingest/README.md`](src/lib/ingest/README.md).
 
 ### Others considered
@@ -191,7 +203,9 @@ single $1.25M edge rather than five.
 
 | Command | Description |
 | --- | --- |
-| `pnpm ingest registry` | Sweep the committee registry A–Z (~7,600 committees). |
+| `pnpm ingest registry` | Sweep the state committee registry A–Z (~7,600 committees). |
+| `pnpm ingest counties` | List supported VoterFocus counties. |
+| `pnpm ingest county <slug>` | Sweep every candidate and committee in a county. |
 | `pnpm ingest committee "<name>"` | Contributions *into* matching committees. |
 | `pnpm ingest contributor "<name>"` | Contributions *out of* a contributor. |
 | `pnpm ingest candidate "<last>"` | Contributions into a candidate. |
@@ -203,9 +217,17 @@ Common flags: `--election=20241105-GEN`, `--limit=2000`, `--min=1000`, `--fronti
 
 In Docker, the same commands run as `docker compose run --rm cli ingest <args>`.
 
+### The graph spans tiers by itself
+
+Entity resolution matches on name and deliberately ignores jurisdiction, so a committee
+active at both levels collapses to a single node. The Republican Party of Florida's $6,000
+to the St. Johns County Republican Executive Committee links a $13M state committee to a
+county school board race with no special handling — a crawl walks straight through.
+
 ## Caveats
 
-- Coverage is **Florida state-level only** so far. See above.
+- Coverage is **Florida**: state-level everywhere, county-level wherever VoterFocus is the
+  vendor. Standalone city clerks are not covered.
 - Data is only as complete as what you have ingested; the crawler cannot show an edge it
   has never fetched.
 - Entity resolution is good, not perfect. `FLORIDA CHAMBER PAC` and `Florida Chamber of
