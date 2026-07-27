@@ -69,6 +69,20 @@ Counties not on VoterFocus need their own adapter. Survey the vendor before writ
 several run the same software under a different domain, so the existing parser may only
 need a new base URL.
 
+### Re-ingesting after a parser change
+
+Row hashes include names as parsed, so an adapter whose output changes will
+insert a *second* copy of every affected row rather than correcting the first —
+and a name that parsed wrongly also produced a wrong normalized key, so the
+entity itself is bad too. Purge the source first:
+
+```bash
+pnpm ingest purge voterfocus-duval && pnpm ingest county duval
+```
+
+`purgeSource` only deletes entities nothing else references, so a committee that
+also appears in state filings keeps its other transactions.
+
 ### Adding an adapter
 
 1. Insert a `jurisdictions` row and a `sources` row — `ensureCountySource` in

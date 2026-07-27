@@ -33,18 +33,44 @@ export interface VoterFocusElection {
   year: number | null;
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+/**
+ * Strip markup and decode entities.
+ *
+ * Numeric entities matter as much as named ones here: VoterFocus escapes
+ * quotes in nicknames as `&#34;`, so "Rhodesia &#34;Rho&#34; Butler" would
+ * otherwise be stored — and matched against — with the escape intact.
+ *
+ * `&amp;` is decoded last so double-encoded input ("&amp;#34;") resolves in
+ * the right order instead of turning into a literal quote a pass too early.
+ */
 const decode = (s: string): string =>
   s
     .replace(/<br\s*\/?>/gi, ' ')
     .replace(/<[^>]+>/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => safeCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => safeCodePoint(Number(dec)))
+    .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m)
     .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&nbsp;/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+/** Guard against malformed entities producing an exception or a control char. */
+function safeCodePoint(code: number): string {
+  if (!Number.isFinite(code) || code < 32 || code > 0x10ffff) return ' ';
+  try {
+    return String.fromCodePoint(code);
+  } catch {
+    return ' ';
+  }
+}
 
 /** Election cycles offered by the county, newest first as the site orders them. */
 export function parseElections(html: string): VoterFocusElection[] {
@@ -320,13 +346,36 @@ export function parseTransactionExport(
   return { rows, skipped };
 }
 
-/** VoterFocus emits ISO dates, but fall back to m/d/yyyy defensively. */
+/**
+ * VoterFocus emits ISO dates, but falls back to m/d/yyyy defensively.
+ *
+ * Shape alone is not enough to trust: the export uses "0000-00-00" as a
+ * null-date placeholder, which matches the ISO pattern and is then rejected by
+ * Postgres, losing the whole row. Every candidate is range-checked.
+ */
 function normalizeDate(value: string): string | null {
   const v = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+
+  const iso = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return validDate(+iso[1], +iso[2], +iso[3]);
+
+  const us = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) return validDate(+us[3], +us[1], +us[2]);
+
   return null;
+}
+
+/** ISO string for a real calendar date, or null. Rejects 0000-00-00, Feb 30, … */
+function validDate(year: number, month: number, day: number): string | null {
+  if (year < 1800 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  const d = new Date(Date.UTC(year, month - 1, day));
+  // Round-trip catches overflow like 2026-02-30 rolling into March.
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) {
+    return null;
+  }
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
 export function hashRow(parts: string[]): string {

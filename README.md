@@ -218,6 +218,7 @@ single $1.25M edge rather than five.
 | `pnpm ingest candidate "<last>"` | Contributions into a candidate. |
 | `pnpm ingest expand <rounds>` | Grow the frontier outward automatically. |
 | `pnpm ingest rebuild` | Recompute all rollups and totals. |
+| `pnpm ingest purge <source-key>` | Drop everything one source contributed, to re-ingest it cleanly. |
 | `pnpm probe:fldoe` | Live smoke test of the scraping contract, no DB needed. |
 
 Common flags: `--election=20241105-GEN`, `--limit=2000`, `--min=1000`, `--frontier=12`.
