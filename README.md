@@ -6,7 +6,9 @@ outward as the data streams in.
 
 ## What it does
 
-- **Seed on any entity** — committee, candidate, corporation or individual.
+- **Seed on any entity** — committee, candidate, corporation or individual. Picking one
+  from search selects it, fills the detail panel, and flies the camera to its tile with
+  its neighbourhood highlighted.
 - **Crawl _n_ levels** up (who funded them), down (where the money went), or both.
 - **Direct vs donor links.** *Direct* follows only the committee-to-committee chain, which
   keeps the political money path readable. *Donor* additionally pulls in the individuals

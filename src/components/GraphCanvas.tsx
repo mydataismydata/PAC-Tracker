@@ -23,7 +23,12 @@ import cytoscape, {
   type EventObject,
 } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import { formatMoney, type GraphEdge, type GraphNode } from '@/lib/graph/types';
+import {
+  formatMoney,
+  type GraphEdge,
+  type GraphNode,
+  type ViewIntent,
+} from '@/lib/graph/types';
 
 cytoscape.use(fcose);
 
@@ -71,7 +76,23 @@ function spawnPosition(
 export interface GraphCanvasHandle {
   exportPng: (filename: string) => void;
   fit: () => void;
+  /** Centre and zoom on one node. False when it is not on the canvas. */
+  focusOn: (nodeId: string) => boolean;
   getPositions: () => Record<string, { x: number; y: number }>;
+}
+
+/** Zoom level used when homing in on a single entity. */
+const FOCUS_ZOOM = 1.1;
+
+/**
+ * Dim everything except a node and the tiles it trades with.
+ *
+ * Shared by tapping a tile and by focusing one from search or the ledger, so
+ * an entity reached any of those ways reads the same on the canvas.
+ */
+function highlightNeighborhood(cy: Core, node: NodeSingular): void {
+  cy.elements().addClass('dimmed').removeClass('highlighted');
+  node.closedNeighborhood().removeClass('dimmed').addClass('highlighted');
 }
 
 interface Props {
@@ -85,12 +106,16 @@ interface Props {
   onExpandNode?: (nodeId: string) => void;
   onReady?: (handle: GraphCanvasHandle) => void;
   /**
-   * Incremented by the parent when a crawl finishes. The canvas is lazily
-   * loaded and a crawl over warm data can complete before Cytoscape has even
-   * mounted, so the parent cannot simply call fit() itself — it raises this
-   * token and lets the canvas fit as soon as it is able.
+   * What to do with the viewport, raised by the parent as a token.
+   *
+   * The canvas is lazily loaded and a crawl over warm data can complete before
+   * Cytoscape has mounted, so the parent cannot just call fit()/focusOn()
+   * itself — it states an intent and the canvas acts as soon as it is able,
+   * retrying until the target node actually exists.
    */
-  fitToken?: number;
+  viewIntent?: ViewIntent;
+  /** Entity selected elsewhere (search, ledger), mirrored into the canvas. */
+  selectedId?: string | null;
 }
 
 export default function GraphCanvas({
@@ -101,7 +126,8 @@ export default function GraphCanvas({
   onSelectNode,
   onExpandNode,
   onReady,
-  fitToken = 0,
+  viewIntent,
+  selectedId,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
@@ -237,10 +263,7 @@ export default function GraphCanvas({
     cy.on('tap', 'node', (evt: EventObject) => {
       const n = evt.target as NodeSingular;
       onSelectNode?.(n.data('entity') as GraphNode);
-      // Focus the node's immediate neighbourhood.
-      cy.elements().addClass('dimmed').removeClass('highlighted');
-      const hood = n.closedNeighborhood();
-      hood.removeClass('dimmed').addClass('highlighted');
+      highlightNeighborhood(cy, n);
     });
 
     cy.on('tap', (evt: EventObject) => {
@@ -500,6 +523,39 @@ export default function GraphCanvas({
     return true;
   }, []);
 
+  /**
+   * Centre and zoom on one node, and mark it selected.
+   *
+   * Returns false when the node is not on the canvas yet — levels stream in, so
+   * callers retry rather than give up.
+   */
+  const focusOn = useCallback((nodeId: string): boolean => {
+    const cy = cyRef.current;
+    if (!cy) return false;
+
+    const node = cy.getElementById(nodeId);
+    if (node.empty() || !node.isNode()) return false;
+
+    const el = cy.container();
+    if (!el || el.clientWidth < 2 || el.clientHeight < 2) return false;
+
+    layoutRef.current?.stop();
+    cy.stop();
+    cy.resize();
+
+    cy.nodes().unselect();
+    node.select();
+    highlightNeighborhood(cy, node as NodeSingular);
+
+    cy.animate({
+      center: { eles: node },
+      zoom: Math.min(FOCUS_ZOOM, cy.maxZoom()),
+      duration: 380,
+      easing: 'ease-out',
+    });
+    return true;
+  }, []);
+
   const getPositions = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return {};
@@ -512,8 +568,8 @@ export default function GraphCanvas({
   }, []);
 
   useEffect(() => {
-    if (ready) onReady?.({ exportPng, fit, getPositions });
-  }, [ready, exportPng, fit, getPositions, onReady]);
+    if (ready) onReady?.({ exportPng, fit, focusOn, getPositions });
+  }, [ready, exportPng, fit, focusOn, getPositions, onReady]);
 
   // A new seed means a new graph; whatever the user pinned belonged to the old
   // one and must not constrain the fresh layout.
@@ -526,22 +582,47 @@ export default function GraphCanvas({
   // token is an explicit request from the parent, so it is not second-guessed
   // against pinning here — only the layout-driven refits defer to that.
   useEffect(() => {
-    if (!ready || fitToken === 0) return;
+    if (!ready || !viewIntent || viewIntent.token === 0) return;
 
-    // Poll until a fit actually lands. The first attempt waits for the
+    // Poll until the action actually lands. The first attempt waits for the
     // debounced layout; later ones cover a container that was not yet sized
-    // (hidden tab, collapsed pane) when the earlier attempts ran.
+    // (hidden tab, collapsed pane) or a target node that has not streamed in
+    // yet when the earlier attempts ran.
     let attempts = 0;
     const timers: ReturnType<typeof setTimeout>[] = [];
     const attempt = () => {
-      if (fit() || attempts >= 8) return;
+      const done = viewIntent.kind === 'focus' ? focusOn(viewIntent.nodeId) : fit();
+      if (done || attempts >= 8) return;
       attempts++;
       timers.push(setTimeout(attempt, 400));
     };
     timers.push(setTimeout(attempt, 800));
 
     return () => timers.forEach(clearTimeout);
-  }, [fitToken, cyEpoch, ready, fit]);
+  }, [viewIntent, cyEpoch, ready, fit, focusOn]);
+
+  /**
+   * Mirror a selection made outside the canvas.
+   *
+   * Selecting from search or the ledger should look the same as tapping the
+   * tile — otherwise the panel and the canvas disagree about what is selected.
+   */
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !ready) return;
+
+    if (!selectedId) {
+      cy.nodes().unselect();
+      cy.elements().removeClass('dimmed').removeClass('highlighted');
+      return;
+    }
+
+    const node = cy.getElementById(selectedId);
+    if (node.empty() || !node.isNode() || node.selected()) return;
+    cy.nodes().unselect();
+    node.select();
+    highlightNeighborhood(cy, node as NodeSingular);
+  }, [selectedId, cyEpoch, ready, nodes]);
 
   return <div ref={containerRef} className="h-full w-full bg-slate-950" />;
 }

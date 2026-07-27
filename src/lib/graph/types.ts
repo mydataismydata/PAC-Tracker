@@ -32,6 +32,18 @@ export interface GraphEdge {
   isDirectLink: boolean;
 }
 
+/**
+ * What the canvas should do with the viewport once the graph settles.
+ *
+ * A single monotonic token rather than separate fit/focus signals, because the
+ * two compete: picking an entity from search both re-roots the crawl (which
+ * wants to frame everything) and asks to be shown that entity (which wants to
+ * zoom in). Whichever intent is newest wins, with no race.
+ */
+export type ViewIntent =
+  | { kind: 'fit'; token: number }
+  | { kind: 'focus'; nodeId: string; token: number };
+
 export interface CrawlSettings {
   depth: number;
   direction: Direction;
