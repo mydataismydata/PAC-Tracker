@@ -20,6 +20,7 @@ import {
   type CrawlSettings,
   type EntitySearchHit,
   type GraphNode,
+  type ViewIntent,
 } from '@/lib/graph/types';
 import type { GraphCanvasHandle } from '@/components/GraphCanvas';
 
@@ -82,8 +83,11 @@ export default function Home() {
    */
   useEffect(() => {
     if (!seed) return;
+    // Drop a selection that belonged to the superseded graph, but keep it when
+    // the user selected this very entity — picking someone from search sets the
+    // seed *and* selects them, and clearing here would blank the panel again.
     // eslint-disable-next-line react-hooks/set-state-in-effect -- discarding results of the superseded stream
-    setSelected(null);
+    setSelected((prev) => (prev?.id === seed.id ? prev : null));
     startCrawl(seed.id, settings);
 
     // Keep the address bar in sync so the current view is always shareable.
@@ -98,16 +102,59 @@ export default function Home() {
   }, [seed, settings, startCrawl]);
 
   /**
-   * Ask the canvas to frame the graph once the stream closes. Handed over as a
-   * token rather than a direct fit() call because the canvas is lazily loaded
-   * and a crawl over warm data routinely finishes before it has mounted.
+   * Tell the canvas what to do with the viewport once the stream closes.
+   *
+   * Handed over as a token rather than a direct call because the canvas is
+   * lazily loaded and a crawl over warm data routinely finishes before it has
+   * mounted. `pendingFocusId` records that the crawl was started by picking a
+   * specific entity, so the canvas homes in on them instead of framing the
+   * whole graph — otherwise the fit would immediately undo the zoom.
    */
-  const [fitToken, setFitToken] = useState(0);
+  const [viewIntent, setViewIntent] = useState<ViewIntent>({ kind: 'fit', token: 0 });
+  const pendingFocusId = useRef<string | null>(null);
+
+  const requestFocus = useCallback((nodeId: string) => {
+    setViewIntent((v) => ({ kind: 'focus', nodeId, token: v.token + 1 }));
+  }, []);
+
   const crawlDone = !crawl.loading && crawl.nodes.size > 0;
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- signalling the canvas, an external system
-    if (crawlDone) setFitToken((t) => t + 1);
+    if (!crawlDone) return;
+    const focusId = pendingFocusId.current;
+    pendingFocusId.current = null;
+    setViewIntent((v) =>
+      focusId
+        ? { kind: 'focus', nodeId: focusId, token: v.token + 1 }
+        : { kind: 'fit', token: v.token + 1 },
+    );
   }, [crawlDone, crawl.nodes.size]);
+
+  /**
+   * Picking an entity from search: make it the crawl's seed, select it so the
+   * detail panel fills in immediately, and zoom to it once the graph settles.
+   */
+  const handleSearchSelect = useCallback((hit: EntitySearchHit) => {
+    setRestoredPositions(null);
+    pendingFocusId.current = hit.id;
+    setSeed(hit);
+    setSelected({
+      id: hit.id,
+      name: hit.name,
+      kind: hit.kind,
+      committeeType: hit.committee_type,
+      status: hit.status,
+      office: null,
+      party: null,
+      city: hit.city,
+      stateCode: hit.state_code,
+      totalReceived: hit.total_received,
+      totalGiven: hit.total_given,
+      inDegree: hit.in_degree,
+      outDegree: hit.out_degree,
+      isTraversable: hit.is_traversable,
+      level: 0,
+    });
+  }, []);
 
   /**
    * Select a counterparty from the ledger.
@@ -121,6 +168,7 @@ export default function Home() {
       const inGraph = crawl.nodes.get(entityId);
       if (inGraph) {
         setSelected(inGraph);
+        requestFocus(entityId);
         return;
       }
       const res = await fetch(`/api/entities/${entityId}`);
@@ -144,7 +192,7 @@ export default function Home() {
         level: -1, // not part of the current crawl
       });
     },
-    [crawl.nodes],
+    [crawl.nodes, requestFocus],
   );
 
   /**
@@ -188,12 +236,7 @@ export default function Home() {
         </div>
 
         <div className="max-w-xl flex-1">
-          <EntitySearch
-            onSelect={(hit) => {
-              setRestoredPositions(null);
-              setSeed(hit);
-            }}
-          />
+          <EntitySearch onSelect={handleSearchSelect} />
         </div>
 
         <div className="flex items-center gap-3 text-xs text-slate-400">
@@ -313,7 +356,8 @@ export default function Home() {
               initialPositions={restoredPositions}
               onSelectNode={setSelected}
               onExpandNode={handleRecenter}
-              fitToken={fitToken}
+              viewIntent={viewIntent}
+              selectedId={selected?.id ?? null}
               onReady={(h) => {
                 canvasRef.current = h;
               }}
