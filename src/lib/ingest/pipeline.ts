@@ -328,7 +328,11 @@ export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<v
       COUNT(*)::int          AS txn_count,
       MIN(t.txn_date)        AS first_date,
       MAX(t.txn_date)        AS last_date,
-      BOOL_AND(ef.is_traversable) AND BOOL_AND(et.is_traversable) AS is_direct_link,
+      -- A self-loop is a candidate funding their own campaign, not a link
+      -- between two organizations. Counting it as direct made lone
+      -- self-funded candidates look connected in direct link mode.
+      BOOL_AND(ef.is_traversable) AND BOOL_AND(et.is_traversable)
+        AND t.from_entity_id <> t.to_entity_id AS is_direct_link,
       now()
     FROM transactions t
     JOIN entities ef ON ef.id = t.from_entity_id
@@ -371,7 +375,8 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
       COUNT(*)::int,
       MIN(t.txn_date),
       MAX(t.txn_date),
-      BOOL_AND(ef.is_traversable) AND BOOL_AND(et.is_traversable),
+      BOOL_AND(ef.is_traversable) AND BOOL_AND(et.is_traversable)
+        AND t.from_entity_id <> t.to_entity_id,
       now()
     FROM transactions t
     JOIN entities ef ON ef.id = t.from_entity_id
