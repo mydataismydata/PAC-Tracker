@@ -8,6 +8,7 @@
  *   pnpm ingest registry                         # sweep the state committee registry
  *   pnpm ingest county stjohns                   # sweep a county (VoterFocus)
  *   pnpm ingest counties                         # list supported counties
+ *   pnpm ingest purge voterfocus-duval           # drop one source, to re-ingest cleanly
  *   pnpm ingest expand 2                         # auto-expand frontier N rounds
  *
  * Options: --election=20241105-GEN --limit=2000 --min=1000
@@ -26,6 +27,7 @@ import {
   startRun,
   finishRun,
   rebuildAll,
+  purgeSource,
 } from '@/lib/ingest/pipeline';
 import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
@@ -107,6 +109,18 @@ async function main() {
   if (mode === 'counties') {
     console.log('VoterFocus counties available:');
     for (const c of VOTERFOCUS_COUNTIES) console.log(`  ${c.slug.padEnd(16)} ${c.name}`);
+    process.exit(0);
+  }
+
+  if (mode === 'purge') {
+    if (!term) {
+      console.error('purge needs a source key, e.g. voterfocus-duval');
+      process.exit(1);
+    }
+    const res = await purgeSource(db, term);
+    console.log(`Purged ${term}: ${res.transactions} transactions, ${res.entities} orphaned entities.`);
+    const counts = await rebuildAll(db);
+    console.log(`  rebuilt ${counts.edges} edges over ${counts.entities} entities`);
     process.exit(0);
   }
 

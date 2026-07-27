@@ -353,6 +353,63 @@ export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<v
 }
 
 /**
+ * Remove everything one source contributed, so it can be re-ingested cleanly.
+ *
+ * Needed after a parser fix. Row hashes include the names as parsed, so simply
+ * re-running an adapter whose output has changed inserts a second copy of every
+ * affected row instead of correcting the first — and a name that parsed wrongly
+ * also produced a wrong normalized key, so the entity itself has to go.
+ *
+ * Entities are only deleted when nothing else references them, so a committee
+ * that also appears in state filings survives with its other transactions
+ * intact.
+ */
+export async function purgeSource(
+  db: Db,
+  sourceKey: string,
+): Promise<{ transactions: number; entities: number }> {
+  const [src] = await db
+    .select({ id: sources.id })
+    .from(sources)
+    .where(eq(sources.key, sourceKey));
+  if (!src) throw new Error(`unknown source "${sourceKey}"`);
+
+  const deletedTxns = await db.execute<{ count: number }>(sql`
+    WITH removed AS (DELETE FROM transactions WHERE source_id = ${src.id} RETURNING 1)
+    SELECT COUNT(*)::int AS count FROM removed
+  `);
+
+  // Aliases cascade with the entity; rollups reference entities, so clear any
+  // that lost an endpoint before deleting.
+  await db.execute(sql`
+    DELETE FROM edge_rollups r
+     WHERE NOT EXISTS (
+       SELECT 1 FROM transactions t
+        WHERE t.from_entity_id = r.from_entity_id AND t.to_entity_id = r.to_entity_id
+     )
+  `);
+
+  const deletedEntities = await db.execute<{ count: number }>(sql`
+    WITH removed AS (
+      DELETE FROM entities e
+       WHERE e.source_id = ${src.id}
+         AND NOT EXISTS (
+           SELECT 1 FROM transactions t
+            WHERE t.from_entity_id = e.id OR t.to_entity_id = e.id
+         )
+         AND NOT EXISTS (SELECT 1 FROM saved_searches s WHERE s.seed_entity_id = e.id)
+      RETURNING 1
+    )
+    SELECT COUNT(*)::int AS count FROM removed
+  `);
+
+  return {
+    transactions: deletedTxns[0]?.count ?? 0,
+    entities: deletedEntities[0]?.count ?? 0,
+  };
+}
+
+/**
  * Recompute every rollup and total from the transaction table.
  *
  * The incremental path only touches entities seen in the current batch, so a
