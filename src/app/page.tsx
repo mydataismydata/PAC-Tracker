@@ -109,9 +109,51 @@ export default function Home() {
     if (crawlDone) setFitToken((t) => t + 1);
   }, [crawlDone, crawl.nodes.size]);
 
+  /**
+   * Select a counterparty from the ledger.
+   *
+   * The ledger lists everything in the database, most of which is not on the
+   * canvas, so a row that has no corresponding node is fetched on demand rather
+   * than silently clearing the panel.
+   */
+  const handleFocusEntity = useCallback(
+    async (entityId: string) => {
+      const inGraph = crawl.nodes.get(entityId);
+      if (inGraph) {
+        setSelected(inGraph);
+        return;
+      }
+      const res = await fetch(`/api/entities/${entityId}`);
+      if (!res.ok) return;
+      const e = (await res.json()).entity;
+      setSelected({
+        id: e.id,
+        name: e.name,
+        kind: e.kind,
+        committeeType: e.committee_type,
+        status: e.status,
+        office: e.office ?? null,
+        party: e.party ?? null,
+        city: e.city,
+        stateCode: e.state_code,
+        totalReceived: e.total_received,
+        totalGiven: e.total_given,
+        inDegree: e.in_degree,
+        outDegree: e.out_degree,
+        isTraversable: e.is_traversable,
+        level: -1, // not part of the current crawl
+      });
+    },
+    [crawl.nodes],
+  );
+
+  /**
+   * Re-root the crawl. Accepts any entity, including one reached through the
+   * ledger that was never drawn, so "re-center here" always works.
+   */
   const handleRecenter = useCallback(
     (nodeId: string) => {
-      const node = crawl.nodes.get(nodeId);
+      const node = crawl.nodes.get(nodeId) ?? (selected?.id === nodeId ? selected : null);
       if (!node) return;
       setRestoredPositions(null);
       setSeed({
@@ -130,7 +172,7 @@ export default function Home() {
         score: 1,
       });
     },
-    [crawl.nodes],
+    [crawl.nodes, selected],
   );
 
   let totalTracked = 0;
@@ -291,12 +333,14 @@ export default function Home() {
         </main>
 
         {/* --------------------------------------------------------- detail */}
-        <aside className="w-80 shrink-0 overflow-y-auto border-l border-slate-800">
+        <aside className="flex w-80 shrink-0 flex-col overflow-hidden border-l border-slate-800">
+          {/* Keyed on the entity so the ledger's paging, filter and scroll
+              state reset cleanly when the selection changes. */}
           <NodeDetail
+            key={selected?.id ?? 'none'}
             node={selected}
             nodes={crawl.nodes}
-            edges={crawl.edges}
-            onFocus={(id) => setSelected(crawl.nodes.get(id) ?? null)}
+            onFocus={handleFocusEntity}
             onRecenter={handleRecenter}
           />
         </aside>

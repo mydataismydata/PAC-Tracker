@@ -15,6 +15,11 @@ outward as the data streams in.
   so the first tiles appear immediately instead of after the whole crawl.
 - **Zoomable, pannable canvas** with draggable tiles. A tile you move is pinned, and later
   levels arrange themselves around your layout.
+- **Full ledger per entity.** Selecting a tile lists *every* counterparty and *every*
+  individual transaction from the database — not just the edges the crawl happened to
+  draw. Filter by name, sort, page through, and export to CSV. The totals reconcile
+  against the tile, so a candidate showing "297 sources / $75,819" can be accounted for
+  line by line.
 - **Saved searches** store the seed, the crawl parameters and the tile positions, so a
   reopened graph looks the way you left it.
 - **PNG snapshot** of the current view.
@@ -233,6 +238,13 @@ county school board race with no special handling — a crawl walks straight thr
 - Entity resolution is good, not perfect. `FLORIDA CHAMBER PAC` and `Florida Chamber of
   Commerce PAC` are almost certainly the same organization but score 0.767 and remain
   separate pending review.
+- **The canvas is a filtered slice, the panel is the whole record.** A crawl applies a
+  link mode, a per-node cap and a node ceiling, so the graph deliberately shows a subset.
+  Use the detail panel's ledger when you need completeness — it queries the database
+  directly and ignores the crawl.
+- A candidate who funds their own campaign resolves onto their own node, producing a
+  self-loop. Those are shown and labelled `self`, but excluded from committee-to-committee
+  "direct" links, since self-funding is not a link between two organizations.
 - Amounts are as-reported. In-kind contributions are included and flagged, not netted out.
 
 ## Licence
