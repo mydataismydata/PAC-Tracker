@@ -64,7 +64,19 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
       const all = await ledger.fetchAll();
       const header = isSourceRow(all[0] ?? ({} as LedgerRow))
         ? ['counterparty', 'kind', 'direction', 'amount', 'transactions', 'first_date', 'last_date']
-        : ['date', 'direction', 'counterparty', 'amount', 'type', 'occupation', 'city', 'state', 'source'];
+        : [
+            'date',
+            'direction',
+            'counterparty',
+            'amount',
+            'type',
+            'occupation',
+            'address',
+            'city',
+            'state',
+            'zip',
+            'source',
+          ];
 
       const lines = all.map((r) =>
         isSourceRow(r)
@@ -76,8 +88,11 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
               r.amount,
               r.txn_type_code ?? '',
               r.occupation ?? '',
+              r.address ?? '',
               r.city ?? '',
               r.state_code ?? '',
+              // Quoted by the writer below, so ZIP+4 and leading zeros survive.
+              r.zip ?? '',
               r.source_key ?? '',
             ],
       );
@@ -288,6 +303,21 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
   );
 }
 
+/**
+ * Assemble a contributor's mailing address from the parts the state reports.
+ *
+ * Every part is independently optional — plenty of rows have a city and no
+ * street, and a few have neither — so this drops empties rather than emitting
+ * stray commas.
+ */
+function formatAddress(row: LedgerRow): string {
+  if (isSourceRow(row)) return '';
+  const cityState = [row.city, [row.state_code, row.zip].filter(Boolean).join(' ')]
+    .filter(Boolean)
+    .join(', ');
+  return [row.address, cityState].filter(Boolean).join(' · ');
+}
+
 function LedgerRowItem({
   row,
   onFocus,
@@ -325,10 +355,15 @@ function LedgerRowItem({
             ? `${row.kind}${row.txn_count > 1 ? ` · ${row.txn_count} transactions` : ''}${
                 row.last_date ? ` · ${row.last_date}` : ''
               }`
-            : [row.txn_date, row.txn_type_code, row.occupation, row.city]
-                .filter(Boolean)
-                .join(' · ')}
+            : [row.txn_date, row.txn_type_code, row.occupation].filter(Boolean).join(' · ')}
         </span>
+        {/* The mailing address earns its own line: on one line it pushed the
+            date and occupation out of a row this narrow. */}
+        {!source && formatAddress(row) && (
+          <span className="block truncate text-[10px] text-slate-600" title={formatAddress(row)}>
+            {formatAddress(row)}
+          </span>
+        )}
       </span>
       <span className={`shrink-0 text-xs font-medium tabular-nums ${amountColor}`}>
         {row.flow === 'out' ? '−' : ''}

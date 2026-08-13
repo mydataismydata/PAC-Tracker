@@ -55,8 +55,11 @@ export interface LedgerTransactionRow extends Record<string, unknown> {
   flow: 'in' | 'out';
   txn_type_code: string | null;
   description: string | null;
+  /** Contributor's street address as reported; recipients have none. */
+  address: string | null;
   city: string | null;
   state_code: string | null;
+  zip: string | null;
   occupation: string | null;
   source_key: string | null;
 }
@@ -186,8 +189,8 @@ async function transactionsView(a: ViewArgs) {
            t.amount, t.txn_date,
            CASE WHEN t.to_entity_id = ${id} THEN 'in' ELSE 'out' END AS flow,
            t.txn_type_code, t.inkind_description AS description,
-           t.from_city AS city, t.from_state AS state_code,
-           t.from_occupation AS occupation, t.source_id
+           t.from_address AS address, t.from_city AS city, t.from_state AS state_code,
+           t.from_zip AS zip, t.from_occupation AS occupation, t.source_id
       FROM transactions t
      WHERE (${sides})
   `;
@@ -210,8 +213,8 @@ async function transactionsView(a: ViewArgs) {
   const rows = await db.execute<LedgerTransactionRow>(sql`
     SELECT x.id, x.counterparty_id, x.counterparty_name,
            x.amount::text AS amount, x.txn_date::text AS txn_date, x.flow,
-           x.txn_type_code, x.description, x.city, x.state_code, x.occupation,
-           s.key AS source_key
+           x.txn_type_code, x.description, x.address, x.city, x.state_code, x.zip,
+           x.occupation, s.key AS source_key
       FROM (${base}) x
       LEFT JOIN sources s ON s.id = x.source_id
      WHERE true ${filters}
