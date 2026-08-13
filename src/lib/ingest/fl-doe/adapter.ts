@@ -67,6 +67,18 @@ export interface CycleWindowInfo {
   error?: string;
 }
 
+/**
+ * Escape a name before it goes into any of the CGI's name fields.
+ *
+ * The service interpolates these straight into SQL, so a lone apostrophe comes
+ * back as an ODBC syntax error and every O'Brien, O'Connell and D'Angelo in
+ * Florida is unreachable. Doubling it is what their parser expects: `O''BRIEN`
+ * returns the O'Brien rows correctly.
+ */
+function escapeName(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
 /** ISO yyyy-mm-dd -> the mm/dd/yyyy the form expects. */
 function toUsDate(iso: string): string {
   const [y, m, d] = iso.split('-');
@@ -115,7 +127,7 @@ function baseForm(opts: FetchOptions): Record<string, string | number> {
     ComNameSrch: NAME_MATCH.containing,
     committee: 'All',
     cfname: '',
-    clname: opts.contributorPrefix ?? '',
+    clname: opts.contributorPrefix ? escapeName(opts.contributorPrefix) : '',
     namesearch: opts.contributorPrefix ? NAME_MATCH.startsWith : NAME_MATCH.containing,
     ccity: '',
     cstate: '',
@@ -149,7 +161,7 @@ export class FlDoeAdapter {
     const text = await this.client.post('contributions', {
       ...baseForm(opts),
       search_on: SEARCH_ON.committeeList,
-      ComName: committeeName,
+      ComName: escapeName(committeeName),
       ComNameSrch: opts.match ?? NAME_MATCH.startsWith,
     });
     return parseContributionTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
@@ -167,8 +179,8 @@ export class FlDoeAdapter {
     const text = await this.client.post('contributions', {
       ...baseForm(opts),
       search_on: SEARCH_ON.candidateList,
-      CanLName: lastName,
-      CanFName: firstName,
+      CanLName: escapeName(lastName),
+      CanFName: escapeName(firstName),
       CanNameSrch: opts.match ?? NAME_MATCH.startsWith,
     });
     return parseContributionTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
@@ -188,7 +200,7 @@ export class FlDoeAdapter {
     const text = await this.client.post('contributions', {
       ...baseForm(opts),
       search_on: SEARCH_ON.contributorList,
-      clname: contributorName,
+      clname: escapeName(contributorName),
       namesearch: opts.match ?? NAME_MATCH.startsWith,
     });
     return parseContributionTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
@@ -417,7 +429,7 @@ export class FlDoeAdapter {
   async committeesByPrefix(prefix: string): Promise<RegistryCommittee[]> {
     const html = await this.client.post('committeeLookup', {
       searchtype: 1,
-      comName: prefix,
+      comName: escapeName(prefix),
       LkupTypeName: 'L', // starts with
       NameSearchBtn: 'Search by Name',
     });
