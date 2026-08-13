@@ -17,6 +17,7 @@ import {
   kindLabel,
   type GraphNode,
 } from '@/lib/graph/types';
+import { useTrace, type TraceResult } from '@/lib/graph/useTrace';
 import {
   isSourceRow,
   useLedger,
@@ -40,15 +41,35 @@ const DIRECTIONS: { value: LedgerDirection; label: string }[] = [
   { value: 'all', label: 'Both' },
 ];
 
+type PanelMode = 'sources' | 'transactions' | 'origins';
+
+const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
+  { value: 'sources', label: 'By counterparty', hint: 'One row per counterparty, aggregated.' },
+  { value: 'transactions', label: 'Every transaction', hint: 'One row per reported line item.' },
+  {
+    value: 'origins',
+    label: 'Funding origins',
+    hint: 'Follow the money past committee-to-committee transfers to whoever originated it.',
+  },
+];
+
 export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) {
-  const [view, setView] = useState<LedgerView>('sources');
+  const [mode, setMode] = useState<PanelMode>('sources');
   const [direction, setDirection] = useState<LedgerDirection>('in');
   const [sort, setSort] = useState<LedgerSort>('amount');
   const [q, setQ] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [dateOrdered, setDateOrdered] = useState(true);
+
+  // The origins tab is a different question over the same entity, so the ledger
+  // keeps its last view rather than being torn down and refetched on return.
+  const view: LedgerView = mode === 'origins' ? 'sources' : mode;
+  const showLedger = mode !== 'origins';
 
   const query = useMemo(() => ({ view, direction, q, sort }), [view, direction, q, sort]);
   const ledger = useLedger(node?.id ?? null, query);
+  const traceQuery = useMemo(() => ({ depth: 12, min: 100, dateOrdered }), [dateOrdered]);
+  const traced = useTrace(node?.id ?? null, traceQuery, mode === 'origins');
 
   if (!node) {
     return (
@@ -188,23 +209,25 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
           ))}
         </div>
 
-        <div className="grid grid-cols-2 gap-1">
-          {(['sources', 'transactions'] as const).map((v) => (
+        <div className="grid grid-cols-3 gap-1">
+          {PANEL_MODES.map((m) => (
             <button
-              key={v}
+              key={m.value}
               type="button"
-              onClick={() => setView(v)}
-              className={`rounded px-2 py-1 text-[11px] font-medium capitalize transition ${
-                view === v
+              onClick={() => setMode(m.value)}
+              title={m.hint}
+              className={`rounded px-2 py-1 text-[11px] font-medium transition ${
+                mode === m.value
                   ? 'bg-indigo-600 text-white'
                   : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
               }`}
             >
-              {v === 'sources' ? 'By counterparty' : 'Every transaction'}
+              {m.label}
             </button>
           ))}
         </div>
 
+        {showLedger && (
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
@@ -212,7 +235,9 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
           className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs
                      text-slate-100 placeholder-slate-600 outline-none focus:border-indigo-500"
         />
+        )}
 
+        {showLedger && (
         <div className="flex items-center justify-between gap-2">
           <select
             value={sort}
@@ -235,8 +260,10 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
             {exporting ? 'Exporting…' : 'Export CSV'}
           </button>
         </div>
+        )}
 
         {/* Reconciles against the tile totals above. */}
+        {showLedger && (
         <div className="flex items-baseline justify-between text-[11px]">
           <span className="text-slate-400">
             {ledger.total.toLocaleString()}{' '}
@@ -259,10 +286,22 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
             {formatMoneyFull(ledger.totalAmount)}
           </span>
         </div>
+        )}
       </div>
 
       {/* ------------------------------------------------------------ rows */}
       <div className="min-h-0 flex-1 overflow-y-auto">
+        {!showLedger && (
+          <OriginsReport
+            state={traced}
+            dateOrdered={dateOrdered}
+            onToggleDateOrdered={() => setDateOrdered((v) => !v)}
+            onFocus={onFocus}
+            nodes={nodes}
+          />
+        )}
+
+        {showLedger && (<>
         {ledger.error && <p className="p-3 text-xs text-red-400">{ledger.error}</p>}
 
         {!ledger.loading && ledger.rows.length === 0 && (
@@ -298,7 +337,154 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
         {ledger.loading && ledger.rows.length === 0 && (
           <p className="p-3 text-xs text-slate-500">Loading…</p>
         )}
+        </>)}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Where this entity's money came from, past the conduits.
+ *
+ * Presented apart from the ledger because it answers a different question. The
+ * ledger says who wrote the cheque; for a committee funded by other committees
+ * that is routinely not who paid. The unresolved and dispersed figures are
+ * shown alongside the sources on purpose — a list of origins accounting for a
+ * quarter of the money reads as an answer unless the rest is on screen too.
+ */
+function OriginsReport({
+  state,
+  dateOrdered,
+  onToggleDateOrdered,
+  onFocus,
+  nodes,
+}: {
+  state: { result: TraceResult | null; loading: boolean; error: string | null };
+  dateOrdered: boolean;
+  onToggleDateOrdered: () => void;
+  onFocus: (nodeId: string) => void;
+  nodes: Map<string, GraphNode>;
+}) {
+  if (state.error) return <p className="p-3 text-xs text-red-400">{state.error}</p>;
+  if (state.loading && !state.result) {
+    return <p className="p-3 text-xs text-slate-500">Following the money…</p>;
+  }
+  if (!state.result) return null;
+
+  const r = state.result;
+  const attributed = r.sources.reduce((a, b) => a + b.amount, 0);
+  const unresolved = r.unresolved.reduce((a, b) => a + b.amount, 0);
+  const pct = (n: number) => (r.seed.total > 0 ? (n / r.seed.total) * 100 : 0);
+
+  const bar = (label: string, value: number, className: string) => (
+    <div className="flex items-center gap-2">
+      <span className="w-20 shrink-0 text-[10px] text-slate-500">{label}</span>
+      <div className="h-1.5 flex-1 overflow-hidden rounded bg-slate-800">
+        <div className={`h-full ${className}`} style={{ width: `${pct(value)}%` }} />
+      </div>
+      <span className="w-24 shrink-0 text-right text-[10px] tabular-nums text-slate-400">
+        {formatMoney(String(value))} · {pct(value).toFixed(0)}%
+      </span>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="space-y-2 border-b border-slate-800 p-3">
+        <div className="space-y-1">
+          {bar('Traced', attributed, 'bg-emerald-500')}
+          {bar('Unresolved', unresolved, 'bg-slate-500')}
+          {bar('Long tail', r.dispersed, 'bg-slate-700')}
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-[10px] text-slate-400">
+          <input
+            type="checkbox"
+            checked={dateOrdered}
+            onChange={onToggleDateOrdered}
+            className="accent-indigo-500"
+          />
+          Only credit money a conduit held before it paid out
+        </label>
+        <p className="text-[10px] leading-relaxed text-slate-600">
+          Pro-rata across {r.hops} hops: what share of the pool each source funded, not the route a
+          particular dollar took.
+          {r.truncated && ' Hit the strand ceiling — some paths folded into the long tail.'}
+        </p>
+      </div>
+
+      {r.sources.length === 0 && (
+        <p className="p-3 text-xs text-slate-600">
+          No originating sources found. Every path ends at a committee with no recorded upstream.
+        </p>
+      )}
+
+      <ul className="divide-y divide-slate-800/60">
+        {r.sources.map((s) => (
+          <li key={s.id} className="hover:bg-slate-800/50">
+            <button
+              type="button"
+              onClick={() => onFocus(s.id)}
+              className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
+            >
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-xs text-slate-200">{s.name}</span>
+                  {nodes.has(s.id) && (
+                    <span className="shrink-0 text-[9px] text-indigo-400" title="On the canvas">
+                      ●
+                    </span>
+                  )}
+                </span>
+                <span className="block truncate text-[10px] text-slate-500">
+                  {s.kind} · {s.hop} hop{s.hop === 1 ? '' : 's'} away
+                </span>
+              </span>
+              <span className="shrink-0 text-right">
+                <span className="block text-xs font-medium tabular-nums text-emerald-400">
+                  {formatMoney(String(s.amount))}
+                </span>
+                <span className="block text-[10px] tabular-nums text-slate-500">
+                  {(s.share * 100).toFixed(1)}%
+                </span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {r.unresolved.length > 0 && (
+        <div className="border-t border-slate-800">
+          <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wide text-slate-500">
+            Trail ends here
+          </p>
+          <ul className="divide-y divide-slate-800/60">
+            {r.unresolved.map((s) => (
+              <li key={s.id} className="hover:bg-slate-800/50">
+                <button
+                  type="button"
+                  onClick={() => onFocus(s.id)}
+                  className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs text-slate-300">{s.name}</span>
+                    <span className="block truncate text-[10px] text-slate-600">
+                      no recorded upstream in this data
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className="block text-xs font-medium tabular-nums text-slate-400">
+                      {formatMoney(String(s.amount))}
+                    </span>
+                    <span className="block text-[10px] tabular-nums text-slate-600">
+                      {(s.share * 100).toFixed(1)}%
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
