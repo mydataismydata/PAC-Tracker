@@ -38,6 +38,14 @@ export interface CrawlParams {
   dateFrom?: string;
   dateTo?: string;
   /**
+   * Restrict to one election cycle.
+   *
+   * Rollups are stored per cycle, so this is an index-range narrowing rather
+   * than a post-filter, and tile totals come from `entity_cycle_totals` so the
+   * numbers on a node agree with the edges drawn around it.
+   */
+  cycle?: string;
+  /**
    * Cap on new neighbours pulled per node per level. Without it a single hop
    * into a major PAC drags in every small-dollar donor it ever had.
    */
@@ -132,6 +140,7 @@ async function fetchNeighbors(
     minAmount?: number;
     dateFrom?: string;
     dateTo?: string;
+    cycle?: string;
     maxPerNode: number;
   },
 ): Promise<NeighborRow[]> {
@@ -146,6 +155,7 @@ async function fetchNeighbors(
     opts.minAmount != null ? sql`AND r.total_amount >= ${opts.minAmount}` : sql``;
   const dateFrom = opts.dateFrom ? sql`AND r.last_date >= ${opts.dateFrom}` : sql``;
   const dateTo = opts.dateTo ? sql`AND r.first_date <= ${opts.dateTo}` : sql``;
+  const cycle = opts.cycle ? sql`AND r.election_cycle = ${opts.cycle}` : sql``;
 
   // Money flowing *into* a frontier node: neighbour is the sender.
   const upstream = sql`
@@ -153,7 +163,7 @@ async function fetchNeighbors(
            r.total_amount, r.txn_count, r.first_date, r.last_date, r.is_direct_link,
            r.from_entity_id AS neighbor_id
       FROM edge_rollups r
-     WHERE r.to_entity_id = f.id ${directOnly} ${minAmount} ${dateFrom} ${dateTo}
+     WHERE r.to_entity_id = f.id ${cycle} ${directOnly} ${minAmount} ${dateFrom} ${dateTo}
      ORDER BY r.total_amount DESC
      LIMIT ${opts.maxPerNode}
   `;
@@ -164,10 +174,26 @@ async function fetchNeighbors(
            r.total_amount, r.txn_count, r.first_date, r.last_date, r.is_direct_link,
            r.to_entity_id AS neighbor_id
       FROM edge_rollups r
-     WHERE r.from_entity_id = f.id ${directOnly} ${minAmount} ${dateFrom} ${dateTo}
+     WHERE r.from_entity_id = f.id ${cycle} ${directOnly} ${minAmount} ${dateFrom} ${dateTo}
      ORDER BY r.total_amount DESC
      LIMIT ${opts.maxPerNode}
   `;
+
+  // With a cycle selected the tile must report that cycle, not every cycle
+  // loaded, or a filtered graph shows edges worth one figure under a node
+  // labelled with another.
+  const totalsSelect = opts.cycle
+    ? sql`COALESCE(ct.total_received, 0)::text AS total_received,
+          COALESCE(ct.total_given, 0)::text    AS total_given,
+          COALESCE(ct.in_degree, 0)  AS in_degree,
+          COALESCE(ct.out_degree, 0) AS out_degree,`
+    : sql`e.total_received::text AS total_received,
+          e.total_given::text    AS total_given,
+          e.in_degree, e.out_degree,`;
+  const totalsJoin = opts.cycle
+    ? sql`LEFT JOIN entity_cycle_totals ct
+            ON ct.entity_id = hop.neighbor_id AND ct.election_cycle = ${opts.cycle}`
+    : sql``;
 
   const branch =
     wantUpstream && wantDownstream
@@ -184,12 +210,12 @@ async function fetchNeighbors(
            hop.is_direct_link, hop.neighbor_id,
            e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
            e.status::text AS status, e.office, e.party, e.city, e.state_code,
-           e.total_received::text AS total_received,
-           e.total_given::text    AS total_given,
-           e.in_degree, e.out_degree, e.is_traversable
+           ${totalsSelect}
+           e.is_traversable
       FROM unnest(${sql.param(frontier)}::uuid[]) AS f(id)
       CROSS JOIN LATERAL (${branch}) AS hop
       JOIN entities e ON e.id = hop.neighbor_id
+      ${totalsJoin}
   `);
 }
 
@@ -232,13 +258,22 @@ interface EntityRow extends Record<string, unknown> {
 }
 
 /** Load the seed as a level-0 node. */
-async function fetchSeed(db: Db, id: string): Promise<GraphNode | null> {
+async function fetchSeed(db: Db, id: string, cycle?: string): Promise<GraphNode | null> {
+  const totals = cycle
+    ? sql`COALESCE(ct.total_received, 0)::text AS total_received,
+          COALESCE(ct.total_given, 0)::text    AS total_given,
+          COALESCE(ct.in_degree, 0) AS in_degree, COALESCE(ct.out_degree, 0) AS out_degree`
+    : sql`e.total_received::text AS total_received, e.total_given::text AS total_given,
+          e.in_degree, e.out_degree`;
+  const join = cycle
+    ? sql`LEFT JOIN entity_cycle_totals ct
+            ON ct.entity_id = e.id AND ct.election_cycle = ${cycle}`
+    : sql``;
   const rows = await db.execute<EntityRow>(sql`
     SELECT e.id, e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
            e.status::text AS status, e.office, e.party, e.city, e.state_code,
-           e.total_received::text AS total_received, e.total_given::text AS total_given,
-           e.in_degree, e.out_degree, e.is_traversable
-      FROM entities e WHERE e.id = ${id}
+           ${totals}, e.is_traversable
+      FROM entities e ${join} WHERE e.id = ${id}
   `);
   const r = rows[0];
   if (!r) return null;
@@ -276,11 +311,12 @@ export async function* crawl(db: Db, params: CrawlParams): AsyncGenerator<CrawlL
     minAmount,
     dateFrom,
     dateTo,
+    cycle,
     maxPerNode = CRAWL_DEFAULTS.maxPerNode,
     maxNodes = CRAWL_DEFAULTS.maxNodes,
   } = params;
 
-  const seed = await fetchSeed(db, seedEntityId);
+  const seed = await fetchSeed(db, seedEntityId, cycle);
   if (!seed) return;
 
   const seenNodes = new Set<string>([seed.id]);
@@ -299,6 +335,7 @@ export async function* crawl(db: Db, params: CrawlParams): AsyncGenerator<CrawlL
       minAmount,
       dateFrom,
       dateTo,
+      cycle,
       maxPerNode,
     });
 

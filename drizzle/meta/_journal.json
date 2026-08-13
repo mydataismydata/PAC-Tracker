@@ -15,6 +15,13 @@
       "when": 1786617588552,
       "tag": "0001_left_mentor",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786634257318,
+      "tag": "0002_deep_klaw",
+      "breakpoints": true
     }
   ]
 }

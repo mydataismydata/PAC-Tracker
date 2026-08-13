@@ -9,6 +9,7 @@ export interface TraceQuery {
   depth: number;
   min: number;
   dateOrdered: boolean;
+  cycle?: string;
 }
 
 /**
@@ -40,6 +41,7 @@ export function useTrace(entityId: string | null, query: TraceQuery, enabled: bo
           min: String(query.min),
           dateOrdered: String(query.dateOrdered),
         });
+        if (query.cycle) p.set('cycle', query.cycle);
         const res = await fetch(`/api/entities/${entityId}/trace?${p}`, {
           signal: controller.signal,
         });
@@ -53,7 +55,7 @@ export function useTrace(entityId: string | null, query: TraceQuery, enabled: bo
     })();
 
     return () => controller.abort();
-  }, [entityId, enabled, query.depth, query.min, query.dateOrdered]);
+  }, [entityId, enabled, query.depth, query.min, query.dateOrdered, query.cycle]);
 
   return { result, loading, error };
 }

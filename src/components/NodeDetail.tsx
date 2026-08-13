@@ -33,6 +33,8 @@ interface Props {
   nodes: Map<string, GraphNode>;
   onFocus: (nodeId: string) => void;
   onRecenter: (nodeId: string) => void;
+  /** Election cycle the graph is filtered to, or undefined for all. */
+  cycle?: string;
 }
 
 const DIRECTIONS: { value: LedgerDirection; label: string }[] = [
@@ -53,7 +55,7 @@ const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
   },
 ];
 
-export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) {
+export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: Props) {
   const [mode, setMode] = useState<PanelMode>('sources');
   const [direction, setDirection] = useState<LedgerDirection>('in');
   const [sort, setSort] = useState<LedgerSort>('amount');
@@ -66,9 +68,15 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter }: Props) 
   const view: LedgerView = mode === 'origins' ? 'sources' : mode;
   const showLedger = mode !== 'origins';
 
-  const query = useMemo(() => ({ view, direction, q, sort }), [view, direction, q, sort]);
+  const query = useMemo(
+    () => ({ view, direction, q, sort, cycle }),
+    [view, direction, q, sort, cycle],
+  );
   const ledger = useLedger(node?.id ?? null, query);
-  const traceQuery = useMemo(() => ({ depth: 12, min: 100, dateOrdered }), [dateOrdered]);
+  const traceQuery = useMemo(
+    () => ({ depth: 12, min: 100, dateOrdered, cycle }),
+    [dateOrdered, cycle],
+  );
   const traced = useTrace(node?.id ?? null, traceQuery, mode === 'origins');
 
   if (!node) {

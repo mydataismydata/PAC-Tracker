@@ -58,6 +58,8 @@ export interface LedgerQuery {
   direction: LedgerDirection;
   q: string;
   sort: LedgerSort;
+  /** Undefined means every cycle. */
+  cycle?: string;
 }
 
 export function useLedger(entityId: string | null, query: LedgerQuery) {
@@ -78,9 +80,10 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
         offset: String(offset),
       });
       if (query.q.trim()) p.set('q', query.q.trim());
+      if (query.cycle) p.set('cycle', query.cycle);
       return p;
     },
-    [query.view, query.direction, query.sort, query.q],
+    [query.view, query.direction, query.sort, query.q, query.cycle],
   );
 
   /**

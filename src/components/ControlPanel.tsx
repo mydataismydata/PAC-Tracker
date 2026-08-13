@@ -2,6 +2,7 @@
 
 /** Crawl controls: depth, direction, link mode and filters. */
 
+import { CURRENT_CYCLE, PREVIOUS_CYCLE } from '@/lib/cycles';
 import type { CrawlSettings, Direction, LinkMode } from '@/lib/graph/types';
 
 interface Props {
@@ -9,6 +10,27 @@ interface Props {
   onChange: (next: CrawlSettings) => void;
   disabled?: boolean;
 }
+
+/**
+ * Cycle choices.
+ *
+ * "All cycles" is offered but is not the default: with 2024 and 2026 both
+ * loaded, an unfiltered graph quietly answers "who has ever funded this",
+ * which is rarely the question being asked.
+ */
+const CYCLE_CHOICES: { value: string | undefined; label: string; hint: string }[] = [
+  {
+    value: CURRENT_CYCLE.id,
+    label: `Current (${CURRENT_CYCLE.label})`,
+    hint: `Only money filed for the ${CURRENT_CYCLE.label} election`,
+  },
+  {
+    value: PREVIOUS_CYCLE.id,
+    label: `Previous (${PREVIOUS_CYCLE.label})`,
+    hint: `Only money filed for the ${PREVIOUS_CYCLE.label} election`,
+  },
+  { value: undefined, label: 'All', hint: 'Every cycle loaded, summed together' },
+];
 
 const DIRECTIONS: { value: Direction; label: string; hint: string }[] = [
   { value: 'upstream', label: 'Up', hint: 'Who funded this entity' },
@@ -59,6 +81,27 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
         <div className="flex justify-between text-[10px] text-slate-500">
           {[1, 2, 3, 4, 5, 6].map((n) => (
             <span key={n}>{n}</span>
+          ))}
+        </div>
+      </Field>
+
+      <Field label="Election cycle">
+        <div className="grid grid-cols-3 gap-1">
+          {CYCLE_CHOICES.map((c) => (
+            <button
+              key={c.label}
+              type="button"
+              title={c.hint}
+              disabled={disabled}
+              onClick={() => set('cycle', c.value)}
+              className={`rounded px-2 py-1 text-[11px] font-medium transition ${
+                settings.cycle === c.value
+                  ? 'bg-indigo-600 text-white'
+                  : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
+              } disabled:opacity-40`}
+            >
+              {c.label}
+            </button>
           ))}
         </div>
       </Field>

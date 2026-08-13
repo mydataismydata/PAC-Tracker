@@ -23,6 +23,8 @@ const paramsSchema = z.object({
   minAmount: z.coerce.number().min(0).optional(),
   dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  /** Restrict edges and tile totals to one election cycle. */
+  cycle: z.string().max(32).optional(),
   maxPerNode: z.coerce.number().int().min(1).max(200).default(CRAWL_DEFAULTS.maxPerNode),
   maxNodes: z.coerce.number().int().min(10).max(5000).default(CRAWL_DEFAULTS.maxNodes),
 });
@@ -65,6 +67,7 @@ export async function GET(req: NextRequest) {
           minAmount: p.minAmount,
           dateFrom: p.dateFrom,
           dateTo: p.dateTo,
+          cycle: p.cycle,
           maxPerNode: p.maxPerNode,
           maxNodes: p.maxNodes,
         })) {

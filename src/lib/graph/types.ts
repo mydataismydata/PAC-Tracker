@@ -1,3 +1,4 @@
+import { CURRENT_CYCLE } from '@/lib/cycles';
 /** Shared graph types between the crawler, the API and the UI. */
 
 export type Direction = 'upstream' | 'downstream' | 'both';
@@ -51,6 +52,14 @@ export interface CrawlSettings {
   minAmount?: number;
   dateFrom?: string;
   dateTo?: string;
+  /**
+   * Election cycle to restrict to, or undefined for all of them.
+   *
+   * Defaults to the current cycle: with several cycles loaded, "who funds this
+   * candidate" almost always means this election, and an unfiltered graph
+   * silently answers a different question by adding the last one in.
+   */
+  cycle?: string;
   maxPerNode: number;
   maxNodes: number;
 }
@@ -60,6 +69,7 @@ export const DEFAULT_SETTINGS: CrawlSettings = {
   direction: 'both',
   linkMode: 'direct',
   minAmount: undefined,
+  cycle: CURRENT_CYCLE.id,
   maxPerNode: 25,
   maxNodes: 600,
 };
