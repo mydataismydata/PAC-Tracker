@@ -36,20 +36,33 @@ the app on <http://localhost:3000>:
 docker compose up -d --build
 ```
 
-The database starts empty. Load data with the `cli` service — the committee registry
-first (~7,600 committees, a few minutes), then a seed and a couple of expansion rounds:
+The database starts empty. The fastest way to a useful graph is a whole state cycle —
+every committee and every candidate, an hour or so unattended:
 
 ```bash
-docker compose run --rm cli ingest registry
+docker compose run --rm cli ingest cycle 20261103-GEN
 ```
 
+Then add whichever counties you care about:
+
 ```bash
-docker compose run --rm cli ingest committee "Florida Chamber" --election=20241105-GEN
+docker compose run --rm cli ingest county stjohns
+```
+
+If you only want one neighbourhood rather than the whole state, seed on a name and grow
+outward instead. This is much smaller, and useful when you know what you are looking for:
+
+```bash
+docker compose run --rm cli ingest committee "Florida Chamber" --election=20261103-GEN
 ```
 
 ```bash
 docker compose run --rm cli ingest expand 3
 ```
+
+`ingest registry` sweeps the ~7,600 registered committees by name. It is optional — a
+cycle sweep already creates every committee that moved money — but it fills in official
+spellings, types and active/closed status.
 
 Other useful commands:
 
@@ -258,6 +271,14 @@ county school board race with no special handling — a crawl walks straight thr
   vendor. Standalone city clerks are not covered.
 - Data is only as complete as what you have ingested; the crawler cannot show an edge it
   has never fetched.
+- **Totals mix cycles unless you filter.** `transactions.election_cycle` records which
+  cycle a state row was filed under, so 2024 and 2026 money can be told apart. County rows
+  do not carry it — the VoterFocus sweep has no cycle parameter — so cycle filtering is a
+  state-level feature only.
+- A cycle sweep reports any window it could not fetch completely rather than returning
+  short silently. Quarter-end filing dates are where this bites: they can exceed the
+  service's row cap within a single day, and are recovered by subdividing on contributor
+  name and amount.
 - Entity resolution is good, not perfect. `FLORIDA CHAMBER PAC` and `Florida Chamber of
   Commerce PAC` are almost certainly the same organization but score 0.767 and remain
   separate pending review.

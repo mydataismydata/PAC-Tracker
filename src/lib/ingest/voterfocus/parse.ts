@@ -50,6 +50,8 @@ const NAMED_ENTITIES: Record<string, string> = {
  *
  * `&amp;` is decoded last so double-encoded input ("&amp;#34;") resolves in
  * the right order instead of turning into a literal quote a pass too early.
+ * It is matched case-insensitively: filings do carry `&AMP;`, and an ampersand
+ * left encoded normalizes to the token "AND AMP", which matches nothing.
  */
 const decode = (s: string): string =>
   s
@@ -58,7 +60,7 @@ const decode = (s: string): string =>
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => safeCodePoint(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec) => safeCodePoint(Number(dec)))
     .replace(/&([a-z]+);/gi, (m, name) => NAMED_ENTITIES[name.toLowerCase()] ?? m)
-    .replace(/&amp;/g, '&')
+    .replace(/&amp;/gi, '&')
     .replace(/\s+/g, ' ')
     .trim();
 
