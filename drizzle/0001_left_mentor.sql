@@ -1,0 +1,1 @@
+ALTER TABLE "entities" ADD COLUMN "is_injection_point" boolean DEFAULT false NOT NULL;

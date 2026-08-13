@@ -61,9 +61,29 @@ export interface TracedSource {
   hop: number;
 }
 
+export interface Funder {
+  id: string;
+  name: string;
+  amount: number;
+  share: number;
+}
+
+export interface InjectionPoint extends TracedSource {
+  /** The pool's own largest funders, as context rather than attribution. */
+  funders: Funder[];
+}
+
 export interface TraceResult {
   seed: { id: string; name: string; kind: string; total: number; inDegree: number };
   sources: TracedSource[];
+  /**
+   * National pools the money entered Florida through.
+   *
+   * Kept apart from `sources` deliberately: their funders are known, but the
+   * share of that pool which reached Florida is not, so the two must not be
+   * added together.
+   */
+  injectionPoints: InjectionPoint[];
   /** Conduits with no eligible upstream, or still in flight at maxDepth. */
   unresolved: TracedSource[];
   /** Strands abandoned below minDollars, or pruned at the parcel ceiling. */
@@ -84,6 +104,7 @@ interface InboundRow extends Record<string, unknown> {
   to_id: string;
   from_id: string;
   from_kind: string;
+  from_injection: boolean;
   txn_date: string | null;
   amount: string;
 }
@@ -111,6 +132,7 @@ export async function trace(
 
   const seedTotal = Number(seed.received);
   const origins = new Map<string, { amount: number; hop: number }>();
+  const injections = new Map<string, { amount: number; hop: number }>();
   const dark = new Map<string, { amount: number; hop: number }>();
   let dispersed = 0;
   let truncated = false;
@@ -144,6 +166,15 @@ export async function trace(
           dispersed += share;
           continue;
         }
+        if (e.from_injection) {
+          // A national pool. Its own funding is real and loadable, but only a
+          // share of it ever reached Florida, and the disclosure does not say
+          // which share. Stop here and name it rather than manufacturing a
+          // per-donor estimate that would sit alongside observed transfers
+          // looking equally solid.
+          bump(injections, e.from_id, share, depth);
+          continue;
+        }
         if (!CONDUIT_KINDS.has(e.from_kind)) {
           bump(origins, e.from_id, share, depth);
           continue;
@@ -170,7 +201,8 @@ export async function trace(
   // Anything still moving when depth ran out is unexplained, not resolved.
   for (const p of parcels) bump(dark, p.entityId, p.amount, hops);
 
-  const names = await namesFor(db, [...origins.keys(), ...dark.keys()]);
+  const names = await namesFor(db, [...origins.keys(), ...injections.keys(), ...dark.keys()]);
+  const funders = await topFunders(db, [...injections.keys()]);
   const toList = (m: Map<string, { amount: number; hop: number }>): TracedSource[] =>
     [...m.entries()]
       .map(([id, v]) => ({
@@ -184,6 +216,7 @@ export async function trace(
       .sort((a, b) => b.amount - a.amount);
 
   return {
+    injectionPoints: toList(injections).map((p) => ({ ...p, funders: funders.get(p.id) ?? [] })),
     seed: {
       id: seed.id,
       name: seed.name,
@@ -211,6 +244,7 @@ async function inboundByRecipient(db: Db, ids: string[]): Promise<Map<string, In
     SELECT t.to_entity_id AS to_id,
            t.from_entity_id AS from_id,
            d.kind::text AS from_kind,
+           d.is_injection_point AS from_injection,
            t.txn_date::text AS txn_date,
            SUM(t.amount)::text AS amount
       FROM transactions t
@@ -218,13 +252,54 @@ async function inboundByRecipient(db: Db, ids: string[]): Promise<Map<string, In
      WHERE t.to_entity_id = ANY(${sql.param(ids)}::uuid[])
        AND t.direction = 'contribution'
        AND t.from_entity_id IS NOT NULL
-     GROUP BY 1, 2, 3, 4
+     GROUP BY 1, 2, 3, 4, 5
   `);
   const out = new Map<string, InboundRow[]>();
   for (const r of rows) {
     const list = out.get(r.to_id);
     if (list) list.push(r);
     else out.set(r.to_id, [r]);
+  }
+  return out;
+}
+
+/**
+ * The largest direct funders of each injection point.
+ *
+ * Shown as context — "this came from RSLC, which is funded by…" — not folded
+ * into the seed's attribution.
+ */
+async function topFunders(db: Db, ids: string[]): Promise<Map<string, Funder[]>> {
+  if (ids.length === 0) return new Map();
+  const rows = await db.execute<{
+    pool_id: string;
+    id: string;
+    name: string;
+    amount: string;
+    pool_total: string;
+  }>(sql`
+    SELECT e.to_entity_id AS pool_id,
+           e.from_entity_id AS id,
+           d.name,
+           e.total_amount::text AS amount,
+           SUM(e.total_amount) OVER (PARTITION BY e.to_entity_id)::text AS pool_total
+      FROM edge_rollups e
+      JOIN entities d ON d.id = e.from_entity_id
+     WHERE e.to_entity_id = ANY(${sql.param(ids)}::uuid[])
+     ORDER BY e.total_amount DESC
+  `);
+  const out = new Map<string, Funder[]>();
+  for (const r of rows) {
+    const list = out.get(r.pool_id) ?? [];
+    if (list.length >= 12) continue;
+    const total = Number(r.pool_total);
+    list.push({
+      id: r.id,
+      name: r.name,
+      amount: Number(r.amount),
+      share: total > 0 ? Number(r.amount) / total : 0,
+    });
+    out.set(r.pool_id, list);
   }
   return out;
 }

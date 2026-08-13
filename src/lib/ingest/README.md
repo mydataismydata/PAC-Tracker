@@ -46,6 +46,45 @@ crowded end.
 Whatever still cannot be split is reported by the CLI rather than swallowed — a silently
 short window is indistinguishable from real coverage once it is in the graph.
 
+### `irs-8872-<org>` — national 527s
+
+Not a bulk import. It answers one question the Florida data cannot: where a *national*
+committee's money comes from, when that committee funds Florida races without filing in
+Florida. The Republican State Leadership Committee sent $3.5M into six Florida committees
+across 2025–26 while reporting nothing to the state — it is a 527 filing IRS Form 8872.
+
+```bash
+pnpm ingest irs rslc --from=2025-01-01 --min=10000
+```
+
+Money loaded here is marked `entities.is_injection_point`, and traces **stop** at it. See
+the caveat in `src/lib/graph/trace.ts`: the pool's funders are known, but the share of the
+pool that reached Florida is not, so the two must never be multiplied.
+
+Contract details worth knowing:
+
+- The **bulk downloads are broken** (`/app/pod/dataDownload/fullData`, `dataAG`, `dataNR`,
+  …): every one 302s to a 404 page, verified with browser headers, a primed session and a
+  referer. They are pipe-delimited and structured, so if they return they beat scraping
+  PDFs outright — retry before assuming this adapter is the only route.
+- Search is Spring Web Flow; the first GET establishes a session and the POST carries
+  `execution=e1s1`. The POST answers 302, and following it *as a POST* re-sends with no
+  body for a 411 — the redirect must be followed with a GET.
+- One EIN can be registered under several names, each with its own detail page.
+- Filings are PDFs, ~1,300 pages and ~11,000 contributions per quarter. `getDocumentProxy`
+  **detaches** the buffer you hand it, so keep a copy if you need the bytes afterwards.
+- Extraction is by **column x-position**, not by splitting text. Merged page text collapses
+  the gap between columns to one space, which makes `U.S. CHAMBER OF COMMERCE AND RELATED
+  ENTITIES N/A` impossible to separate into name and employer.
+- `--min` is not a shortcut. For the RSLC, 92% of rows are under $100 and carry 3.4% of the
+  money; 201 rows at $10k or more carry 92.7%.
+- Filers roll unitemized money into pseudo-contributors — `AGGREGATE BELOW THRESHOLD`, and
+  sometimes an entire half-year as one line. Those are detected and collapsed onto a single
+  node named for the EIN. Naming it after the organisation instead makes it resolve back
+  onto the organisation as a self-loop, which then appears as its own largest funder.
+  Detection is narrow on purpose: Palm Beach Aggregates LLC and Mid Coast Aggregates are
+  real donors.
+
 ### `voterfocus-<county>` — county Supervisors of Elections
 
 Covers the county tier: county commission, school board, city commission, and special
