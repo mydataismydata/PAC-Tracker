@@ -486,27 +486,63 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
     GROUP BY t.from_entity_id, t.to_entity_id
   `);
 
+  // Aggregate once over the rollups rather than running two lateral lookups
+  // per entity. The lateral form plans well — index-only scans on both sides —
+  // but it still visits every entity and rewrites every row, and at 626k
+  // entities with seven indexes each the write amplification made this the
+  // slowest phase of an ingest by a wide margin: over an hour, against a
+  // scrape of a government website that took less.
+  //
+  // Two sequential scans and a hash aggregate produce the same numbers, and
+  // the IS DISTINCT FROM guard means only entities whose totals actually moved
+  // are written at all.
   await db.execute(sql`
     UPDATE entities e SET
-      total_received = COALESCE(inb.received, 0),
-      total_given    = COALESCE(outb.given, 0),
-      in_degree      = COALESCE(inb.in_deg, 0),
-      out_degree     = COALESCE(outb.out_deg, 0),
-      first_seen     = LEAST(inb.in_first, outb.out_first),
-      last_seen      = GREATEST(inb.in_last, outb.out_last),
+      total_received = agg.received,
+      total_given    = agg.given,
+      in_degree      = agg.in_deg,
+      out_degree     = agg.out_deg,
+      first_seen     = agg.first_seen,
+      last_seen      = agg.last_seen,
       updated_at     = now()
-    FROM entities x
-    LEFT JOIN LATERAL (
-      SELECT SUM(total_amount) AS received, COUNT(*)::int AS in_deg,
-             MIN(first_date) AS in_first, MAX(last_date) AS in_last
-      FROM edge_rollups WHERE to_entity_id = x.id
-    ) inb ON true
-    LEFT JOIN LATERAL (
-      SELECT SUM(total_amount) AS given, COUNT(*)::int AS out_deg,
-             MIN(first_date) AS out_first, MAX(last_date) AS out_last
-      FROM edge_rollups WHERE from_entity_id = x.id
-    ) outb ON true
-    WHERE e.id = x.id
+    FROM (
+      SELECT id,
+             SUM(received)      AS received,
+             SUM(given)         AS given,
+             SUM(in_deg)::int   AS in_deg,
+             SUM(out_deg)::int  AS out_deg,
+             MIN(first_date)    AS first_seen,
+             MAX(last_date)     AS last_seen
+      FROM (
+        SELECT to_entity_id AS id, total_amount AS received, 0::numeric AS given,
+               1 AS in_deg, 0 AS out_deg, first_date, last_date
+          FROM edge_rollups
+        UNION ALL
+        SELECT from_entity_id, 0::numeric, total_amount,
+               0, 1, first_date, last_date
+          FROM edge_rollups
+      ) sided
+      GROUP BY id
+    ) agg
+    WHERE e.id = agg.id
+      AND (e.total_received IS DISTINCT FROM agg.received
+        OR e.total_given    IS DISTINCT FROM agg.given
+        OR e.in_degree      IS DISTINCT FROM agg.in_deg
+        OR e.out_degree     IS DISTINCT FROM agg.out_deg
+        OR e.first_seen     IS DISTINCT FROM agg.first_seen
+        OR e.last_seen      IS DISTINCT FROM agg.last_seen)
+  `);
+
+  // Entities that lost their last edge are not in the aggregate at all, so
+  // they need clearing separately or they keep stale totals forever.
+  await db.execute(sql`
+    UPDATE entities e SET
+      total_received = 0, total_given = 0, in_degree = 0, out_degree = 0,
+      first_seen = NULL, last_seen = NULL, updated_at = now()
+    WHERE (e.total_received <> 0 OR e.total_given <> 0
+        OR e.in_degree <> 0 OR e.out_degree <> 0)
+      AND NOT EXISTS (SELECT 1 FROM edge_rollups r WHERE r.to_entity_id = e.id)
+      AND NOT EXISTS (SELECT 1 FROM edge_rollups r WHERE r.from_entity_id = e.id)
   `);
 
   const [counts] = await db.execute<{ edges: number; entities: number }>(sql`
