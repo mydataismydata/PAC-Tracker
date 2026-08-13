@@ -106,6 +106,16 @@ export default function Home() {
   }, [seed, settings, startCrawl]);
 
   /**
+   * Prefer the crawl's copy of the selected node over the one that seeded it.
+   *
+   * Picking a result from search fills the panel straight from the search hit,
+   * whose totals span every cycle. The crawl returns the same node with totals
+   * for the cycle actually being viewed, so once it arrives it wins — otherwise
+   * a filtered graph sits next to unfiltered numbers.
+   */
+  const selectedNode = selected ? (crawl.nodes.get(selected.id) ?? selected) : null;
+
+  /**
    * Tell the canvas what to do with the viewport once the stream closes.
    *
    * Handed over as a token rather than a direct call because the canvas is
@@ -240,7 +250,7 @@ export default function Home() {
         </div>
 
         <div className="max-w-xl flex-1">
-          <EntitySearch onSelect={handleSearchSelect} />
+          <EntitySearch onSelect={handleSearchSelect} cycle={settings.cycle} />
         </div>
 
         <div className="flex items-center gap-3 text-xs text-slate-400">
@@ -361,7 +371,7 @@ export default function Home() {
               onSelectNode={setSelected}
               onExpandNode={handleRecenter}
               viewIntent={viewIntent}
-              selectedId={selected?.id ?? null}
+              selectedId={selectedNode?.id ?? null}
               onReady={(h) => {
                 canvasRef.current = h;
               }}
@@ -385,8 +395,8 @@ export default function Home() {
           {/* Keyed on the entity so the ledger's paging, filter and scroll
               state reset cleanly when the selection changes. */}
           <NodeDetail
-            key={selected?.id ?? 'none'}
-            node={selected}
+            key={selectedNode?.id ?? 'none'}
+            node={selectedNode}
             nodes={crawl.nodes}
             onFocus={handleFocusEntity}
             onRecenter={handleRecenter}

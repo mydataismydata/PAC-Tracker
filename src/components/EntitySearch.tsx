@@ -8,9 +8,11 @@ import { formatMoney, kindLabel, type EntitySearchHit } from '@/lib/graph/types'
 interface Props {
   onSelect: (hit: EntitySearchHit) => void;
   placeholder?: string;
+  /** Show totals for this cycle, so results match the tiles they become. */
+  cycle?: string;
 }
 
-export default function EntitySearch({ onSelect, placeholder }: Props) {
+export default function EntitySearch({ onSelect, placeholder, cycle }: Props) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<EntitySearchHit[]>([]);
   const [open, setOpen] = useState(false);
@@ -39,9 +41,11 @@ export default function EntitySearch({ onSelect, placeholder }: Props) {
     const timer = setTimeout(async () => {
       setLoading(true);
       try {
-        const res = await fetch(`/api/entities/search?q=${encodeURIComponent(query)}&limit=15`, {
-          signal: controller.signal,
-        });
+        const res = await fetch(
+          `/api/entities/search?q=${encodeURIComponent(query)}&limit=15` +
+            (cycle ? `&cycle=${encodeURIComponent(cycle)}` : ''),
+          { signal: controller.signal },
+        );
         const json = await res.json();
         setResults(json.results ?? []);
         setActive(0);
@@ -57,7 +61,7 @@ export default function EntitySearch({ onSelect, placeholder }: Props) {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, cycle]);
 
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {

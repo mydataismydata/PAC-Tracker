@@ -119,21 +119,25 @@ interface Props {
 }
 
 /**
- * The money line under a tile's name.
+ * A tile's full label: name on the first line, money on the second.
  *
- * Shared by the add and update paths: totals change when the cycle filter
- * changes, so a node that survives the switch has to be relabelled with the
- * same rule it was first drawn with.
+ * Returns the *whole* label rather than just the money, because both the add
+ * and the relabel path use it. Returning only the money line once meant a
+ * cycle switch rewrote a surviving tile's label to its amount alone and threw
+ * the name away.
  */
 function tileLabel(n: GraphNode): string {
   const received = Number(n.totalReceived);
   const given = Number(n.totalGiven);
-  if (received > 0 && given > 0) {
-    return `in ${formatMoney(received)} · out ${formatMoney(given)}`;
-  }
-  if (received > 0) return `in ${formatMoney(received)}`;
-  if (given > 0) return `out ${formatMoney(given)}`;
-  return '';
+  const money =
+    received > 0 && given > 0
+      ? `in ${formatMoney(received)} · out ${formatMoney(given)}`
+      : received > 0
+        ? `in ${formatMoney(received)}`
+        : given > 0
+          ? `out ${formatMoney(given)}`
+          : '';
+  return [fitLabel(n.name), money].filter(Boolean).join('\n');
 }
 
 export default function GraphCanvas({
@@ -369,13 +373,13 @@ export default function GraphCanvas({
 
     for (const n of nodes.values()) {
       if (cy.getElementById(n.id).nonempty()) continue;
-      const moneyLine = tileLabel(n);
+
 
       nodeDefs.push({
         group: 'nodes',
         data: {
           id: n.id,
-          label: [fitLabel(n.name), moneyLine].filter(Boolean).join('\n'),
+          label: tileLabel(n),
           fullName: n.name,
           kind: n.kind,
           isSeed: n.id === seedId,
