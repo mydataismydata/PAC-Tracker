@@ -373,6 +373,7 @@ function OriginsReport({
 
   const r = state.result;
   const attributed = r.sources.reduce((a, b) => a + b.amount, 0);
+  const viaPools = r.injectionPoints.reduce((a, b) => a + b.amount, 0);
   const unresolved = r.unresolved.reduce((a, b) => a + b.amount, 0);
   const pct = (n: number) => (r.seed.total > 0 ? (n / r.seed.total) * 100 : 0);
 
@@ -393,6 +394,7 @@ function OriginsReport({
       <div className="space-y-2 border-b border-slate-800 p-3">
         <div className="space-y-1">
           {bar('Traced', attributed, 'bg-emerald-500')}
+          {viaPools > 0 && bar('National pool', viaPools, 'bg-sky-500')}
           {bar('Unresolved', unresolved, 'bg-slate-500')}
           {bar('Long tail', r.dispersed, 'bg-slate-700')}
         </div>
@@ -451,6 +453,56 @@ function OriginsReport({
           </li>
         ))}
       </ul>
+
+      {r.injectionPoints.map((p) => (
+        <div key={p.id} className="border-t border-sky-900/60 bg-sky-950/20">
+          <div className="px-3 pb-1 pt-2">
+            <p className="text-[10px] uppercase tracking-wide text-sky-400">
+              Entered Florida through a national pool
+            </p>
+            <div className="mt-1 flex items-baseline justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => onFocus(p.id)}
+                className="min-w-0 flex-1 truncate text-left text-xs text-slate-200 hover:underline"
+              >
+                {p.name}
+              </button>
+              <span className="shrink-0 text-xs font-medium tabular-nums text-sky-300">
+                {formatMoney(String(p.amount))} · {(p.share * 100).toFixed(1)}%
+              </span>
+            </div>
+            {/* Shares are of the pool, never of the seed: how much of this
+                pool reached Florida is not disclosed anywhere. */}
+            <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+              Raised nationally and spent across many states. Its own funders are below, as
+              shares of <em>its</em> money — not of {r.seed.name}. The two cannot be multiplied
+              together, because no filing says which share of this pool came to Florida.
+            </p>
+          </div>
+          <ul className="divide-y divide-slate-800/60">
+            {p.funders.map((f) => (
+              <li key={f.id} className="hover:bg-slate-800/50">
+                <button
+                  type="button"
+                  onClick={() => onFocus(f.id)}
+                  className="flex w-full items-baseline justify-between gap-2 px-3 py-1 text-left"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-slate-300">
+                    {f.name}
+                  </span>
+                  <span className="shrink-0 text-[11px] tabular-nums text-slate-400">
+                    {formatMoney(String(f.amount))}
+                  </span>
+                  <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-slate-500">
+                    {(f.share * 100).toFixed(1)}%
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
 
       {r.unresolved.length > 0 && (
         <div className="border-t border-slate-800">

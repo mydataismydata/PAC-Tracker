@@ -176,6 +176,28 @@ when a donor is itself a committee.
 Counties not on VoterFocus, and standalone city clerks, still need their own adapters. See
 [`src/lib/ingest/README.md`](src/lib/ingest/README.md).
 
+### IRS Form 8872 — national 527s (implemented, targeted)
+
+Some of the largest money entering Florida races never appears in Florida disclosure at
+all. The Republican State Leadership Committee sent **$3.5M into six Florida committees**
+across 2025–26 while filing nothing with the state: it is a 527, and its own funding is
+disclosed to the IRS on Form 8872.
+
+```bash
+pnpm ingest irs rslc --from=2025-01-01 --min=10000
+```
+
+This is deliberately per-organisation rather than a bulk import, and such an organisation
+is marked an **injection point**. A trace stops there and names it instead of continuing
+through it. That is a judgement call worth stating plainly: the pool's funders are known,
+but no filing says what share of a nationally-raised pool reached Florida, so attributing
+its Florida spending pro-rata across its donors would produce estimates that look exactly
+like observed transfers while resting on an assumption the data cannot support.
+
+What you get instead is the honest shape: *this $51,429 reached First Coast Leadership
+through the RSLC, whose own money is 38% unitemized, 2.3% THE FUND, 2.1% U.S. Chamber of
+Commerce, 1.9% Altria…*
+
 ### Others considered
 
 - **Transparency USA** — 25 states, but **state-level only**, and they sell the data
@@ -243,6 +265,7 @@ single $1.25M edge rather than five.
 | Command | Description |
 | --- | --- |
 | `pnpm ingest cycle <electionId>` | Sweep a whole state cycle — every committee and candidate. |
+| `pnpm ingest irs <org>` | A national 527's funders, from IRS Form 8872. |
 | `pnpm ingest registry` | Sweep the state committee registry A–Z (~7,600 committees). |
 | `pnpm ingest counties` | List supported VoterFocus counties. |
 | `pnpm ingest county <slug>` | Sweep every candidate and committee in a county. |
@@ -252,6 +275,7 @@ single $1.25M edge rather than five.
 | `pnpm ingest expand <rounds>` | Grow the frontier outward automatically. |
 | `pnpm ingest rebuild` | Recompute all rollups and totals. |
 | `pnpm ingest purge <source-key>` | Drop everything one source contributed, to re-ingest it cleanly. |
+| `pnpm trace "<name>"` | Follow money through conduits to its original sources. |
 | `pnpm probe:fldoe` | Live smoke test of the scraping contract, no DB needed. |
 
 Common flags: `--election=20241105-GEN`, `--limit=2000`, `--min=1000`, `--frontier=12`.

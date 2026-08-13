@@ -158,6 +158,20 @@ export const entities = pgTable(
      */
     isTraversable: boolean('is_traversable').notNull().default(false),
 
+    /**
+     * A national pool that money enters Florida *from*, whose own funding is
+     * disclosed under a different regime entirely.
+     *
+     * The Republican State Leadership Committee sent $3.5M into six Florida
+     * committees while reporting nothing to Florida — it is a 527 filing IRS
+     * Form 8872. Its donors can be loaded, but its money is raised nationally
+     * and spent across dozens of states, so treating the Florida share as a
+     * representative slice of that pool is an assumption the disclosure cannot
+     * support. Traces therefore stop here and say so, rather than blending a
+     * modelled estimate in with observed Florida transfers.
+     */
+    isInjectionPoint: boolean('is_injection_point').notNull().default(false),
+
     sourceId: uuid('source_id').references(() => sources.id),
     /** Native identifier at the source, when the source provides one. */
     sourceRef: text('source_ref'),

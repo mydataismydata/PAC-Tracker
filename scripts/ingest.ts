@@ -10,6 +10,7 @@
  *   pnpm ingest registry                         # sweep the state committee registry
  *   pnpm ingest county stjohns                   # sweep a county (VoterFocus)
  *   pnpm ingest counties                         # list supported counties
+ *   pnpm ingest irs rslc                         # a national 527's funders (IRS 8872)
  *   pnpm ingest purge voterfocus-duval           # drop one source, to re-ingest cleanly
  *   pnpm ingest expand 2                         # auto-expand frontier N rounds
  *
@@ -24,6 +25,7 @@ import { FlDoeClient, NAME_MATCH } from '@/lib/ingest/fl-doe/client';
 import {
   ensureFloridaSource,
   ensureCountySource,
+  ensureIrsSource,
   ingestContributionRows,
   ingestTransactionRows,
   startRun,
@@ -31,6 +33,8 @@ import {
   rebuildAll,
   purgeSource,
 } from '@/lib/ingest/pipeline';
+import { Irs8872Adapter, TRACKED_ORGS, findOrg } from '@/lib/ingest/irs-8872/adapter';
+import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
 import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
@@ -110,6 +114,11 @@ async function main() {
 
   if (mode === 'cycle') {
     await ingestCycle(term || election, fl, { sourceId, jurisdictionId }, resolver);
+    process.exit(0);
+  }
+
+  if (mode === 'irs') {
+    await ingestIrsOrg(term || 'rslc');
     process.exit(0);
   }
 
@@ -310,6 +319,116 @@ async function ingestCycle(
   const counts = await rebuildAll(db);
   console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
   await summarize();
+}
+
+/**
+ * Load a national 527's funders from IRS Form 8872.
+ *
+ * The organization is marked an injection point, so traces stop at it and
+ * report it by name instead of dissolving national pooled money into Florida
+ * pro-rata attribution.
+ */
+async function ingestIrsOrg(slug: string) {
+  const org = findOrg(slug);
+  if (!org) {
+    console.error(
+      `unknown org "${slug}". Known: ${TRACKED_ORGS.map((o) => o.slug).join(', ')}`,
+    );
+    process.exit(1);
+  }
+
+  const { sourceId, jurisdictionId } = await ensureIrsSource(db, org);
+  const adapter = new Irs8872Adapter(new IrsPodClient());
+  const resolver = new EntityResolver(db);
+  const minAmount = flags.min ? Number(flags.min) : 10000;
+  const from = flags.from ?? '2025-01-01';
+  const to = flags.to;
+
+  const runId = await startRun(db, sourceId, { org: org.slug, ein: org.ein, from, to, minAmount });
+  console.log(`\n${org.name} (EIN ${org.ein})`);
+  console.log(`filings ending ${from}${to ? ` to ${to}` : ' onward'}, contributions >= ${fmt(minAmount)}\n`);
+
+  let totalRows = 0;
+  let totalInserted = 0;
+  let totalCreated = 0;
+  let filings = 0;
+
+  try {
+    for await (const { link, filing } of adapter.sweepOrganization(org.ein, {
+      from,
+      to,
+      minAmount,
+      onProgress: (m) => console.log(`  ${m}`),
+    })) {
+      filings++;
+      const rows = filing.contributions.map((c) => ({
+        recipientRaw: filing.orgName ?? org.name,
+        recipientName: filing.orgName ?? org.name,
+        recipientTypeTag: null,
+        recipientTruncated: false,
+        // Placeholders are collapsed onto one clearly-labelled node per org.
+        // The money is real and worth showing — RSLC left an entire half-year
+        // unitemized — but it is not a donor, and per-period names would
+        // scatter it across the graph as several phantom mega-donors.
+        // Keyed on the EIN, not the org name: a label containing the org's own
+        // name resolves straight back onto it and books the whole unitemized
+        // total as a self-loop, which then shows up as its largest funder.
+        contributorRaw: c.isAggregate
+          ? `Unitemized contributions (EIN ${org.ein})`
+          : c.contributorName,
+        amount: c.amount,
+        date: c.date,
+        typeCode: null,
+        address: c.address,
+        city: c.city,
+        state: c.state,
+        zip: c.zip,
+        occupation: c.occupation ?? c.employer,
+        inkindDescription: null,
+        // Namespaced so these never collide with a Florida election cycle.
+        electionCycle: `8872-${filing.periodEnd ?? link.periodEnd ?? 'unknown'}`,
+        rowHash: c.rowHash,
+      }));
+
+      const res = await ingestContributionRows(db, rows, { sourceId, jurisdictionId, resolver });
+      totalRows += rows.length;
+      totalInserted += res.rowsInserted;
+      totalCreated += res.entitiesCreated;
+      const sum = rows.reduce((a, r) => a + Number(r.amount), 0);
+      const agg = filing.contributions.filter((c) => c.isAggregate);
+      const aggSum = agg.reduce((a, c) => a + Number(c.amount), 0);
+      console.log(
+        `  ${filing.periodBegin ?? '?'}..${filing.periodEnd ?? '?'}  ` +
+          `${String(rows.length).padStart(4)} rows ${fmt(sum).padStart(12)} -> ` +
+          `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+          `${filing.skipped ? `  (${filing.skipped} unparsed)` : ''}` +
+          `${agg.length ? `  [${fmt(aggSum)} unitemized]` : ''}`,
+      );
+    }
+    await finishRun(db, runId, { rowsFetched: totalRows, rowsInserted: totalInserted });
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
+
+  // Mark every name variant, so a trace stops here however the name resolved.
+  const marked = await db.execute<{ id: string; name: string }>(sql`
+    UPDATE entities SET is_injection_point = true, is_traversable = true
+    WHERE id IN (
+      SELECT DISTINCT t.to_entity_id FROM transactions t
+      WHERE t.source_id = ${sourceId} AND t.to_entity_id IS NOT NULL
+    )
+    RETURNING id, name
+  `);
+  for (const m of marked) console.log(`\n  marked injection point: ${m.name}`);
+
+  console.log(
+    `\n  ${filings} filings, ${totalRows} rows, ${totalInserted} new transactions, ` +
+      `${totalCreated} new entities`,
+  );
+  console.log('\nRebuilding rollups…');
+  const counts = await rebuildAll(db);
+  console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
 }
 
 /**

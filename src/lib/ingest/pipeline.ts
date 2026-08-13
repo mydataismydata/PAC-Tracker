@@ -108,6 +108,49 @@ export async function ensureCountySource(
 }
 
 /**
+ * Source and jurisdiction for a national 527 loaded from IRS Form 8872.
+ *
+ * These sit under a `federal` jurisdiction rather than Florida's: the money is
+ * raised nationally and spent across dozens of states, and only a slice of it
+ * ever reaches Florida.
+ */
+export async function ensureIrsSource(
+  db: Db,
+  org: { slug: string; name: string; ein: string },
+): Promise<{ jurisdictionId: string; sourceId: string }> {
+  const [j] = await db
+    .insert(jurisdictions)
+    .values({
+      code: 'US-527',
+      name: 'United States (527 organizations)',
+      level: 'federal',
+      state: 'US',
+    })
+    .onConflictDoUpdate({
+      target: jurisdictions.code,
+      set: { name: 'United States (527 organizations)' },
+    })
+    .returning({ id: jurisdictions.id });
+
+  const [s] = await db
+    .insert(sources)
+    .values({
+      key: `irs-8872-${org.slug}`,
+      name: `${org.name} — IRS Form 8872`,
+      url: 'https://forms.irs.gov/app/pod/basicSearch/search',
+      jurisdictionId: j.id,
+      notes:
+        `Contributions received by ${org.name} (EIN ${org.ein}), as disclosed on ` +
+        'IRS Form 8872. Loaded to explain a national committee that funds Florida ' +
+        'races without filing in Florida. National pool: only a share reaches Florida.',
+    })
+    .onConflictDoUpdate({ target: sources.key, set: { jurisdictionId: j.id } })
+    .returning({ id: sources.id });
+
+  return { jurisdictionId: j.id, sourceId: s.id };
+}
+
+/**
  * Persist a batch of parsed contribution rows.
  *
  * Resolution runs row-by-row because each resolution can create an entity that
