@@ -25,6 +25,7 @@ const querySchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((v) => v === 'true'),
+  cycle: z.string().max(32).optional(),
 });
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -37,10 +38,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   if (!parsed.success) {
     return Response.json({ error: 'invalid query', detail: parsed.error.flatten() }, { status: 400 });
   }
-  const { depth, min, dateOrdered } = parsed.data;
+  const { depth, min, dateOrdered, cycle } = parsed.data;
 
   try {
-    const result = await trace(db, id, { maxDepth: depth, minDollars: min, dateOrdered });
+    const result = await trace(db, id, { maxDepth: depth, minDollars: min, dateOrdered, cycle });
     return Response.json(result);
   } catch (err) {
     return Response.json({ error: String(err) }, { status: 500 });

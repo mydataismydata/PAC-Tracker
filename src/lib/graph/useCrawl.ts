@@ -60,6 +60,7 @@ export function useCrawl() {
     if (settings.minAmount != null) qs.set('minAmount', String(settings.minAmount));
     if (settings.dateFrom) qs.set('dateFrom', settings.dateFrom);
     if (settings.dateTo) qs.set('dateTo', settings.dateTo);
+    if (settings.cycle) qs.set('cycle', settings.cycle);
 
     // fetch + manual SSE parsing rather than EventSource, because EventSource
     // cannot be aborted cleanly and offers no way to surface HTTP errors.

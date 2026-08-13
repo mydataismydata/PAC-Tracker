@@ -22,6 +22,10 @@ outward as the data streams in.
   draw. Filter by name, sort, page through, and export to CSV. The totals reconcile
   against the tile, so a candidate showing "297 sources / $75,819" can be accounted for
   line by line.
+- **Election cycle filter.** Current, previous, or all. Rollups are stored per
+  cycle, so this narrows an index range rather than filtering after the fact —
+  and tile totals, the ledger and the funding trace all follow it, so a filtered
+  graph never shows one cycle's edges under another cycle's numbers.
 - **Saved searches** store the seed, the crawl parameters and the tile positions, so a
   reopened graph looks the way you left it.
 - **PNG snapshot** of the current view.
@@ -295,10 +299,13 @@ county school board race with no special handling — a crawl walks straight thr
   vendor. Standalone city clerks are not covered.
 - Data is only as complete as what you have ingested; the crawler cannot show an edge it
   has never fetched.
-- **Totals mix cycles unless you filter.** `transactions.election_cycle` records which
-  cycle a state row was filed under, so 2024 and 2026 money can be told apart. County rows
-  do not carry it — the VoterFocus sweep has no cycle parameter — so cycle filtering is a
-  state-level feature only.
+- **The cycle filter defaults to the current election, not to everything.** With more
+  than one cycle loaded, an unfiltered graph answers "who has *ever* funded this", which
+  is rarely the question. Switch to *All* deliberately.
+- County and IRS rows carry no Florida cycle of their own — county portals have no cycle
+  parameter, and 8872 rows carry a filing period — so both are assigned by date. A filing
+  made late in one cycle for the *next* election lands in the wrong bucket; excluding them
+  would make county races vanish from a filtered graph, which is worse.
 - A cycle sweep reports any window it could not fetch completely rather than returning
   short silently. Quarter-end filing dates are where this bites: they can exceed the
   service's row cap within a single day, and are recovered by subdividing on contributor

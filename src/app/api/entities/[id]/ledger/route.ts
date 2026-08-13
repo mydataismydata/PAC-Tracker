@@ -18,6 +18,7 @@ import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db';
 import { normalizeName } from '@/lib/normalize';
+import { derivedCycleSql } from '@/lib/cycles';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(100),
   offset: z.coerce.number().int().min(0).default(0),
   minAmount: z.coerce.number().min(0).optional(),
+  cycle: z.string().max(32).optional(),
 });
 
 export interface LedgerSourceRow extends Record<string, unknown> {
@@ -74,7 +76,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   if (!parsed.success) {
     return Response.json({ error: 'invalid query', detail: parsed.error.flatten() }, { status: 400 });
   }
-  const { view, direction, q, sort, order, limit, offset, minAmount } = parsed.data;
+  const { view, direction, q, sort, order, limit, offset, minAmount, cycle } = parsed.data;
 
   const wantIn = direction === 'in' || direction === 'all';
   const wantOut = direction === 'out' || direction === 'all';
@@ -83,8 +85,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const needle = q ? normalizeName(q) : null;
 
   return view === 'sources'
-    ? sourcesView({ id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount })
-    : transactionsView({ id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount });
+    ? sourcesView({ id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount, cycle })
+    : transactionsView({ id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount, cycle });
 }
 
 interface ViewArgs {
@@ -97,21 +99,25 @@ interface ViewArgs {
   limit: number;
   offset: number;
   minAmount?: number;
+  cycle?: string;
 }
 
 /** One row per counterparty, from the pre-aggregated rollups. */
 async function sourcesView(a: ViewArgs) {
-  const { id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount } = a;
+  const { id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount, cycle } = a;
 
+  // Rollups are stored per cycle, so this narrows the index range rather than
+  // filtering after the fact.
+  const cyc = cycle ? sql`AND r.election_cycle = ${cycle}` : sql``;
   const inbound = sql`
     SELECT r.from_entity_id AS entity_id, r.total_amount AS amount, r.txn_count,
            r.first_date, r.last_date, 'in'::text AS flow
-      FROM edge_rollups r WHERE r.to_entity_id = ${id}
+      FROM edge_rollups r WHERE r.to_entity_id = ${id} ${cyc}
   `;
   const outbound = sql`
     SELECT r.to_entity_id AS entity_id, r.total_amount AS amount, r.txn_count,
            r.first_date, r.last_date, 'out'::text AS flow
-      FROM edge_rollups r WHERE r.from_entity_id = ${id}
+      FROM edge_rollups r WHERE r.from_entity_id = ${id} ${cyc}
   `;
   const base =
     wantIn && wantOut ? sql`(${inbound}) UNION ALL (${outbound})` : wantIn ? inbound : outbound;
@@ -167,7 +173,12 @@ async function sourcesView(a: ViewArgs) {
 
 /** One row per reported line item. */
 async function transactionsView(a: ViewArgs) {
-  const { id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount } = a;
+  const { id, wantIn, wantOut, needle, sort, dir, limit, offset, minAmount, cycle } = a;
+
+  // Transactions carry a filing cycle rather than the derived one, so the same
+  // rule the rollups were built with has to be applied here or a filtered
+  // ledger disagrees with the filtered graph beside it.
+  const cyc = cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``;
 
   // `flow` is relative to the subject entity, and the counterparty is whichever
   // end of the transaction is not the subject.
@@ -192,7 +203,7 @@ async function transactionsView(a: ViewArgs) {
            t.from_address AS address, t.from_city AS city, t.from_state AS state_code,
            t.from_zip AS zip, t.from_occupation AS occupation, t.source_id
       FROM transactions t
-     WHERE (${sides})
+     WHERE (${sides}) ${cyc}
   `;
 
   const filters = sql.join(

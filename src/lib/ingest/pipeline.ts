@@ -13,6 +13,10 @@ import { transactions, entities, sources, jurisdictions, ingestRuns } from '@/db
 import { EntityResolver, refreshTraversability } from './resolve';
 import type { RawContributionRow } from './fl-doe/parse';
 import type { RawTransactionRow } from './types';
+import { derivedCycleSql } from '@/lib/cycles';
+
+/** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
+const derivedCycle = derivedCycleSql('t');
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -362,12 +366,13 @@ export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<v
 
   await db.execute(sql`
     INSERT INTO edge_rollups (
-      from_entity_id, to_entity_id, total_amount, txn_count,
+      from_entity_id, to_entity_id, election_cycle, total_amount, txn_count,
       first_date, last_date, is_direct_link, updated_at
     )
     SELECT
       t.from_entity_id,
       t.to_entity_id,
+      ${derivedCycle}        AS election_cycle,
       SUM(t.amount)          AS total_amount,
       COUNT(*)::int          AS txn_count,
       MIN(t.txn_date)        AS first_date,
@@ -385,8 +390,8 @@ export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<v
       AND t.to_entity_id IS NOT NULL
       AND (t.from_entity_id = ANY(${sql.param(entityIds)}::uuid[])
            OR t.to_entity_id = ANY(${sql.param(entityIds)}::uuid[]))
-    GROUP BY t.from_entity_id, t.to_entity_id
-    ON CONFLICT (from_entity_id, to_entity_id) DO UPDATE SET
+    GROUP BY t.from_entity_id, t.to_entity_id, ${derivedCycle}
+    ON CONFLICT (from_entity_id, to_entity_id, election_cycle) DO UPDATE SET
       total_amount   = EXCLUDED.total_amount,
       txn_count      = EXCLUDED.txn_count,
       first_date     = EXCLUDED.first_date,
@@ -466,12 +471,13 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
   await db.execute(sql`TRUNCATE edge_rollups`);
   await db.execute(sql`
     INSERT INTO edge_rollups (
-      from_entity_id, to_entity_id, total_amount, txn_count,
+      from_entity_id, to_entity_id, election_cycle, total_amount, txn_count,
       first_date, last_date, is_direct_link, updated_at
     )
     SELECT
       t.from_entity_id,
       t.to_entity_id,
+      ${derivedCycle},
       SUM(t.amount),
       COUNT(*)::int,
       MIN(t.txn_date),
@@ -483,7 +489,7 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
     JOIN entities ef ON ef.id = t.from_entity_id
     JOIN entities et ON et.id = t.to_entity_id
     WHERE t.from_entity_id IS NOT NULL AND t.to_entity_id IS NOT NULL
-    GROUP BY t.from_entity_id, t.to_entity_id
+    GROUP BY t.from_entity_id, t.to_entity_id, ${derivedCycle}
   `);
 
   // Aggregate once over the rollups rather than running two lateral lookups
@@ -531,6 +537,27 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
         OR e.out_degree     IS DISTINCT FROM agg.out_deg
         OR e.first_seen     IS DISTINCT FROM agg.first_seen
         OR e.last_seen      IS DISTINCT FROM agg.last_seen)
+  `);
+
+  // Per-cycle totals, so a filtered tile agrees with the edges drawn around it.
+  // Rebuilt wholesale rather than merged: the set is small next to the rollups
+  // it comes from, and a stale row here is a wrong number on screen.
+  await db.execute(sql`TRUNCATE entity_cycle_totals`);
+  await db.execute(sql`
+    INSERT INTO entity_cycle_totals (
+      entity_id, election_cycle, total_received, total_given, in_degree, out_degree
+    )
+    SELECT id, election_cycle,
+           SUM(received), SUM(given), SUM(in_deg)::int, SUM(out_deg)::int
+    FROM (
+      SELECT to_entity_id AS id, election_cycle, total_amount AS received,
+             0::numeric AS given, 1 AS in_deg, 0 AS out_deg
+        FROM edge_rollups
+      UNION ALL
+      SELECT from_entity_id, election_cycle, 0::numeric, total_amount, 0, 1
+        FROM edge_rollups
+    ) sided
+    GROUP BY id, election_cycle
   `);
 
   // Entities that lost their last edge are not in the aggregate at all, so

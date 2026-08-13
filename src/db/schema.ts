@@ -12,6 +12,7 @@ import {
   real,
   index,
   uniqueIndex,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 
 /* -------------------------------------------------------------------------- */
@@ -309,6 +310,15 @@ export const edgeRollups = pgTable(
     toEntityId: uuid('to_entity_id')
       .notNull()
       .references(() => entities.id, { onDelete: 'cascade' }),
+    /**
+     * Which cycle this edge belongs to.
+     *
+     * Rollups are split per cycle rather than summed across them. Once two
+     * cycles share the table, a single figure per pair answers a question
+     * nobody asked: "who funds this candidate" means this election, not the
+     * last one plus this one. Splitting costs about 20% more rows.
+     */
+    electionCycle: text('election_cycle').notNull(),
     totalAmount: numeric('total_amount', { precision: 16, scale: 2 }).notNull(),
     txnCount: integer('txn_count').notNull(),
     firstDate: date('first_date'),
@@ -318,11 +328,38 @@ export const edgeRollups = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('edge_rollups_pair_key').on(t.fromEntityId, t.toEntityId),
-    // The crawler's hot paths: expand upstream, expand downstream, biggest first.
-    index('edge_rollups_to_amount_idx').on(t.toEntityId, t.totalAmount),
-    index('edge_rollups_from_amount_idx').on(t.fromEntityId, t.totalAmount),
+    uniqueIndex('edge_rollups_pair_key').on(t.fromEntityId, t.toEntityId, t.electionCycle),
+    // The crawler's hot paths: expand upstream, expand downstream, biggest
+    // first — with the cycle leading, since a filtered crawl is the common case.
+    index('edge_rollups_to_amount_idx').on(t.toEntityId, t.electionCycle, t.totalAmount),
+    index('edge_rollups_from_amount_idx').on(t.fromEntityId, t.electionCycle, t.totalAmount),
     index('edge_rollups_direct_idx').on(t.isDirectLink),
+  ],
+);
+
+/**
+ * Per-cycle totals for a tile.
+ *
+ * `entities.total_received` spans every cycle loaded. With a cycle filter
+ * active the tile has to agree with the edges around it, so the filtered view
+ * reads here instead — precomputed rather than aggregated per neighbour,
+ * because the crawler touches these on every hop.
+ */
+export const entityCycleTotals = pgTable(
+  'entity_cycle_totals',
+  {
+    entityId: uuid('entity_id')
+      .notNull()
+      .references(() => entities.id, { onDelete: 'cascade' }),
+    electionCycle: text('election_cycle').notNull(),
+    totalReceived: numeric('total_received', { precision: 16, scale: 2 }).notNull().default('0'),
+    totalGiven: numeric('total_given', { precision: 16, scale: 2 }).notNull().default('0'),
+    inDegree: integer('in_degree').notNull().default(0),
+    outDegree: integer('out_degree').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.entityId, t.electionCycle] }),
+    index('entity_cycle_totals_cycle_idx').on(t.electionCycle),
   ],
 );
 

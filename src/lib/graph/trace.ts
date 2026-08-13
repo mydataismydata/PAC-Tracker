@@ -23,6 +23,7 @@
 
 import { sql } from 'drizzle-orm';
 import type { db as Database } from '@/db';
+import { derivedCycleSql } from '@/lib/cycles';
 
 type Db = typeof Database;
 
@@ -50,6 +51,13 @@ export interface TraceOptions {
    * coincidence of totals.
    */
   dateOrdered?: boolean;
+  /**
+   * Restrict to one election cycle.
+   *
+   * A trace is a question about an election, so mixing cycles answers the
+   * wrong one: money raised for 2024 did not fund a 2026 transfer.
+   */
+  cycle?: string;
 }
 
 export interface TracedSource {
@@ -91,6 +99,8 @@ export interface TraceResult {
   hops: number;
   dateOrdered: boolean;
   truncated: boolean;
+  /** Null when every cycle is included. */
+  cycle: string | null;
 }
 
 interface Parcel {
@@ -117,6 +127,7 @@ export async function trace(
   const maxDepth = opts.maxDepth ?? 12;
   const minDollars = opts.minDollars ?? 100;
   const dateOrdered = opts.dateOrdered ?? true;
+  const cycle = opts.cycle;
 
   const [seed] = await db.execute<{
     id: string;
@@ -125,8 +136,17 @@ export async function trace(
     received: string;
     in_degree: number;
   }>(sql`
-    SELECT id, name, kind::text AS kind, total_received::text AS received, in_degree
-    FROM entities WHERE id = ${seedId}
+    SELECT e.id, e.name, e.kind::text AS kind,
+           ${cycle
+             ? sql`COALESCE(ct.total_received, 0)::text AS received,
+                   COALESCE(ct.in_degree, 0) AS in_degree`
+             : sql`e.total_received::text AS received, e.in_degree`}
+    FROM entities e
+    ${cycle
+      ? sql`LEFT JOIN entity_cycle_totals ct
+              ON ct.entity_id = e.id AND ct.election_cycle = ${cycle}`
+      : sql``}
+    WHERE e.id = ${seedId}
   `);
   if (!seed) throw new Error(`no entity ${seedId}`);
 
@@ -142,7 +162,11 @@ export async function trace(
 
   for (let depth = 1; depth <= maxDepth && parcels.length > 0; depth++) {
     hops = depth;
-    const inbound = await inboundByRecipient(db, [...new Set(parcels.map((p) => p.entityId))]);
+    const inbound = await inboundByRecipient(
+      db,
+      [...new Set(parcels.map((p) => p.entityId))],
+      cycle,
+    );
     const next = new Map<string, Parcel>();
 
     for (const parcel of parcels) {
@@ -216,6 +240,7 @@ export async function trace(
       .sort((a, b) => b.amount - a.amount);
 
   return {
+    cycle: cycle ?? null,
     injectionPoints: toList(injections).map((p) => ({ ...p, funders: funders.get(p.id) ?? [] })),
     seed: {
       id: seed.id,
@@ -239,7 +264,12 @@ export async function trace(
  * Grouping by date keeps the ordering information the attribution needs while
  * cutting the row count for conduits with large small-donor bases.
  */
-async function inboundByRecipient(db: Db, ids: string[]): Promise<Map<string, InboundRow[]>> {
+async function inboundByRecipient(
+  db: Db,
+  ids: string[],
+  cycle?: string,
+): Promise<Map<string, InboundRow[]>> {
+  const cyc = cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``;
   const rows = await db.execute<InboundRow>(sql`
     SELECT t.to_entity_id AS to_id,
            t.from_entity_id AS from_id,
@@ -252,6 +282,7 @@ async function inboundByRecipient(db: Db, ids: string[]): Promise<Map<string, In
      WHERE t.to_entity_id = ANY(${sql.param(ids)}::uuid[])
        AND t.direction = 'contribution'
        AND t.from_entity_id IS NOT NULL
+       ${cyc}
      GROUP BY 1, 2, 3, 4, 5
   `);
   const out = new Map<string, InboundRow[]>();

@@ -64,6 +64,9 @@ export default function Home() {
       direction: (q.get('direction') as CrawlSettings['direction']) ?? prev.direction,
       linkMode: (q.get('linkMode') as CrawlSettings['linkMode']) ?? prev.linkMode,
       minAmount: q.has('minAmount') ? Number(q.get('minAmount')) : prev.minAmount,
+      // An explicit `cycle=` of empty string means "all cycles", which is
+      // different from the parameter being absent.
+      cycle: q.has('cycle') ? q.get('cycle') || undefined : prev.cycle,
     }));
 
     // The link carries only an id, so fetch the entity to label the header.
@@ -98,6 +101,7 @@ export default function Home() {
       linkMode: settings.linkMode,
     });
     if (settings.minAmount != null) q.set('minAmount', String(settings.minAmount));
+    q.set('cycle', settings.cycle ?? '');
     window.history.replaceState(null, '', `?${q}`);
   }, [seed, settings, startCrawl]);
 
@@ -386,6 +390,7 @@ export default function Home() {
             nodes={crawl.nodes}
             onFocus={handleFocusEntity}
             onRecenter={handleRecenter}
+            cycle={settings.cycle}
           />
         </aside>
       </div>

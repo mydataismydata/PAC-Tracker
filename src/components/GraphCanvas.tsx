@@ -118,6 +118,24 @@ interface Props {
   selectedId?: string | null;
 }
 
+/**
+ * The money line under a tile's name.
+ *
+ * Shared by the add and update paths: totals change when the cycle filter
+ * changes, so a node that survives the switch has to be relabelled with the
+ * same rule it was first drawn with.
+ */
+function tileLabel(n: GraphNode): string {
+  const received = Number(n.totalReceived);
+  const given = Number(n.totalGiven);
+  if (received > 0 && given > 0) {
+    return `in ${formatMoney(received)} · out ${formatMoney(given)}`;
+  }
+  if (received > 0) return `in ${formatMoney(received)}`;
+  if (given > 0) return `out ${formatMoney(given)}`;
+  return '';
+}
+
 export default function GraphCanvas({
   nodes,
   edges,
@@ -317,6 +335,26 @@ export default function GraphCanvas({
     const nodeDefs: ElementDefinition[] = [];
     const edgeDefs: ElementDefinition[] = [];
 
+    // The hook resets its maps when a crawl restarts, so `nodes` and `edges`
+    // are the whole truth for the current crawl, not a delta. Anything on the
+    // canvas that is missing from them belongs to a superseded graph: changing
+    // the cycle used to leave the previous cycle's tiles sitting underneath the
+    // new ones.
+    const stale = cy.elements().filter((el) => {
+      const id = el.id();
+      return el.isNode() ? !nodes.has(id) : !edges.has(id);
+    });
+    if (stale.nonempty()) cy.remove(stale);
+
+    // Totals are cycle-dependent, so a node that survives the change still
+    // needs its label rewritten.
+    for (const n of nodes.values()) {
+      const el = cy.getElementById(n.id);
+      if (el.empty()) continue;
+      const label = tileLabel(n);
+      if (el.data('label') !== label) el.data({ label, entity: n });
+    }
+
     // Cytoscape drops every positionless node at (0,0). A force layout started
     // from identical coordinates has no gradient to push against, so the whole
     // level stays welded into one pile. Seed each newcomer on a ring around the
@@ -331,16 +369,7 @@ export default function GraphCanvas({
 
     for (const n of nodes.values()) {
       if (cy.getElementById(n.id).nonempty()) continue;
-      const received = Number(n.totalReceived);
-      const given = Number(n.totalGiven);
-      const moneyLine =
-        received > 0 && given > 0
-          ? `in ${formatMoney(received)} · out ${formatMoney(given)}`
-          : received > 0
-            ? `in ${formatMoney(received)}`
-            : given > 0
-              ? `out ${formatMoney(given)}`
-              : '';
+      const moneyLine = tileLabel(n);
 
       nodeDefs.push({
         group: 'nodes',
