@@ -36,8 +36,11 @@ export interface LedgerTransactionRow {
   flow: 'in' | 'out';
   txn_type_code: string | null;
   description: string | null;
+  /** Contributor's street address as reported; recipients have none. */
+  address: string | null;
   city: string | null;
   state_code: string | null;
+  zip: string | null;
   occupation: string | null;
   source_key: string | null;
 }
