@@ -19,6 +19,33 @@ State-level races plus every state-registered committee. See the root README for
 contract. Rate-limited and serialized; the upstream is a single SQL Server box behind
 Cloudflare.
 
+```bash
+pnpm ingest cycle 20261103-GEN   # whole cycle, every committee and candidate
+pnpm ingest committee "<name>"   # one neighbourhood, then `expand` outward
+```
+
+`sweepCycle()` exists because the obvious approach does not work. The row limit is 32767
+(Int16 — the `maxlength=5` on the form is misleading), and a larger result set is
+**truncated with no error**: you get exactly the cap and nothing says more existed.
+
+Results come back date-ordered, which is what makes recovery possible: a truncated
+response still reports how far it reached, so the next request resumes from its last
+date. That is a cursor walk, not a binary search over windows — worth the distinction,
+because each probe is a multi-megabyte response from a slow origin, and splitting blindly
+discards one maximal fetch per level of recursion. The cursor resumes *on* the last date
+rather than the day after, since the cut can fall mid-day; the re-fetched day collapses on
+its row hash, whereas skipping it would lose whatever sat past the cut.
+
+Some single days exceed the cap by themselves — quarter-end filing dates carry a
+disproportionate share of the cycle, and 2025-03-31 has over 32767 contributions of $100
+or less alone. Those fall back to bisecting the day on contribution amount, the only other
+range filter the form offers. The midpoint is **geometric**: donations are heavy-tailed,
+so halving the range would spend twenty requests descending from $100M before reaching the
+crowded end.
+
+Whatever still cannot be split is reported by the CLI rather than swallowed — a silently
+short window is indistinguishable from real coverage once it is in the graph.
+
 ### `voterfocus-<county>` — county Supervisors of Elections
 
 Covers the county tier: county commission, school board, city commission, and special

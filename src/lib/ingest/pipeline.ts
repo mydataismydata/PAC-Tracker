@@ -165,6 +165,7 @@ export async function ingestContributionRows(
           fromState: row.state,
           fromZip: row.zip,
           fromOccupation: row.occupation,
+          electionCycle: row.electionCycle,
           sourceId: ctx.sourceId,
           sourceRowHash: row.rowHash,
           fromConfidence: contributor.confidence,
