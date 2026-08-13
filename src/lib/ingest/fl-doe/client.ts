@@ -10,7 +10,8 @@
  *   - A `Referer` from the search page is required; without it Cloudflare 502s.
  *   - `csort1` must be non-empty or the CGI emits a bare `ORDER BY` and returns
  *     a SQL Server syntax error inside an HTTP 200 body.
- *   - `rowlimit` is `maxlength=5`, so 99999 is the ceiling.
+ *   - `rowlimit` is `maxlength=5` but parsed as Int16, so 32767 is the real
+ *     ceiling; 32768 overflows instantly.
  *   - `queryformat=2` switches the response from HTML to tab-delimited text.
  */
 
@@ -28,8 +29,16 @@ const REFERERS: Record<keyof typeof FLDOE_ENDPOINTS, string> = {
   committeeLookup: `${BASE}/committees/`,
 };
 
-/** Maximum value the `rowlimit` field accepts (it is maxlength=5). */
-export const MAX_ROW_LIMIT = 99999;
+/**
+ * Maximum value the `rowlimit` field actually accepts.
+ *
+ * The input is `maxlength=5`, which suggests 99999, but the CGI parses the
+ * value into a 16-bit signed integer: anything above 32767 comes back as
+ * "Overflow Error Number = 6" before the query even runs. The HTML attribute
+ * is a lie, and the failure is instant rather than load-related, so it is easy
+ * to misread as the service being down.
+ */
+export const MAX_ROW_LIMIT = 32767;
 
 /**
  * What the user wants back. These map to the `search_on` radio, whose values

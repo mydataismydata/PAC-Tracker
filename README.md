@@ -98,6 +98,17 @@ The [campaign finance database](https://dos.elections.myflorida.com/campaign-fin
 covers **state-level races and every state-registered committee** (PAC, CCE, ECO, ECI,
 IXO, PAP, PTY), back to 1996.
 
+A whole cycle can be pulled in one command, because a blank name returns every filer:
+
+```bash
+pnpm ingest cycle 20261103-GEN
+```
+
+Florida files an entire cycle under its **general-election id** — there is no separate
+primary key — so `20261103-GEN` covers the 2026 primary too. The sweep walks date
+windows, halving any window that comes back at the row cap, and reports windows it could
+not fetch completely rather than quietly returning short.
+
 There is no API. The adapter drives the same CGI endpoints the public search form uses:
 
 | Endpoint | Purpose |
@@ -112,7 +123,15 @@ Contract details that are not obvious and cost real time to rediscover:
   answers `502`.
 - `csort1` must be non-empty, or the CGI emits a bare `ORDER BY` and returns a SQL Server
   syntax error **inside an HTTP 200 body**.
-- `rowlimit` is `maxlength=5`, so `99999` is the ceiling.
+- `rowlimit` is `maxlength=5`, but the CGI parses it as a 16-bit signed integer:
+  **32767 is the real ceiling** and 32768 returns `Overflow Error Number = 6`
+  instantly, before the query runs.
+- Leaving the candidate/committee name blank is *not* an error here (unlike the
+  registry lookup) — it returns the whole cycle, which is what makes a full
+  sweep affordable.
+- A result set larger than the row limit is **truncated silently**: you get
+  exactly `rowlimit` rows and no indication more existed. Any window that comes
+  back at the cap has to be split and retried, never trusted.
 - `search_on` doubles as both the mode selector and the "what would you like to know?"
   choice: `1` contributor list, `2` candidate list, `3` candidate totals, `4` committee
   list, `5` committee totals.
@@ -210,6 +229,7 @@ single $1.25M edge rather than five.
 
 | Command | Description |
 | --- | --- |
+| `pnpm ingest cycle <electionId>` | Sweep a whole state cycle — every committee and candidate. |
 | `pnpm ingest registry` | Sweep the state committee registry A–Z (~7,600 committees). |
 | `pnpm ingest counties` | List supported VoterFocus counties. |
 | `pnpm ingest county <slug>` | Sweep every candidate and committee in a county. |

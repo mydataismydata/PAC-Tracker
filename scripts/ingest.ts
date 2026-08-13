@@ -5,6 +5,8 @@
  *   pnpm ingest committee "Florida Chamber"      # money into matching committees
  *   pnpm ingest contributor "SECURE FLORIDA"     # money out of a contributor
  *   pnpm ingest candidate  "DeSantis"            # money into a candidate
+ *   pnpm ingest cycle 20261103-GEN               # sweep a whole state election cycle
+ *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
  *   pnpm ingest county stjohns                   # sweep a county (VoterFocus)
  *   pnpm ingest counties                         # list supported counties
@@ -103,6 +105,11 @@ async function main() {
 
   if (mode === 'county') {
     await ingestCounty(term || 'stjohns', flags.election);
+    process.exit(0);
+  }
+
+  if (mode === 'cycle') {
+    await ingestCycle(term || election, fl, { sourceId, jurisdictionId }, resolver);
     process.exit(0);
   }
 
@@ -215,6 +222,93 @@ async function expand(
       }
     }
   }
+  await summarize();
+}
+
+/**
+ * Sweep an entire state election cycle — every committee and every candidate.
+ *
+ * This is the broad alternative to seeding on a name and expanding outward: it
+ * covers the whole cycle rather than one neighbourhood of it, and it costs tens
+ * of requests rather than thousands, because the CGI accepts a blank name.
+ *
+ * Each window is persisted as it arrives, so an interrupted sweep keeps what it
+ * already fetched and can be re-run without duplicating rows.
+ */
+async function ingestCycle(
+  electionId: string,
+  fl: FlDoeAdapter,
+  ctx: { sourceId: string; jurisdictionId: string },
+  resolver: EntityResolver,
+) {
+  // Florida files a whole cycle under its general-election id, so the window
+  // has to reach back past the previous general to catch early money.
+  const from = flags.from ?? '2024-11-01';
+  const to = flags.to ?? new Date().toISOString().slice(0, 10);
+
+  const runId = await startRun(db, ctx.sourceId, { mode: 'cycle', election: electionId, from, to });
+  console.log(`\nSweeping ${electionId} from ${from} to ${to}…`);
+
+  let totalRows = 0;
+  let totalInserted = 0;
+  let totalCreated = 0;
+  const truncated: string[] = [];
+  const failed: string[] = [];
+
+  // Scoping to one universe makes a long sweep resumable: the two are
+  // independent walks, so an interrupted run resumes without redoing the other.
+  const scopes = (
+    flags.scope ? [flags.scope as 'committee' | 'candidate'] : ['committee', 'candidate']
+  ) as Array<'committee' | 'candidate'>;
+
+  try {
+    for (const scope of scopes) {
+      console.log(`\n=== ${scope}s ===`);
+      const sweep = fl.sweepCycle(scope, {
+        election: electionId,
+        from,
+        to,
+        minAmount,
+        onWindow: (w) => {
+          if (w.action === 'truncated') {
+            const detail = w.error ? ` (${w.error})` : '';
+            truncated.push(`${scope} ${w.from}${detail}`);
+            console.log(`  ${w.from}  ${w.rows} rows — TRUNCATED${detail}`);
+          } else if (w.action === 'failed') {
+            failed.push(`${scope} ${w.from}..${w.to}: ${w.error?.slice(0, 80)}`);
+            console.log(`  ${w.from}..${w.to}  FAILED`);
+          }
+        },
+      });
+
+      for await (const win of sweep) {
+        const res = await ingestContributionRows(db, win.rows, { ...ctx, resolver });
+        totalRows += win.rows.length;
+        totalInserted += res.rowsInserted;
+        totalCreated += res.entitiesCreated;
+        console.log(
+          `  ${win.from}..${win.to}  ${String(win.rows.length).padStart(6)} rows -> ` +
+            `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes`,
+        );
+      }
+    }
+    await finishRun(db, runId, { rowsFetched: totalRows, rowsInserted: totalInserted });
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
+
+  console.log(
+    `\n  ${totalRows} rows fetched, ${totalInserted} new transactions, ${totalCreated} new entities`,
+  );
+  // Coverage gaps are worth more than a clean-looking summary — a silently
+  // truncated window looks identical to a complete one downstream.
+  if (truncated.length > 0) console.log(`  INCOMPLETE windows: ${truncated.join(', ')}`);
+  if (failed.length > 0) console.log(`  FAILED windows: ${failed.join('; ')}`);
+
+  console.log('\nRebuilding rollups…');
+  const counts = await rebuildAll(db);
+  console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
   await summarize();
 }
 
