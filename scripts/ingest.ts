@@ -110,6 +110,13 @@ async function main() {
   }
 
   if (mode === 'county') {
+    // Flags are `--key=value`; a space-separated `--election 33` parses as the
+    // boolean true and would otherwise sweep the default cycle without a word,
+    // which looks exactly like success.
+    if (flags.election === 'true') {
+      console.error('use --election=<id> (with the equals sign), e.g. --election=33');
+      process.exit(1);
+    }
     if (flags.all === 'true') await ingestCountyHistory(term || 'stjohns');
     else await ingestCounty(term || 'stjohns', flags.election);
     process.exit(0);
@@ -509,6 +516,7 @@ async function ingestCounty(slug: string, electionId?: string) {
 
   let totalRows = 0;
   let totalInserted = 0;
+  let totalRepaired = 0;
   let totalCreated = 0;
   let withData = 0;
 
@@ -523,11 +531,14 @@ async function ingestCounty(slug: string, electionId?: string) {
       );
       totalRows += rows.length;
       totalInserted += res.rowsInserted;
+      totalRepaired += res.rowsRepaired;
       totalCreated += res.entitiesCreated;
       console.log(
         `  ${(entity.isCommittee ? '[C] ' : '    ') + entity.name.slice(0, 36).padEnd(38)}` +
           `${String(rows.length).padStart(4)} rows -> +${res.rowsInserted} txns, ` +
-          `+${res.entitiesCreated} nodes${entity.office ? `  · ${entity.office.slice(0, 28)}` : ''}`,
+          `+${res.entitiesCreated} nodes` +
+          `${res.rowsRepaired ? `, ${res.rowsRepaired} cycled` : ''}` +
+          `${entity.office ? `  · ${entity.office.slice(0, 28)}` : ''}`,
       );
     }
     await finishRun(db, runId, { rowsFetched: totalRows, rowsInserted: totalInserted });
@@ -538,7 +549,8 @@ async function ingestCounty(slug: string, electionId?: string) {
 
   console.log(
     `\n  ${withData} filers with data, ${totalRows} rows, ` +
-      `${totalInserted} new transactions, ${totalCreated} new entities`,
+      `${totalInserted} new transactions, ${totalCreated} new entities` +
+      `${totalRepaired ? `, ${totalRepaired} back-labelled with their cycle` : ''}`,
   );
   await summarize();
 }

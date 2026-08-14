@@ -367,9 +367,28 @@ function normalizeDate(value: string): string | null {
   return null;
 }
 
+/**
+ * Earliest date any of this data could plausibly carry.
+ *
+ * The portals hold modern electronic filings — the oldest real row seen is 2003
+ * — so anything earlier is a placeholder rather than history. The one that
+ * actually occurs is Unix epoch zero rendered in Eastern time, `12/31/1969`,
+ * which Duval's Republican Executive Committee emitted on 60 undated
+ * expenditures. Unlike `0000-00-00` it parses cleanly, so only the floor
+ * catches it.
+ */
+const EARLIEST_PLAUSIBLE_YEAR = 1990;
+
 /** ISO string for a real calendar date, or null. Rejects 0000-00-00, Feb 30, … */
 function validDate(year: number, month: number, day: number): string | null {
-  if (year < 1800 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) {
+  if (
+    year < EARLIEST_PLAUSIBLE_YEAR ||
+    year > 2200 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
     return null;
   }
   const d = new Date(Date.UTC(year, month - 1, day));
