@@ -310,6 +310,7 @@ single $1.25M edge rather than five.
 | `pnpm ingest contributor "<name>"` | Contributions *out of* a contributor. |
 | `pnpm ingest candidate "<last>"` | Contributions into a candidate. |
 | `pnpm ingest spending "<name>"` | Expenditures *out of* a state committee (add `--candidate` for a candidate). |
+| `pnpm ingest spending-cycle <electionId>` | Sweep a whole cycle's expenditures. |
 | `pnpm ingest expand <rounds>` | Grow the frontier outward automatically. |
 | `pnpm ingest rebuild` | Recompute all rollups and totals. |
 | `pnpm ingest purge <source-key>` | Drop everything one source contributed, to re-ingest it cleanly. |
@@ -341,13 +342,15 @@ county school board race with no special handling — a crawl walks straight thr
   with no matching general — fall back to the cycle their date lands in. That is an
   approximation at the boundaries, but excluding them from every filter would make those
   races vanish from a filtered graph, which is worse.
-- **State expenditures are loaded per filer, not swept.** The contribution feed covers
-  every state committee; the expenditure feed is fetched one committee or candidate at a
-  time with `pnpm ingest spending "<name>"`. Until a filer has been fetched that way, its
-  spending is absent — money appears to arrive and never leave. Transfers *between*
-  committees are unaffected, since the recipient reports those as contributions; what is
-  missing is payments to vendors, consultants and media buyers, which only ever appear on
-  the payer's own report.
+- **State expenditures are loaded for 2024 and 2026 only.** Earlier cycles have none, so
+  a committee active before 2023 will show money arriving and never leaving. Sweep another
+  cycle with `pnpm ingest spending-cycle <electionId> --from=… --to=…`.
+- **Committee-to-committee transfers are stored once, from the recipient's filing.** Both
+  parties report the same money — the payer as an expenditure, the recipient as a
+  contribution — and the ingest drops the payer's copy. A committee's expenditure ledger
+  is therefore its *vendor* spending; its transfers to other committees appear as
+  contributions on the receiving side. Self-loops are exempt, since a candidate
+  reimbursing their own campaign genuinely files both halves.
 - **Entity resolution is not scoped by county, and generic office names collapse across
   them.** Every county has a "Republican Executive Committee", a "Democratic Executive
   Committee" and a "Supervisor of Elections", and the counties file under exactly those
@@ -363,6 +366,14 @@ county school board race with no special handling — a crawl walks straight thr
   short silently. Quarter-end filing dates are where this bites: they can exceed the
   service's row cap within a single day, and are recovered by subdividing on contributor
   name and amount.
+- **Truncation is measured in lines delivered, not rows parsed.** The exports drop a
+  variable number of lines to malformed content — 3 in one response, 273 in another — so a
+  reply cut off at exactly the 32,767-row cap can yield far fewer usable rows and look
+  like a short, and therefore final, window. A sweep that makes this mistake stops early
+  and reports success: one 2026 candidate walk silently lost every row after 2026-05-31.
+  Trust a sweep's own summary only as far as a re-fetch confirms it — compare row hashes
+  from the live feed against the database, and expect deliberate absences from the
+  mirror guard and the cycle-end cutoff.
 - Entity resolution is good, not perfect. `FLORIDA CHAMBER PAC` and `Florida Chamber of
   Commerce PAC` are almost certainly the same organization but score 0.767 and remain
   separate pending review.

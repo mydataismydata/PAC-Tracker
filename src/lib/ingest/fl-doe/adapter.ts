@@ -292,7 +292,7 @@ export class FlDoeAdapter {
     from: string,
     to: string,
     opts: FetchOptions,
-  ): Promise<RawContributionRow[]> {
+  ): Promise<{ rows: RawContributionRow[]; dataLines: number }> {
     const text = await this.client.post('contributions', {
       ...baseForm({ ...opts, dateFrom: from, dateTo: to, rowLimit: MAX_ROW_LIMIT }),
       search_on: mode === 'committee' ? SEARCH_ON.committeeList : SEARCH_ON.candidateList,
@@ -300,7 +300,10 @@ export class FlDoeAdapter {
       // rather than scattering it across the whole date range.
       csort1: SORT.dateAsc,
     });
-    return parseContributionTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
+    const { rows, dataLines } = parseContributionTsv(text, {
+      electionCycle: opts.election ?? ELECTION_ALL,
+    });
+    return { rows, dataLines };
   }
 
   /**
@@ -334,8 +337,14 @@ export class FlDoeAdapter {
 
     while (cursor <= opts.to) {
       let rows: RawContributionRow[];
+      let dataLines: number;
       try {
-        rows = await this.contributionsInWindow(mode, toUsDate(cursor), toUsDate(opts.to), opts);
+        ({ rows, dataLines } = await this.contributionsInWindow(
+          mode,
+          toUsDate(cursor),
+          toUsDate(opts.to),
+          opts,
+        ));
       } catch (err) {
         opts.onWindow?.({
           mode,
@@ -348,7 +357,7 @@ export class FlDoeAdapter {
         return;
       }
 
-      const truncated = rows.length >= MAX_ROW_LIMIT - TRUNCATION_MARGIN;
+      const truncated = dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN;
       if (!truncated) {
         opts.onWindow?.({ mode, from: cursor, to: opts.to, rows: rows.length, action: 'ok' });
         if (rows.length > 0) yield { mode, from: cursor, to: opts.to, rows };
@@ -398,11 +407,12 @@ export class FlDoeAdapter {
 
     for (const prefix of NAME_PREFIXES) {
       let rows: RawContributionRow[];
+      let dataLines: number;
       try {
-        rows = await this.contributionsInWindow(mode, us, us, {
+        ({ rows, dataLines } = await this.contributionsInWindow(mode, us, us, {
           ...opts,
           contributorPrefix: prefix,
-        });
+        }));
       } catch (err) {
         opts.onWindow?.({
           mode,
@@ -415,7 +425,7 @@ export class FlDoeAdapter {
         continue;
       }
 
-      if (rows.length >= MAX_ROW_LIMIT - TRUNCATION_MARGIN) {
+      if (dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN) {
         // Still too big for one prefix: cut it by amount as well.
         yield* this.sweepDayByAmount(mode, date, { ...opts, contributorPrefix: prefix });
         continue;
@@ -454,12 +464,13 @@ export class FlDoeAdapter {
     while (stack.length > 0) {
       const [lo, hi] = stack.pop()!;
       let rows: RawContributionRow[];
+      let dataLines: number;
       try {
-        rows = await this.contributionsInWindow(mode, us, us, {
+        ({ rows, dataLines } = await this.contributionsInWindow(mode, us, us, {
           ...opts,
           minAmount: lo / 100,
           maxAmount: hi / 100,
-        });
+        }));
       } catch (err) {
         opts.onWindow?.({
           mode,
@@ -472,7 +483,7 @@ export class FlDoeAdapter {
         continue;
       }
 
-      if (rows.length >= MAX_ROW_LIMIT - TRUNCATION_MARGIN && hi - lo > 1) {
+      if (dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN && hi - lo > 1) {
         // Geometric midpoint, clamped so it always lands strictly inside the
         // band — otherwise a band like [0, 1] would keep splitting into itself.
         const mid = Math.min(hi - 1, Math.max(lo + 1, Math.round(Math.sqrt(Math.max(lo, 1) * hi))));
@@ -481,6 +492,197 @@ export class FlDoeAdapter {
       }
 
       const stuck = rows.length >= MAX_ROW_LIMIT - TRUNCATION_MARGIN;
+      opts.onWindow?.({
+        mode,
+        from: date,
+        to: date,
+        rows: rows.length,
+        action: stuck ? 'truncated' : 'ok',
+        error: stuck ? `$${lo / 100}–$${hi / 100} exceeds the row cap` : undefined,
+      });
+      if (rows.length > 0) yield { mode, from: date, to: date, rows };
+    }
+  }
+
+  /**
+   * One expenditure window.
+   *
+   * `to` is nullable, and that is the whole trick. `expend.exe` rejects any
+   * date range spanning more than a single day — "Invalid Date Range Entered",
+   * even for a two-day span — while an open-ended `cdatefrom` with no `cdateto`
+   * is accepted and returns everything from that date onward. So the cursor
+   * walk runs open-ended and only pins `to` when it has to isolate one day.
+   */
+  private async expendituresInWindow(
+    mode: BroadMode,
+    from: string,
+    to: string | null,
+    opts: FetchOptions,
+  ): Promise<{ rows: RawTransactionRow[]; dataLines: number }> {
+    const form = baseExpenditureForm({ ...opts, dateFrom: from, rowLimit: MAX_ROW_LIMIT });
+    if (to === null) delete form.cdateto;
+    else form.cdateto = to;
+
+    const text = await this.client.post('expenditures', {
+      ...form,
+      search_on: mode === 'committee' ? SEARCH_ON.committeeList : SEARCH_ON.candidateList,
+      csort1: SORT.dateAsc,
+    });
+    const { rows, dataLines } = parseExpenditureTsv(text, {
+      electionCycle: opts.election ?? ELECTION_ALL,
+    });
+    return { rows, dataLines };
+  }
+
+  /**
+   * Sweep a cycle's expenditures by walking a date cursor forward.
+   *
+   * Same shape as `sweepCycle`, and for the same reason: the CGI truncates
+   * silently at `rowlimit`, but sorts by date, so a full response still says
+   * how far it got. The difference is that no end date is sent — see
+   * `expendituresInWindow` — which means the walk must stop itself once the
+   * cursor passes `to` rather than relying on the query to bound it.
+   */
+  async *sweepExpenditureCycle(
+    mode: BroadMode,
+    opts: FetchOptions & {
+      from: string;
+      to: string;
+      onWindow?: (info: CycleWindowInfo) => void;
+    },
+  ): AsyncGenerator<{ mode: BroadMode; from: string; to: string; rows: RawTransactionRow[] }> {
+    let cursor = opts.from;
+
+    while (cursor <= opts.to) {
+      let rows: RawTransactionRow[];
+      let dataLines: number;
+      try {
+        ({ rows, dataLines } = await this.expendituresInWindow(
+          mode,
+          toUsDate(cursor),
+          null,
+          opts,
+        ));
+      } catch (err) {
+        opts.onWindow?.({
+          mode,
+          from: cursor,
+          to: opts.to,
+          rows: 0,
+          action: 'failed',
+          error: String(err),
+        });
+        return;
+      }
+
+      // An open-ended query runs past the end of the cycle, so trim before
+      // yielding — otherwise a 2024 sweep would book 2026 filings.
+      const inRange = rows.filter((r) => r.date !== null && r.date <= opts.to);
+      const truncated = dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN;
+
+      if (!truncated) {
+        opts.onWindow?.({ mode, from: cursor, to: opts.to, rows: inRange.length, action: 'ok' });
+        if (inRange.length > 0) yield { mode, from: cursor, to: opts.to, rows: inRange };
+        return;
+      }
+
+      const lastDate = rows.reduce<string | null>(
+        (max, r) => (r.date && (max === null || r.date > max) ? r.date : max),
+        null,
+      );
+
+      if (lastDate === null || lastDate <= cursor) {
+        yield* this.sweepStuckExpenditureDay(mode, cursor, opts);
+        cursor = addDays(cursor, 1);
+        continue;
+      }
+
+      opts.onWindow?.({ mode, from: cursor, to: lastDate, rows: inRange.length, action: 'advance' });
+      if (inRange.length > 0) yield { mode, from: cursor, to: lastDate, rows: inRange };
+      cursor = lastDate;
+    }
+  }
+
+  /**
+   * Recover a single expenditure day that exceeds the row cap.
+   *
+   * Isolating one day is the only multi-field date query the CGI allows, since
+   * `from` and `to` may be equal. Payee-name prefix is the first cut, matching
+   * the contribution side; amount is the fallback for prefixes still too large.
+   */
+  private async *sweepStuckExpenditureDay(
+    mode: BroadMode,
+    date: string,
+    opts: FetchOptions & { onWindow?: (info: CycleWindowInfo) => void },
+  ): AsyncGenerator<{ mode: BroadMode; from: string; to: string; rows: RawTransactionRow[] }> {
+    const us = toUsDate(date);
+
+    for (const prefix of NAME_PREFIXES) {
+      let rows: RawTransactionRow[];
+      let dataLines: number;
+      try {
+        ({ rows, dataLines } = await this.expendituresInWindow(mode, us, us, {
+          ...opts,
+          contributorPrefix: prefix,
+        }));
+      } catch (err) {
+        opts.onWindow?.({
+          mode,
+          from: date,
+          to: date,
+          rows: 0,
+          action: 'failed',
+          error: `prefix "${prefix}": ${String(err)}`,
+        });
+        continue;
+      }
+
+      if (dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN) {
+        yield* this.sweepExpenditureDayByAmount(mode, date, { ...opts, contributorPrefix: prefix });
+        continue;
+      }
+      if (rows.length > 0) yield { mode, from: date, to: date, rows };
+    }
+  }
+
+  /** Bisect one expenditure day on amount; geometric, as for contributions. */
+  private async *sweepExpenditureDayByAmount(
+    mode: BroadMode,
+    date: string,
+    opts: FetchOptions & { onWindow?: (info: CycleWindowInfo) => void },
+  ): AsyncGenerator<{ mode: BroadMode; from: string; to: string; rows: RawTransactionRow[] }> {
+    const stack: Array<[number, number]> = [[0, 100_000_000_00]];
+    const us = toUsDate(date);
+
+    while (stack.length > 0) {
+      const [lo, hi] = stack.pop()!;
+      let rows: RawTransactionRow[];
+      let dataLines: number;
+      try {
+        ({ rows, dataLines } = await this.expendituresInWindow(mode, us, us, {
+          ...opts,
+          minAmount: lo / 100,
+          maxAmount: hi / 100,
+        }));
+      } catch (err) {
+        opts.onWindow?.({
+          mode,
+          from: date,
+          to: date,
+          rows: 0,
+          action: 'failed',
+          error: `$${lo / 100}–$${hi / 100}: ${String(err)}`,
+        });
+        continue;
+      }
+
+      if (dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN && hi - lo > 1) {
+        const mid = Math.min(hi - 1, Math.max(lo + 1, Math.round(Math.sqrt(Math.max(lo, 1) * hi))));
+        stack.push([mid, hi], [lo, mid]);
+        continue;
+      }
+
+      const stuck = dataLines >= MAX_ROW_LIMIT - TRUNCATION_MARGIN;
       opts.onWindow?.({
         mode,
         from: date,

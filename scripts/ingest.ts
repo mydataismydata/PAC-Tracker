@@ -7,6 +7,8 @@
  *   pnpm ingest candidate  "DeSantis"            # money into a candidate
  *   pnpm ingest spending "St. Johns Neighborhood Coalition"  # money OUT (expenditures)
  *     --candidate                                  (look the name up as a candidate)
+ *   pnpm ingest spending-cycle 20241105-GEN      # sweep a cycle's expenditures
+ *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest cycle 20261103-GEN               # sweep a whole state election cycle
  *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
@@ -108,6 +110,11 @@ async function main() {
         .where(eq(entities.id, r.entityId));
     }
     console.log(`\n${committees.length} committees in registry, ${created} new entities.`);
+    process.exit(0);
+  }
+
+  if (mode === 'spending-cycle') {
+    await ingestSpendingCycle(term || election, fl, { sourceId, jurisdictionId }, resolver);
     process.exit(0);
   }
 
@@ -450,6 +457,94 @@ async function ingestIrsOrg(slug: string) {
   console.log('\nRebuilding rollups…');
   const counts = await rebuildAll(db);
   console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
+}
+
+/**
+ * Sweep a whole cycle's expenditures.
+ *
+ * Mirrors `ingestCycle`, and shares its resumability: the committee and
+ * candidate universes are independent walks, so `--scope` restarts one without
+ * redoing the other.
+ */
+async function ingestSpendingCycle(
+  electionId: string,
+  fl: FlDoeAdapter,
+  ctx: { sourceId: string; jurisdictionId: string },
+  resolver: EntityResolver,
+) {
+  const from = flags.from ?? '2022-11-09';
+  const to = flags.to ?? new Date().toISOString().slice(0, 10);
+
+  const runId = await startRun(db, ctx.sourceId, {
+    mode: 'spending-cycle',
+    election: electionId,
+    from,
+    to,
+  });
+  console.log(`\nSweeping ${electionId} EXPENDITURES from ${from} to ${to}…`);
+
+  let totalRows = 0;
+  let totalInserted = 0;
+  let totalMirrored = 0;
+  let totalCreated = 0;
+  const truncated: string[] = [];
+  const failed: string[] = [];
+
+  const scopes = (
+    flags.scope ? [flags.scope as 'committee' | 'candidate'] : ['committee', 'candidate']
+  ) as Array<'committee' | 'candidate'>;
+
+  try {
+    for (const scope of scopes) {
+      console.log(`\n=== ${scope}s ===`);
+      const sweep = fl.sweepExpenditureCycle(scope, {
+        election: electionId,
+        from,
+        to,
+        minAmount,
+        onWindow: (w) => {
+          if (w.action === 'truncated') {
+            const detail = w.error ? ` (${w.error})` : '';
+            truncated.push(`${scope} ${w.from}${detail}`);
+            console.log(`  ${w.from}  ${w.rows} rows — TRUNCATED${detail}`);
+          } else if (w.action === 'failed') {
+            failed.push(`${scope} ${w.from}..${w.to}: ${w.error?.slice(0, 80)}`);
+            console.log(`  ${w.from}..${w.to}  FAILED`);
+          }
+        },
+      });
+
+      for await (const win of sweep) {
+        const res = await ingestTransactionRows(db, win.rows, { ...ctx, resolver });
+        totalRows += win.rows.length;
+        totalInserted += res.rowsInserted;
+        totalMirrored += res.rowsMirrored;
+        totalCreated += res.entitiesCreated;
+        console.log(
+          `  ${win.from}..${win.to}  ${String(win.rows.length).padStart(6)} rows -> ` +
+            `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+            `${res.rowsMirrored ? `, ${res.rowsMirrored} mirrored` : ''}`,
+        );
+      }
+    }
+    await finishRun(db, runId, { rowsFetched: totalRows, rowsInserted: totalInserted });
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
+
+  console.log(
+    `\n  ${totalRows} rows fetched, ${totalInserted} new transactions, ` +
+      `${totalCreated} new entities` +
+      `${totalMirrored ? `, ${totalMirrored} dropped as already filed by the recipient` : ''}`,
+  );
+  if (truncated.length > 0) console.log(`  INCOMPLETE windows: ${truncated.join(', ')}`);
+  if (failed.length > 0) console.log(`  FAILED windows: ${failed.join('; ')}`);
+
+  console.log('\nRebuilding rollups…');
+  const counts = await rebuildAll(db);
+  console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
+  await summarize();
 }
 
 /**
