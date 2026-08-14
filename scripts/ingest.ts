@@ -5,6 +5,8 @@
  *   pnpm ingest committee "Florida Chamber"      # money into matching committees
  *   pnpm ingest contributor "SECURE FLORIDA"     # money out of a contributor
  *   pnpm ingest candidate  "DeSantis"            # money into a candidate
+ *   pnpm ingest spending "St. Johns Neighborhood Coalition"  # money OUT (expenditures)
+ *     --candidate                                  (look the name up as a candidate)
  *   pnpm ingest cycle 20261103-GEN               # sweep a whole state election cycle
  *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
@@ -106,6 +108,15 @@ async function main() {
         .where(eq(entities.id, r.entityId));
     }
     console.log(`\n${committees.length} committees in registry, ${created} new entities.`);
+    process.exit(0);
+  }
+
+  if (mode === 'spending') {
+    if (!term) {
+      console.error('usage: pnpm ingest spending "<committee or candidate name>" [--candidate]');
+      process.exit(1);
+    }
+    await ingestSpending(term, fl, { sourceId, jurisdictionId }, resolver);
     process.exit(0);
   }
 
@@ -436,6 +447,75 @@ async function ingestIrsOrg(slug: string) {
     `\n  ${filings} filings, ${totalRows} rows, ${totalInserted} new transactions, ` +
       `${totalCreated} new entities`,
   );
+  console.log('\nRebuilding rollups…');
+  const counts = await rebuildAll(db);
+  console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
+}
+
+/**
+ * Load one filer's reported spending from the state feed.
+ *
+ * Separate from the contribution modes because it answers a question they
+ * cannot: a transfer between committees is reported by whoever received it, so
+ * the contribution feed sees it, but a payment to a vendor or consultant exists
+ * only on the payer's own report. Without this a committee looks like it raises
+ * money and never spends any.
+ */
+async function ingestSpending(
+  name: string,
+  fl: FlDoeAdapter,
+  ctx: { sourceId: string; jurisdictionId: string },
+  resolver: EntityResolver,
+) {
+  const asCandidate = flags.candidate === 'true';
+  const runId = await startRun(db, ctx.sourceId, {
+    mode: 'spending',
+    name,
+    election,
+    kind: asCandidate ? 'candidate' : 'committee',
+  });
+
+  console.log(`\nSpending by ${asCandidate ? 'candidate' : 'committee'} "${name}" [${election}]…`);
+
+  const opts = { election, rowLimit, minAmount, match: NAME_MATCH.containing };
+
+  try {
+    const rows = asCandidate
+      ? await fl.expendituresByCandidate(name, '', opts)
+      : await fl.expendituresByCommittee(name, opts);
+
+    if (rows.length === 0) {
+      console.log('  no expenditures reported for that name in this cycle.');
+      await finishRun(db, runId, { rowsFetched: 0, rowsInserted: 0 });
+      return;
+    }
+
+    const res = await ingestTransactionRows(db, rows, { ...ctx, resolver });
+    await finishRun(db, runId, { rowsFetched: rows.length, rowsInserted: res.rowsInserted });
+
+    console.log(
+      `  ${rows.length} rows -> +${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+        `${res.rowsRepaired ? `, ${res.rowsRepaired} back-labelled` : ''}`,
+    );
+
+    // Largest payees first: for a committee that exists to move money, this is
+    // the whole story, and it is the part the contribution feed never shows.
+    const byPayee = new Map<string, { total: number; n: number }>();
+    for (const r of rows) {
+      const cur = byPayee.get(r.counterpartyRaw) ?? { total: 0, n: 0 };
+      cur.total += Number(r.amount);
+      cur.n++;
+      byPayee.set(r.counterpartyRaw, cur);
+    }
+    console.log('\n  top payees:');
+    for (const [payee, v] of [...byPayee].sort((a, b) => b[1].total - a[1].total).slice(0, 10)) {
+      console.log(`    ${fmt(v.total).padStart(14)}  ${payee}  (${v.n})`);
+    }
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
+
   console.log('\nRebuilding rollups…');
   const counts = await rebuildAll(db);
   console.log(`  ${counts.edges} edges over ${counts.entities} entities`);

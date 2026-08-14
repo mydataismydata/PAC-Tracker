@@ -6,7 +6,7 @@
  * whatever transactions currently exist rather than incremented in place.
  */
 
-import { sql, eq, inArray } from 'drizzle-orm';
+import { sql, eq, and, isNull, inArray } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
 import { transactions, entities, sources, jurisdictions, ingestRuns } from '@/db/schema';
@@ -35,6 +35,8 @@ export interface IngestResult {
   rowsSkipped: number;
   /** Rows already stored whose missing election cycle this run filled in. */
   rowsRepaired: number;
+  /** Expenditures dropped because the recipient already filed the same money. */
+  rowsMirrored: number;
   entitiesCreated: number;
   resolverStats: Record<string, number>;
 }
@@ -259,6 +261,8 @@ export async function ingestContributionRows(
     // The state feed has always carried its cycle, and the rows that predate
     // that were backfilled once, so there is nothing here left to repair.
     rowsRepaired: 0,
+    // This path only ever sees contributions, which are the winning side.
+    rowsMirrored: 0,
     entitiesCreated: stats.created - before,
     resolverStats: stats,
   };
@@ -283,6 +287,7 @@ export async function ingestTransactionRows(
   let inserted = 0;
   let skipped = 0;
   let repaired = 0;
+  let mirrored = 0;
   const touched = new Set<string>();
 
   for (const row of rows) {
@@ -313,6 +318,38 @@ export async function ingestTransactionRows(
       const isContribution = row.direction === 'contribution';
       const from = isContribution ? counterparty : filer;
       const to = isContribution ? filer : counterparty;
+
+      // Money between two committees is filed twice: the payer reports an
+      // expenditure, the recipient reports a contribution. They reach us from
+      // different feeds with different row hashes, so nothing else catches the
+      // mirror, and the pair would inflate both ends of the edge.
+      //
+      // The recipient's filing wins, because the contribution feed already
+      // covers every committee statewide while expenditures are loaded per
+      // filer. Self-loops are exempt: a candidate reimbursing their own
+      // campaign genuinely files both halves, and collapsing those would erase
+      // a real transaction rather than a duplicate one.
+      if (!isContribution && from.entityId !== to.entityId) {
+        const [mirror] = await db
+          .select({ id: transactions.id })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.direction, 'contribution'),
+              eq(transactions.fromEntityId, from.entityId),
+              eq(transactions.toEntityId, to.entityId),
+              eq(transactions.amount, row.amount),
+              row.date
+                ? eq(transactions.txnDate, row.date)
+                : isNull(transactions.txnDate),
+            ),
+          )
+          .limit(1);
+        if (mirror) {
+          mirrored++;
+          continue;
+        }
+      }
 
       const pending = db.insert(transactions).values({
         fromEntityId: from.entityId,
@@ -386,6 +423,7 @@ export async function ingestTransactionRows(
     rowsInserted: inserted,
     rowsSkipped: skipped,
     rowsRepaired: repaired,
+    rowsMirrored: mirrored,
     entitiesCreated: stats.created - before,
     resolverStats: stats,
   };
