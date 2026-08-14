@@ -131,7 +131,7 @@ export function parseAmount(value: string): string | null {
 export function parseContributionTsv(
   text: string,
   opts: { electionCycle: string },
-): { rows: RawContributionRow[]; skipped: number; headerSeen: boolean } {
+): { rows: RawContributionRow[]; skipped: number; headerSeen: boolean; dataLines: number } {
   const lines = text.split(/\r?\n/);
   const rows: RawContributionRow[] = [];
   let skipped = 0;
@@ -205,7 +205,10 @@ export function parseContributionTsv(
     });
   }
 
-  return { rows, skipped, headerSeen };
+  // See `parseExpenditureTsv`: the row cap applies to lines delivered, not
+  // rows successfully parsed, and conflating the two makes a truncated window
+  // look complete.
+  return { rows, skipped, headerSeen, dataLines: rows.length + skipped };
 }
 
 /** Column header emitted by `expend.exe` with `queryformat=2`. */
@@ -235,7 +238,7 @@ export const EXPENDITURE_HEADER = [
 export function parseExpenditureTsv(
   text: string,
   opts: { electionCycle: string },
-): { rows: RawTransactionRow[]; skipped: number; headerSeen: boolean } {
+): { rows: RawTransactionRow[]; skipped: number; headerSeen: boolean; dataLines: number } {
   const lines = text.split(/\r?\n/);
   const rows: RawTransactionRow[] = [];
   let skipped = 0;
@@ -320,7 +323,12 @@ export function parseExpenditureTsv(
     });
   }
 
-  return { rows, skipped, headerSeen };
+  // Every line the CGI meant as data, whether or not it parsed. This, not
+  // `rows.length`, is what the row cap applies to: the export drops a variable
+  // number of lines to malformed content, so a response cut off at exactly the
+  // cap can still yield far fewer usable rows and read as a short — meaning
+  // complete — window.
+  return { rows, skipped, headerSeen, dataLines: rows.length + skipped };
 }
 
 /**
