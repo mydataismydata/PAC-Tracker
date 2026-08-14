@@ -18,12 +18,23 @@ import { derivedCycleSql } from '@/lib/cycles';
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
 const derivedCycle = derivedCycleSql('t');
 
+/**
+ * Tells an upsert's inserted rows from its updated ones.
+ *
+ * `RETURNING` cannot say which branch it took, but a tuple this transaction
+ * just inserted has no deleting transaction yet, while one it updated through
+ * ON CONFLICT carries the lock in `xmax`.
+ */
+const NEWLY_INSERTED = sql<boolean>`xmax = 0`;
+
 type Db = PostgresJsDatabase<typeof schema>;
 
 export interface IngestResult {
   rowsFetched: number;
   rowsInserted: number;
   rowsSkipped: number;
+  /** Rows already stored whose missing election cycle this run filled in. */
+  rowsRepaired: number;
   entitiesCreated: number;
   resolverStats: Record<string, number>;
 }
@@ -245,6 +256,9 @@ export async function ingestContributionRows(
     rowsFetched: rows.length,
     rowsInserted: inserted,
     rowsSkipped: skipped,
+    // The state feed has always carried its cycle, and the rows that predate
+    // that were backfilled once, so there is nothing here left to repair.
+    rowsRepaired: 0,
     entitiesCreated: stats.created - before,
     resolverStats: stats,
   };
@@ -268,6 +282,7 @@ export async function ingestTransactionRows(
 
   let inserted = 0;
   let skipped = 0;
+  let repaired = 0;
   const touched = new Set<string>();
 
   for (const row of rows) {
@@ -299,39 +314,59 @@ export async function ingestTransactionRows(
       const from = isContribution ? counterparty : filer;
       const to = isContribution ? filer : counterparty;
 
-      const result = await db
-        .insert(transactions)
-        .values({
-          fromEntityId: from.entityId,
-          toEntityId: to.entityId,
-          rawFromName: isContribution ? row.counterpartyRaw : row.filerRaw,
-          rawToName: isContribution ? row.filerRaw : row.counterpartyRaw,
-          amount: row.amount,
-          txnDate: row.date,
-          direction: row.direction,
-          txnTypeCode: row.typeCode,
-          inkindDescription: row.description,
-          // Address detail describes the counterparty in both directions.
-          fromAddress: row.address,
-          fromCity: row.city,
-          fromState: row.state,
-          fromZip: row.zip,
-          fromOccupation: row.occupation,
-          electionCycle: row.electionCycle ?? null,
-          sourceId: ctx.sourceId,
-          sourceRowHash: row.rowHash,
-          fromConfidence: from.confidence,
-          toConfidence: to.confidence,
-        })
-        .onConflictDoNothing({ target: transactions.sourceRowHash })
-        .returning({ id: transactions.id });
+      const pending = db.insert(transactions).values({
+        fromEntityId: from.entityId,
+        toEntityId: to.entityId,
+        rawFromName: isContribution ? row.counterpartyRaw : row.filerRaw,
+        rawToName: isContribution ? row.filerRaw : row.counterpartyRaw,
+        amount: row.amount,
+        txnDate: row.date,
+        direction: row.direction,
+        txnTypeCode: row.typeCode,
+        inkindDescription: row.description,
+        // Address detail describes the counterparty in both directions.
+        fromAddress: row.address,
+        fromCity: row.city,
+        fromState: row.state,
+        fromZip: row.zip,
+        fromOccupation: row.occupation,
+        electionCycle: row.electionCycle ?? null,
+        sourceId: ctx.sourceId,
+        sourceRowHash: row.rowHash,
+        fromConfidence: from.confidence,
+        toConfidence: to.confidence,
+      });
 
-      if (result.length > 0) {
+      // The row hash deliberately excludes the election cycle, so a row stored
+      // before its cycle was known matches on a later sweep that *does* know it
+      // — and plain DO NOTHING would leave that row NULL forever. Fill the gap,
+      // and only the gap: a cycle already on the row is never overwritten, and
+      // a sweep with no cycle of its own does not rewrite anything.
+      const result =
+        row.electionCycle == null
+          ? await pending
+              .onConflictDoNothing({ target: transactions.sourceRowHash })
+              .returning({ id: transactions.id, isNew: NEWLY_INSERTED })
+          : await pending
+              .onConflictDoUpdate({
+                target: transactions.sourceRowHash,
+                set: { electionCycle: row.electionCycle },
+                setWhere: sql`${transactions.electionCycle} IS NULL`,
+              })
+              .returning({ id: transactions.id, isNew: NEWLY_INSERTED });
+
+      if (result.length === 0) {
+        skipped++;
+      } else if (result[0].isNew) {
         inserted++;
         touched.add(from.entityId);
         touched.add(to.entityId);
       } else {
-        skipped++;
+        // Amounts did not move, but the cycle they are filed under did, so the
+        // per-cycle rollups for both ends are now stale.
+        repaired++;
+        touched.add(from.entityId);
+        touched.add(to.entityId);
       }
     } catch (err) {
       skipped++;
@@ -350,6 +385,7 @@ export async function ingestTransactionRows(
     rowsFetched: rows.length,
     rowsInserted: inserted,
     rowsSkipped: skipped,
+    rowsRepaired: repaired,
     entitiesCreated: stats.created - before,
     resolverStats: stats,
   };

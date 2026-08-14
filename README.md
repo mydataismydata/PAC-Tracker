@@ -168,19 +168,42 @@ VoterFocus (VR Systems) hosts the portal for a large share of them, and **the co
 single query parameter**, so one adapter covers all of them:
 
 ```bash
-pnpm ingest counties            # list supported counties
-pnpm ingest county stjohns      # sweep the current cycle
+pnpm ingest counties              # list supported counties
+pnpm ingest county stjohns        # sweep the current cycle
 pnpm ingest county stjohns --all  # every cycle the portal offers
+pnpm ingest county duval --election=33   # one cycle, by portal id
 ```
 
-County portals hold far more history than the state feed exposes. St. Johns lists 19
-cycles back to 2000, though the **electronic filings themselves begin in 2004** — the
-candidate index outlives the financial reports behind it, so a cycle appearing in the
-dropdown is not evidence that money data exists for it. A full sweep there yields ~83,000
-transactions across 22 years, against ~4,600 for the current cycle alone.
+Flags are `--key=value`. A space-separated `--election 33` parses as the boolean true and
+would sweep the default cycle instead, so the county command rejects it outright rather
+than quietly loading the wrong election.
+
+County portals hold far more history than the state feed exposes, but how much, and how
+it is carved up, varies by county:
+
+| | St. Johns | Duval |
+|---|---|---|
+| Cycles offered | 19, back to 2000 | 22, back to 2015 |
+| Filings actually begin | 2004 | 2012 |
+| Organized by | one entry per cycle | cycle × filer type |
+| Full sweep | ~83,000 txns / $25.6M | ~147,000 txns / $110.6M |
+
+A cycle appearing in the dropdown is not evidence that money data exists for it — the
+candidate index outlives the financial reports behind it.
 
 Sweeps run oldest-first so entity resolution meets each recurring donor at its earliest
-spelling, and one failing cycle does not abort the rest.
+spelling, and one failing cycle does not abort the rest. A sweep whose election maps to a
+known cycle also **back-labels rows loaded before that cycle was recorded**: the row hash
+excludes the cycle, so those rows match and would otherwise keep a NULL cycle forever.
+Only a missing cycle is filled; one already recorded is never overwritten.
+
+**Odd-year municipal elections have no state cycle.** Jacksonville is a consolidated
+city-county, so its mayoral, sheriff and council races run in odd years — and they carry
+most of the county's money: 95,844 of Duval's 146,543 rows ($69.6M of $110.6M) sit in the
+2015, 2019 and 2023 unitary cycles. `CYCLES` lists only state general elections, so these
+rows fall back to date-bucketing and merge into the neighbouring even-year cycle. Nothing
+is lost and the filter still works, but the 2023 Jacksonville mayoral race cannot be
+selected on its own.
 
 Twenty county slugs are verified, including Miami-Dade, Broward, Palm Beach, Hillsborough,
 Orange and Duval. This source is richer than the state feed: ISO dates, expenditures
@@ -317,6 +340,17 @@ county school board race with no special handling — a crawl walks straight thr
   with no matching general — fall back to the cycle their date lands in. That is an
   approximation at the boundaries, but excluding them from every filter would make those
   races vanish from a filtered graph, which is worse.
+- **Entity resolution is not scoped by county, and generic office names collapse across
+  them.** Every county has a "Republican Executive Committee", a "Democratic Executive
+  Committee" and a "Supervisor of Elections", and the counties file under exactly those
+  bare names. With two counties loaded the damage is already visible: Duval's and St.
+  Johns' Republican committees both resolved onto the *state* registry entry for
+  `GADSDEN COUNTY REPUBLICAN EXECUTIVE COMMITTEE` — a different county near Tallahassee —
+  pooling $6.3M under one node, and about $7.3M of Duval money hangs off St. Johns and
+  Gadsden entities in total. Treat county party committees and elections offices as
+  unreliable nodes until resolution is jurisdiction-aware. Vendors that genuinely serve
+  several counties (Data Targeting, Majority Strategies) are correctly shared and are not
+  part of this problem.
 - A cycle sweep reports any window it could not fetch completely rather than returning
   short silently. Quarter-end filing dates are where this bites: they can exceed the
   service's row cap within a single day, and are recovered by subdividing on contributor
