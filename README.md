@@ -309,6 +309,7 @@ single $1.25M edge rather than five.
 | `pnpm ingest committee "<name>"` | Contributions *into* matching committees. |
 | `pnpm ingest contributor "<name>"` | Contributions *out of* a contributor. |
 | `pnpm ingest candidate "<last>"` | Contributions into a candidate. |
+| `pnpm ingest spending "<name>"` | Expenditures *out of* a state committee (add `--candidate` for a candidate). |
 | `pnpm ingest expand <rounds>` | Grow the frontier outward automatically. |
 | `pnpm ingest rebuild` | Recompute all rollups and totals. |
 | `pnpm ingest purge <source-key>` | Drop everything one source contributed, to re-ingest it cleanly. |
@@ -340,6 +341,13 @@ county school board race with no special handling — a crawl walks straight thr
   with no matching general — fall back to the cycle their date lands in. That is an
   approximation at the boundaries, but excluding them from every filter would make those
   races vanish from a filtered graph, which is worse.
+- **State expenditures are loaded per filer, not swept.** The contribution feed covers
+  every state committee; the expenditure feed is fetched one committee or candidate at a
+  time with `pnpm ingest spending "<name>"`. Until a filer has been fetched that way, its
+  spending is absent — money appears to arrive and never leave. Transfers *between*
+  committees are unaffected, since the recipient reports those as contributions; what is
+  missing is payments to vendors, consultants and media buyers, which only ever appear on
+  the payer's own report.
 - **Entity resolution is not scoped by county, and generic office names collapse across
   them.** Every county has a "Republican Executive Committee", a "Democratic Executive
   Committee" and a "Supervisor of Elections", and the counties file under exactly those

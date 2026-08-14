@@ -15,10 +15,12 @@
 import { FlDoeClient, SEARCH_ON, NAME_MATCH, SORT, MAX_ROW_LIMIT } from './client';
 import {
   parseContributionTsv,
+  parseExpenditureTsv,
   parseCommitteeRegistryHtml,
   type RawContributionRow,
   type RegistryCommittee,
 } from './parse';
+import type { RawTransactionRow } from '../types';
 
 /** Election cycle keys as the DOE labels them. */
 export const ELECTION_ALL = 'All';
@@ -145,10 +147,82 @@ function baseForm(opts: FetchOptions): Record<string, string | number> {
   };
 }
 
+/**
+ * Baseline form fields for `expend.exe`.
+ *
+ * The expenditure search reuses the contribution form almost exactly — same
+ * candidate, committee and payee-name fields, same sort and row-limit fields —
+ * with one substitution: `coccupation` becomes `cpurpose`. Sending the
+ * contribution field instead returns a 502 from the CGI rather than an error
+ * page, so the two forms are kept separate rather than merged with a flag.
+ */
+function baseExpenditureForm(opts: FetchOptions): Record<string, string | number> {
+  const form = baseForm(opts);
+  delete form.coccupation;
+  form.cpurpose = '';
+  return form;
+}
+
 export class FlDoeAdapter {
   readonly sourceKey = 'fl-doe';
 
   constructor(private readonly client: FlDoeClient = new FlDoeClient()) {}
+
+  /**
+   * Money *out of* a committee: every payment it reported making.
+   *
+   * The contribution feed cannot answer this. A committee's transfers to other
+   * committees surface there because the recipient reports them, but payments
+   * to vendors, consultants and media buyers appear nowhere except the payer's
+   * own expenditure report.
+   */
+  async expendituresByCommittee(
+    committeeName: string,
+    opts: FetchOptions = {},
+  ): Promise<RawTransactionRow[]> {
+    const text = await this.client.post('expenditures', {
+      ...baseExpenditureForm(opts),
+      search_on: SEARCH_ON.committeeList,
+      ComName: escapeName(committeeName),
+      ComNameSrch: opts.match ?? NAME_MATCH.startsWith,
+    });
+    return parseExpenditureTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
+  }
+
+  /** Money out of a candidate's campaign account. */
+  async expendituresByCandidate(
+    lastName: string,
+    firstName = '',
+    opts: FetchOptions = {},
+  ): Promise<RawTransactionRow[]> {
+    const text = await this.client.post('expenditures', {
+      ...baseExpenditureForm(opts),
+      search_on: SEARCH_ON.candidateList,
+      CanLName: escapeName(lastName),
+      CanFName: escapeName(firstName),
+      CanNameSrch: opts.match ?? NAME_MATCH.startsWith,
+    });
+    return parseExpenditureTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
+  }
+
+  /**
+   * Every payment made *to* a payee, across all filers.
+   *
+   * The inverse lookup, and the one that answers "who else pays this vendor?" —
+   * the question that turns a consultant into a link between committees.
+   */
+  async expendituresToPayee(
+    payeeName: string,
+    opts: FetchOptions = {},
+  ): Promise<RawTransactionRow[]> {
+    const text = await this.client.post('expenditures', {
+      ...baseExpenditureForm(opts),
+      search_on: SEARCH_ON.contributorList,
+      clname: escapeName(payeeName),
+      namesearch: opts.match ?? NAME_MATCH.startsWith,
+    });
+    return parseExpenditureTsv(text, { electionCycle: opts.election ?? ELECTION_ALL }).rows;
+  }
 
   /**
    * Money *into* a committee: every reported contribution it received.
