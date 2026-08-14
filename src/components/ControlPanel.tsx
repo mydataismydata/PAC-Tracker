@@ -2,7 +2,7 @@
 
 /** Crawl controls: depth, direction, link mode and filters. */
 
-import { CURRENT_CYCLE, PREVIOUS_CYCLE } from '@/lib/cycles';
+import { CYCLES, CURRENT_CYCLE, PREVIOUS_CYCLE } from '@/lib/cycles';
 import type { CrawlSettings, Direction, LinkMode } from '@/lib/graph/types';
 
 interface Props {
@@ -31,6 +31,11 @@ const CYCLE_CHOICES: { value: string | undefined; label: string; hint: string }[
   },
   { value: undefined, label: 'All', hint: 'Every cycle loaded, summed together' },
 ];
+
+/** Anything reachable from the dropdown rather than the three shortcuts. */
+const OTHER_CYCLES = CYCLES.filter(
+  (c) => c.id !== CURRENT_CYCLE.id && c.id !== PREVIOUS_CYCLE.id,
+);
 
 const DIRECTIONS: { value: Direction; label: string; hint: string }[] = [
   { value: 'upstream', label: 'Up', hint: 'Who funded this entity' },
@@ -104,6 +109,27 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
             </button>
           ))}
         </div>
+        {/* County portals go back to 2000, so the two shortcuts cannot reach
+            most of what may be loaded. */}
+        <select
+          value={
+            settings.cycle && OTHER_CYCLES.some((c) => c.id === settings.cycle)
+              ? settings.cycle
+              : ''
+          }
+          disabled={disabled}
+          onChange={(e) => set('cycle', e.target.value || CURRENT_CYCLE.id)}
+          className="mt-1 w-full rounded border border-slate-700 bg-slate-900 px-1.5 py-1
+                     text-[11px] text-slate-300 outline-none focus:border-indigo-500
+                     disabled:opacity-40"
+        >
+          <option value="">Earlier cycle…</option>
+          {OTHER_CYCLES.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
       </Field>
 
       <Field label="Direction">

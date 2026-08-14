@@ -168,9 +168,19 @@ VoterFocus (VR Systems) hosts the portal for a large share of them, and **the co
 single query parameter**, so one adapter covers all of them:
 
 ```bash
-pnpm ingest counties          # list supported counties
-pnpm ingest county stjohns    # sweep one
+pnpm ingest counties            # list supported counties
+pnpm ingest county stjohns      # sweep the current cycle
+pnpm ingest county stjohns --all  # every cycle the portal offers
 ```
+
+County portals hold far more history than the state feed exposes. St. Johns lists 19
+cycles back to 2000, though the **electronic filings themselves begin in 2004** — the
+candidate index outlives the financial reports behind it, so a cycle appearing in the
+dropdown is not evidence that money data exists for it. A full sweep there yields ~83,000
+transactions across 22 years, against ~4,600 for the current cycle alone.
+
+Sweeps run oldest-first so entity resolution meets each recurring donor at its earliest
+spelling, and one failing cycle does not abort the rest.
 
 Twenty county slugs are verified, including Miami-Dade, Broward, Palm Beach, Hillsborough,
 Orange and Duval. This source is richer than the state feed: ISO dates, expenditures
@@ -302,10 +312,11 @@ county school board race with no special handling — a crawl walks straight thr
 - **The cycle filter defaults to the current election, not to everything.** With more
   than one cycle loaded, an unfiltered graph answers "who has *ever* funded this", which
   is rarely the question. Switch to *All* deliberately.
-- County and IRS rows carry no Florida cycle of their own — county portals have no cycle
-  parameter, and 8872 rows carry a filing period — so both are assigned by date. A filing
-  made late in one cycle for the *next* election lands in the wrong bucket; excluding them
-  would make county races vanish from a filtered graph, which is worse.
+- A county sweep is scoped to one election, so its rows carry that cycle explicitly.
+  Rows from any source that lack one — IRS 8872 filings, and odd-year municipal elections
+  with no matching general — fall back to the cycle their date lands in. That is an
+  approximation at the boundaries, but excluding them from every filter would make those
+  races vanish from a filtered graph, which is worse.
 - A cycle sweep reports any window it could not fetch completely rather than returning
   short silently. Quarter-end filing dates are where this bites: they can exceed the
   service's row cap within a single day, and are recovered by subdividing on contributor

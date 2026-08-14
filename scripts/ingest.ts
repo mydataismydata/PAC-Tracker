@@ -8,7 +8,8 @@
  *   pnpm ingest cycle 20261103-GEN               # sweep a whole state election cycle
  *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
- *   pnpm ingest county stjohns                   # sweep a county (VoterFocus)
+ *   pnpm ingest county stjohns                   # sweep a county (current cycle)
+ *   pnpm ingest county stjohns --all             # every cycle the portal offers
  *   pnpm ingest counties                         # list supported counties
  *   pnpm ingest irs rslc                         # a national 527's funders (IRS 8872)
  *   pnpm ingest purge voterfocus-duval           # drop one source, to re-ingest cleanly
@@ -38,6 +39,7 @@ import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
 import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
+import { cycleForYear } from '@/lib/cycles';
 import { EntityResolver } from '@/lib/ingest/resolve';
 
 const argv = process.argv.slice(2);
@@ -108,7 +110,8 @@ async function main() {
   }
 
   if (mode === 'county') {
-    await ingestCounty(term || 'stjohns', flags.election);
+    if (flags.all === 'true') await ingestCountyHistory(term || 'stjohns');
+    else await ingestCounty(term || 'stjohns', flags.election);
     process.exit(0);
   }
 
@@ -432,6 +435,45 @@ async function ingestIrsOrg(slug: string) {
 }
 
 /**
+ * Every cycle a county portal offers, oldest first.
+ *
+ * Sweeps run per cycle because that is how the portal is addressed, and doing
+ * them oldest-first means entity resolution meets each recurring donor at its
+ * earliest spelling rather than back-filling later.
+ */
+async function ingestCountyHistory(slug: string) {
+  const county = findCounty(slug);
+  if (!county) {
+    console.error(`unknown county "${slug}". Run \`pnpm ingest counties\` for the list.`);
+    process.exit(1);
+  }
+
+  const adapter = new VoterFocusAdapter(county.slug, new VoterFocusClient());
+  const offered = await adapter.elections();
+  const wanted = offered
+    .filter((e) => e.year != null)
+    .sort((a, b) => (a.year ?? 0) - (b.year ?? 0));
+
+  console.log(`\n${county.name} County — ${wanted.length} cycles offered`);
+  for (const e of wanted) console.log(`  ${e.year}  ${e.label}`);
+
+  for (const e of wanted) {
+    console.log(`\n${'='.repeat(60)}`);
+    try {
+      await ingestCounty(slug, String(e.id));
+    } catch (err) {
+      // One bad cycle should not cost the other eighteen.
+      console.log(`  cycle ${e.year} FAILED: ${String(err).slice(0, 120)}`);
+    }
+  }
+
+  console.log('\nRebuilding rollups…');
+  const counts = await rebuildAll(db);
+  console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
+  await summarize();
+}
+
+/**
  * Sweep one VoterFocus county: every candidate and committee in a cycle,
  * persisted as each export completes so a long sweep survives interruption.
  */
@@ -445,9 +487,25 @@ async function ingestCounty(slug: string, electionId?: string) {
   const { sourceId, jurisdictionId } = await ensureCountySource(db, county);
   const adapter = new VoterFocusAdapter(county.slug, new VoterFocusClient());
   const resolver = new EntityResolver(db);
-  const runId = await startRun(db, sourceId, { county: county.slug, election: electionId });
 
-  console.log(`\nSweeping ${county.name} County${electionId ? ` (e=${electionId})` : ''}…`);
+  // A sweep is scoped to one election, so its cycle is known rather than
+  // inferred. That matters at the boundaries: a closing cycle's final reports
+  // are filed *after* its election and would otherwise be booked to the next.
+  const offered = await adapter.elections();
+  const chosen = electionId ? offered.find((e) => String(e.id) === String(electionId)) : undefined;
+  const cycle = chosen?.year ? cycleForYear(chosen.year)?.id : undefined;
+
+  const runId = await startRun(db, sourceId, {
+    county: county.slug,
+    election: electionId,
+    cycle,
+  });
+
+  console.log(
+    `\nSweeping ${county.name} County` +
+      `${chosen ? ` — ${chosen.label}` : electionId ? ` (e=${electionId})` : ''}` +
+      `${cycle ? ` [${cycle}]` : ''}…`,
+  );
 
   let totalRows = 0;
   let totalInserted = 0;
@@ -458,7 +516,11 @@ async function ingestCounty(slug: string, electionId?: string) {
     for await (const { entity, rows } of adapter.sweep(electionId)) {
       if (rows.length === 0) continue;
       withData++;
-      const res = await ingestTransactionRows(db, rows, { sourceId, jurisdictionId, resolver });
+      const res = await ingestTransactionRows(
+        db,
+        cycle ? rows.map((r) => ({ ...r, electionCycle: cycle })) : rows,
+        { sourceId, jurisdictionId, resolver },
+      );
       totalRows += rows.length;
       totalInserted += res.rowsInserted;
       totalCreated += res.entitiesCreated;
