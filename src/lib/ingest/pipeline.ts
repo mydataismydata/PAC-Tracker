@@ -317,6 +317,7 @@ export async function ingestTransactionRows(
           fromState: row.state,
           fromZip: row.zip,
           fromOccupation: row.occupation,
+          electionCycle: row.electionCycle ?? null,
           sourceId: ctx.sourceId,
           sourceRowHash: row.rowHash,
           fromConfidence: from.confidence,

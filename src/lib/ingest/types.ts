@@ -64,6 +64,15 @@ export interface RawTransactionRow {
   occupation: string | null;
 
   /** Stable dedupe key across re-ingests of the same underlying filing. */
+  /**
+   * Election cycle this filing belongs to, when the source knows it.
+   *
+   * County sweeps are scoped to one cycle, so stamping it here beats inferring
+   * it from the transaction date: post-election filings for a closing cycle are
+   * dated after the election and would otherwise be booked to the next one.
+   */
+  electionCycle?: string;
+
   rowHash: string;
 }
 
