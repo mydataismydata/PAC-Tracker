@@ -259,10 +259,18 @@ export async function trace(
 }
 
 /**
- * Inbound contributions for a whole frontier, collapsed per donor per day.
+ * Inbound money for a whole frontier, collapsed per payer per day.
  *
  * Grouping by date keeps the ordering information the attribution needs while
  * cutting the row count for conduits with large small-donor bases.
+ *
+ * Both directions count. A transfer between committees is normally filed by
+ * the recipient as a contribution, but when the recipient is not a registered
+ * committee it files nothing, and the money exists only as an expenditure on
+ * the payer's report — which is exactly the hop worth tracing, since it is
+ * where money leaves the committee system. Reading contributions alone left
+ * those entities looking unfunded. Nothing double-counts: where both parties
+ * filed the same transfer, ingest already kept only the recipient's copy.
  */
 async function inboundByRecipient(
   db: Db,
@@ -280,7 +288,6 @@ async function inboundByRecipient(
       FROM transactions t
       JOIN entities d ON d.id = t.from_entity_id
      WHERE t.to_entity_id = ANY(${sql.param(ids)}::uuid[])
-       AND t.direction = 'contribution'
        AND t.from_entity_id IS NOT NULL
        ${cyc}
      GROUP BY 1, 2, 3, 4, 5
