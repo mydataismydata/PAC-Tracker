@@ -11,6 +11,12 @@ services:
     image: postgres:16-alpine
     container_name: pactracker-db
     restart: unless-stopped
+    # Postgres puts parallel workers' shared tuple stores in /dev/shm, which
+    # Docker caps at 64 MB by default. A parallel hash aggregate over the
+    # transaction table blows straight past that and the query dies with
+    # "could not resize shared memory segment … No space left on device"
+    # (SQLSTATE 53100) — a confusing error, since the disk is fine.
+    shm_size: 1gb
     environment:
       POSTGRES_USER: pactracker
       POSTGRES_PASSWORD: pactracker

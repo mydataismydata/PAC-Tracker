@@ -370,10 +370,16 @@ county school board race with no special handling — a crawl walks straight thr
   variable number of lines to malformed content — 3 in one response, 273 in another — so a
   reply cut off at exactly the 32,767-row cap can yield far fewer usable rows and look
   like a short, and therefore final, window. A sweep that makes this mistake stops early
-  and reports success: one 2026 candidate walk silently lost every row after 2026-05-31.
-  Trust a sweep's own summary only as far as a re-fetch confirms it — compare row hashes
-  from the live feed against the database, and expect deliberate absences from the
-  mirror guard and the cycle-end cutoff.
+  and reports success. This cost real data before it was fixed: the 2026 contribution
+  cycle was missing 28,839 rows, a third of the final month and all of the most recent
+  day, while reporting complete. The 2024 cycle, checked the same way, was intact across
+  all 1.49M rows. Trust a sweep's own summary only as far as a re-fetch confirms it —
+  compare row hashes from the live feed against the database, and expect deliberate
+  absences from the mirror guard and the cycle-end cutoff.
+- Postgres runs with `shm_size: 1gb`. Docker's 64 MB default is too small for the parallel
+  plans the trace queries produce, and the failure is opaque: "could not resize shared
+  memory segment … No space left on device" (SQLSTATE 53100), which reads like a full disk
+  rather than a container limit.
 - Entity resolution is good, not perfect. `FLORIDA CHAMBER PAC` and `Florida Chamber of
   Commerce PAC` are almost certainly the same organization but score 0.767 and remain
   separate pending review.
