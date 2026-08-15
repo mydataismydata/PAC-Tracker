@@ -376,6 +376,17 @@ county school board race with no special handling — a crawl walks straight thr
   all 1.49M rows. Trust a sweep's own summary only as far as a re-fetch confirms it —
   compare row hashes from the live feed against the database, and expect deliberate
   absences from the mirror guard and the cycle-end cutoff.
+- **An audit against a live source measures elapsed time as well as loss.** Re-fetching
+  the counties and diffing row hashes reported 1,915 rows the database did not have, which
+  looked like an ingestion fault — party executive committees in both counties stopped
+  dead on 2026-03-31, the same date, independently. They had not. The morning sweep took
+  every row the portal held (250 of 250 on one committee, 148 of 148 on another); the
+  committees filed their April-onward reports that afternoon, against a shared deadline,
+  and the audit ran after. Re-sweeping recovered 1,914 rows — the audit's arithmetic was
+  right to within one row, its framing was not. For counties, whose filings arrive in
+  periodic batches, sweep and audit have to bracket the same moment or the diff is mostly
+  a clock. The state feed does not have this problem in the same way: a third of a month
+  vanishing at a hard cutoff cannot be filing lag.
 - Postgres runs with `shm_size: 1gb`. Docker's 64 MB default is too small for the parallel
   plans the trace queries produce, and the failure is opaque: "could not resize shared
   memory segment … No space left on device" (SQLSTATE 53100), which reads like a full disk
