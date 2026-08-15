@@ -279,7 +279,13 @@ export async function ingestContributionRows(
 export async function ingestTransactionRows(
   db: Db,
   rows: RawTransactionRow[],
-  ctx: { sourceId: string; jurisdictionId: string; resolver?: EntityResolver },
+  ctx: {
+    sourceId: string;
+    jurisdictionId: string;
+    /** Set for single-county sources; disambiguates bare local-office names. */
+    jurisdictionCode?: string;
+    resolver?: EntityResolver;
+  },
 ): Promise<IngestResult> {
   const resolver = ctx.resolver ?? new EntityResolver(db);
   const before = resolver.getStats().created;
@@ -299,6 +305,7 @@ export async function ingestTransactionRows(
         office: row.filerOffice,
         party: row.filerParty,
         jurisdictionId: ctx.jurisdictionId,
+        jurisdictionCode: ctx.jurisdictionCode,
         sourceId: ctx.sourceId,
       });
 
@@ -312,6 +319,7 @@ export async function ingestTransactionRows(
         address: row.address,
         occupation: row.occupation,
         jurisdictionId: ctx.jurisdictionId,
+        jurisdictionCode: ctx.jurisdictionCode,
         sourceId: ctx.sourceId,
       });
 

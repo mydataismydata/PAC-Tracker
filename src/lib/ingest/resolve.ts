@@ -20,7 +20,7 @@
  * leaving two nodes separate.
  */
 
-import { sql, eq } from 'drizzle-orm';
+import { sql, eq, and } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { entities, entityAliases } from '@/db/schema';
 import * as schema from '@/db/schema';
@@ -32,6 +32,8 @@ import {
   looksLikePerson,
   personDisplayName,
   AUTO_LINK_THRESHOLD,
+  isGenericLocalOffice,
+  scopedName,
   REVIEW_FLOOR,
 } from '@/lib/normalize';
 
@@ -59,6 +61,11 @@ export interface ResolveInput {
   address?: string | null;
   occupation?: string | null;
   jurisdictionId?: string | null;
+  /**
+   * Jurisdiction code, e.g. `FL-STJOHNS`, when the caller loaded from a source
+   * scoped to one place. Only used to disambiguate generic local-office names.
+   */
+  jurisdictionCode?: string | null;
   sourceId?: string | null;
 }
 
@@ -138,10 +145,20 @@ export class EntityResolver {
   }
 
   async resolve(input: ResolveInput): Promise<ResolveResult> {
-    const normalized = normalizeName(input.rawName);
-    if (!normalized) {
+    const bare = normalizeName(input.rawName);
+    if (!bare) {
       throw new Error(`cannot resolve empty name from "${input.rawName}"`);
     }
+
+    // A name that gives a local office but no county means "ours" to the county
+    // that filed it, and nothing at all on its own. The caller knows which
+    // county — it picked one to fetch — so that is folded into the identity
+    // used for matching. Everything else resolves statewide as before, which is
+    // what lets a committee giving at several levels stay one node.
+    const normalized =
+      input.jurisdictionCode && isGenericLocalOffice(bare)
+        ? scopedName(bare, input.jurisdictionCode)
+        : bare;
 
     const cached = this.cache.get(normalized);
     if (cached) {
@@ -163,10 +180,21 @@ export class EntityResolver {
     }
 
     // 3. Known alias.
+    //
+    // Only one good enough to have been linked on its own. Step 6 also stores
+    // near-misses, purely so a human can review them, and reading those back as
+    // answers is how "Republican Executive Committee" — scoring 0.809 against a
+    // committee in a county 170 miles away, well under the bar to link — became
+    // the permanent identity for two other counties' party committees.
     const alias = await this.db
       .select({ id: entityAliases.entityId, confidence: entityAliases.confidence })
       .from(entityAliases)
-      .where(eq(entityAliases.normalizedAlias, normalized))
+      .where(
+        and(
+          eq(entityAliases.normalizedAlias, normalized),
+          sql`${entityAliases.confidence} >= ${AUTO_LINK_THRESHOLD}`,
+        ),
+      )
       .orderBy(sql`${entityAliases.confidence} DESC`)
       .limit(1);
     if (alias.length > 0) {

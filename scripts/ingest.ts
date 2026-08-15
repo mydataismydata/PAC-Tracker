@@ -702,7 +702,7 @@ async function ingestCounty(slug: string, electionId?: string) {
       const res = await ingestTransactionRows(
         db,
         cycle ? rows.map((r) => ({ ...r, electionCycle: cycle })) : rows,
-        { sourceId, jurisdictionId, resolver },
+        { sourceId, jurisdictionId, jurisdictionCode: county.code, resolver },
       );
       totalRows += rows.length;
       totalInserted += res.rowsInserted;

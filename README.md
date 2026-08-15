@@ -351,17 +351,28 @@ county school board race with no special handling — a crawl walks straight thr
   is therefore its *vendor* spending; its transfers to other committees appear as
   contributions on the receiving side. Self-loops are exempt, since a candidate
   reimbursing their own campaign genuinely files both halves.
-- **Entity resolution is not scoped by county, and generic office names collapse across
-  them.** Every county has a "Republican Executive Committee", a "Democratic Executive
-  Committee" and a "Supervisor of Elections", and the counties file under exactly those
-  bare names. With two counties loaded the damage is already visible: Duval's and St.
-  Johns' Republican committees both resolved onto the *state* registry entry for
-  `GADSDEN COUNTY REPUBLICAN EXECUTIVE COMMITTEE` — a different county near Tallahassee —
-  pooling $6.3M under one node, and about $7.3M of Duval money hangs off St. Johns and
-  Gadsden entities in total. Treat county party committees and elections offices as
-  unreliable nodes until resolution is jurisdiction-aware. Vendors that genuinely serve
-  several counties (Data Targeting, Majority Strategies) are correctly shared and are not
-  part of this problem.
+- **Generic local-office names are scoped to the county that filed them.** Every county
+  has a "Republican Executive Committee" and a "Supervisor of Elections", and counties
+  file under exactly those bare names, so left alone they collapse into one node — or onto
+  whichever county does spell itself out. `isGenericLocalOffice` detects a name that gives
+  an office but no place, and such names resolve within their county rather than
+  statewide. Names that do say which county ("St. Johns County Republican Executive
+  Committee") are untouched and stay a single node across levels, which is what lets a
+  committee giving at both state and county level remain one entity.
+- **Duval is not yet fixed.** Its bare "Republican Executive Committee" rows still sit on
+  the Gadsden node — $5.7M in and $6.5M out, against $5,000 that is genuinely Gadsden's.
+  Unlike St. Johns, Duval *does* have a state registry entry to map onto.
+- Below-threshold aliases are stored for review and must never be read back as answers.
+  Doing so is what merged three counties' committees: "Republican Executive Committee"
+  scored 0.809 against Gadsden's — under the 0.88 needed to link — was filed as a
+  suggestion, then consumed as the answer on every later lookup. Alias lookup now requires
+  `AUTO_LINK_THRESHOLD`.
+- Re-sweeping an already-loaded cycle can leave orphan nodes: resolution creates an entity
+  before the insert is attempted, and a row that dedupes on its hash leaves that entity
+  with nothing attached. Harmless in the graph, since they have no edges, but they show up
+  in search as zero-dollar results. Delete county-sourced entities with no transactions
+  after a re-sweep. The ~4,500 state-sourced orphans are different and should be kept —
+  they are the committee registry, which is what resolution matches against.
 - A cycle sweep reports any window it could not fetch completely rather than returning
   short silently. Quarter-end filing dates are where this bites: they can exceed the
   service's row cap within a single day, and are recovered by subdividing on contributor
