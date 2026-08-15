@@ -40,3 +40,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# One-off probe and verification scripts. These are written against whatever
+# the current question is, often reach into private adapter internals, and are
+# not meant to survive the session that produced them.
+scripts/tmp-*.ts
