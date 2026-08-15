@@ -272,3 +272,47 @@ export const AUTO_LINK_THRESHOLD = 0.88;
 
 /** Below this, a candidate pair is not even worth storing for review. */
 export const REVIEW_FLOOR = 0.62;
+
+/**
+ * Local offices that every county has one of, named without saying which.
+ *
+ * County filings routinely give the bare office — "Republican Executive
+ * Committee", "Supervisor of Elections" — because within one county's records
+ * there is no ambiguity. Across counties there is nothing but ambiguity: the
+ * name is identical in all 67, so left alone they collapse into a single node,
+ * or worse, onto some other county's committee that does spell itself out.
+ *
+ * Matching is deliberately narrow. It fires only when the name states one of
+ * these offices *and* names no county, so "St. Johns County Republican
+ * Executive Committee" is untouched and stays a single entity statewide.
+ */
+const GENERIC_LOCAL_OFFICES = [
+  /\b(REPUBLICAN|DEMOCRATIC|LIBERTARIAN|GREEN|INDEPENDENT)\s+(PARTY\s+)?EXECUTIVE\s+COMMITTEE\b/,
+  /\bSUPERVISOR\s+OF\s+ELECTIONS\b/,
+  /\bELECTIONS\s+SUPERVISOR\b/,
+  /\b(COUNTY\s+)?CANVASSING\s+BOARD\b/,
+];
+
+/** Words that mean the name already says which county it belongs to. */
+const NAMES_A_PLACE = /\b(COUNTY|CNTY|COUNTIES|CO)\b\s*\w|\b(OF|FOR)\s+[A-Z]/;
+
+/**
+ * True when a name identifies a local office but not which county's.
+ *
+ * Such a name is only meaningful alongside the county it was filed in, which
+ * the loader always knows — it chose the county when it fetched the file.
+ */
+export function isGenericLocalOffice(normalized: string): boolean {
+  if (!GENERIC_LOCAL_OFFICES.some((re) => re.test(normalized))) return false;
+  return !NAMES_A_PLACE.test(normalized);
+}
+
+/**
+ * Key a generic office name to the county it was filed in.
+ *
+ * Kept out of the display name: the entity still reads as the county spells
+ * it, and only the identity used for matching carries the qualifier.
+ */
+export function scopedName(normalized: string, jurisdictionCode: string): string {
+  return `${normalized} @${jurisdictionCode}`;
+}
