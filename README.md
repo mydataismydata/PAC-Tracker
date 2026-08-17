@@ -22,6 +22,14 @@ outward as the data streams in.
   draw. Filter by name, sort, page through, and export to CSV. The totals reconcile
   against the tile, so a candidate showing "297 sources / $75,819" can be accounted for
   line by line.
+- **Funding origins.** A third tab follows the money past the committee-to-committee
+  transfers to whoever originated it, pro-rata across every hop, and exports too. The
+  export carries a `share_of` column naming the denominator on every row and a
+  `counts_toward_total` flag, because the report is not a table: national pools'
+  funders are quoted as shares *of the pool*, and for Keep Florida Great they sum to
+  $32.2M against a $400K committee. Summing the amount column blind is the obvious
+  mistake to make once the numbers leave the screen, so the file says which rows belong
+  in the total and which are context.
 - **Election cycle filter.** Current, previous, or all. Rollups are stored per
   cycle, so this narrows an index range rather than filtering after the fact —
   and tile totals, the ledger and the funding trace all follow it, so a filtered
