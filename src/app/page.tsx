@@ -131,6 +131,10 @@ export default function Home() {
     setViewIntent((v) => ({ kind: 'focus', nodeId, token: v.token + 1 }));
   }, []);
 
+  const requestFit = useCallback(() => {
+    setViewIntent((v) => ({ kind: 'fit', token: v.token + 1 }));
+  }, []);
+
   const crawlDone = !crawl.loading && crawl.nodes.size > 0;
   useEffect(() => {
     if (!crawlDone) return;
@@ -207,6 +211,51 @@ export default function Home() {
       });
     },
     [crawl.nodes, requestFocus],
+  );
+
+  /**
+   * Draw a set of entities alongside the current graph.
+   *
+   * Fetches whichever are not already drawn, then hands them to the crawl state
+   * as loose nodes. Nothing is added as an edge: money between them shows only
+   * if the crawl already found it, so a cluster with no payments between its
+   * members arrives as unconnected tiles rather than a fabricated web.
+   */
+  const handleAddToCanvas = useCallback(
+    async (entityIds: string[]) => {
+      const missing = entityIds.filter((id) => !crawl.nodes.has(id));
+      if (missing.length === 0) {
+        requestFit();
+        return;
+      }
+      const fetched = await Promise.all(
+        missing.map(async (id) => {
+          const res = await fetch(`/api/entities/${id}`);
+          if (!res.ok) return null;
+          const e = (await res.json()).entity;
+          return {
+            id: e.id,
+            name: e.name,
+            kind: e.kind,
+            committeeType: e.committee_type,
+            status: e.status,
+            office: e.office ?? null,
+            party: e.party ?? null,
+            city: e.city,
+            stateCode: e.state_code,
+            totalReceived: e.total_received,
+            totalGiven: e.total_given,
+            inDegree: e.in_degree,
+            outDegree: e.out_degree,
+            isTraversable: e.is_traversable,
+            level: -1,
+          } satisfies GraphNode;
+        }),
+      );
+      crawl.addNodes(fetched.filter((n): n is GraphNode => n !== null));
+      requestFit();
+    },
+    [crawl, requestFit],
   );
 
   /**
@@ -400,6 +449,7 @@ export default function Home() {
             nodes={crawl.nodes}
             onFocus={handleFocusEntity}
             onRecenter={handleRecenter}
+            onAddToCanvas={handleAddToCanvas}
             cycle={settings.cycle}
           />
         </aside>

@@ -123,5 +123,31 @@ export function useCrawl() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return { ...state, start, reset };
+  /**
+   * Drop extra nodes onto the canvas without re-crawling.
+   *
+   * Used to bring a committee's co-registrants into view. Only nodes are added:
+   * whatever money edges exist between them and the graph are already in
+   * `edges` if the crawl found them, and an affiliation is not an edge — see
+   * `src/lib/graph/affiliations.ts`. So a cluster with no money between its
+   * members lands as unconnected tiles, which is the honest picture.
+   *
+   * `level: -1` marks them as arrivals from outside the BFS, so the layout
+   * treats them as loose rather than as another ring.
+   */
+  const addNodes = useCallback((incoming: GraphNode[]) => {
+    if (incoming.length === 0) return;
+    setState((prev) => {
+      const nodes = new Map(prev.nodes);
+      let added = 0;
+      for (const n of incoming) {
+        if (nodes.has(n.id)) continue;
+        nodes.set(n.id, { ...n, level: -1 });
+        added++;
+      }
+      return added > 0 ? { ...prev, nodes } : prev;
+    });
+  }, []);
+
+  return { ...state, start, reset, addNodes };
 }
