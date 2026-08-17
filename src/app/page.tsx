@@ -23,7 +23,7 @@ import {
   type GraphNode,
   type ViewIntent,
 } from '@/lib/graph/types';
-import type { GraphCanvasHandle } from '@/components/GraphCanvas';
+import { ZOOM_STEP, PAN_STEP, type GraphCanvasHandle } from '@/components/GraphCanvas';
 
 // Cytoscape touches `window` at import time, so it must not be server-rendered.
 const GraphCanvas = dynamic(() => import('@/components/GraphCanvas'), {
@@ -134,6 +134,64 @@ export default function Home() {
 
   const requestFit = useCallback(() => {
     setViewIntent((v) => ({ kind: 'fit', token: v.token + 1 }));
+  }, []);
+
+  /**
+   * Arrow keys pan the canvas; +/− and = zoom.
+   *
+   * Bound to the window rather than the canvas because the canvas is rarely
+   * what holds focus — the user has usually just clicked a tile or a panel row.
+   * That makes it the caller's job to stay out of the way of typing, so the
+   * handler bails whenever focus is in a field or a modifier is held, and
+   * `preventDefault` runs only on keys actually consumed. Without the first
+   * check, arrowing through the search box would drag the graph instead of
+   * moving the caret.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (
+        t &&
+        (t.isContentEditable ||
+          t.tagName === 'INPUT' ||
+          t.tagName === 'TEXTAREA' ||
+          t.tagName === 'SELECT')
+      ) {
+        return;
+      }
+      const cv = canvasRef.current;
+      if (!cv) return;
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          cv.panBy(-PAN_STEP, 0);
+          break;
+        case 'ArrowRight':
+          cv.panBy(PAN_STEP, 0);
+          break;
+        case 'ArrowUp':
+          cv.panBy(0, -PAN_STEP);
+          break;
+        case 'ArrowDown':
+          cv.panBy(0, PAN_STEP);
+          break;
+        case '+':
+        case '=':
+          cv.zoomBy(ZOOM_STEP);
+          break;
+        case '-':
+        case '_':
+          cv.zoomBy(1 / ZOOM_STEP);
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+    };
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const crawlDone = !crawl.loading && crawl.nodes.size > 0;
@@ -440,6 +498,7 @@ export default function Home() {
             </div>
           )}
 
+          {seed && <ViewControls canvasRef={canvasRef} />}
           {seed && <Legend />}
         </main>
 
@@ -458,6 +517,48 @@ export default function Home() {
           />
         </aside>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Zoom and pan without a wheel or a trackpad.
+ *
+ * Bottom-left, clear of the legend. Arrow keys do the same panning, so both are
+ * documented here rather than leaving the keyboard route undiscoverable.
+ */
+function ViewControls({
+  canvasRef,
+}: {
+  canvasRef: React.RefObject<GraphCanvasHandle | null>;
+}) {
+  const btn =
+    'flex h-7 w-7 items-center justify-center rounded border border-slate-700 bg-slate-900/90 ' +
+    'text-slate-300 hover:bg-slate-800 hover:text-slate-100';
+
+  return (
+    <div className="absolute bottom-4 left-4 flex flex-col items-start gap-1">
+      <div className="flex gap-1">
+        <button
+          type="button"
+          onClick={() => canvasRef.current?.zoomBy(ZOOM_STEP)}
+          className={btn}
+          title="Zoom in"
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          onClick={() => canvasRef.current?.zoomBy(1 / ZOOM_STEP)}
+          className={btn}
+          title="Zoom out"
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-600">Arrow keys pan</p>
     </div>
   );
 }

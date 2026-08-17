@@ -24,7 +24,9 @@ outward as the data streams in.
 - **Progressive rendering.** Each BFS level is streamed over SSE and drawn as it arrives,
   so the first tiles appear immediately instead of after the whole crawl.
 - **Zoomable, pannable canvas** with draggable tiles. A tile you move is pinned, and later
-  levels arrange themselves around your layout.
+  levels arrange themselves around your layout. On-screen **+ / −** and the arrow keys
+  drive both, so none of it needs a wheel or a trackpad; steps are proportional, so one
+  press moves the same share of the view at any zoom.
 - **Full ledger per entity.** Selecting a tile lists *every* counterparty and *every*
   individual transaction from the database — not just the edges the crawl happened to
   draw. Filter by name, sort, page through, and export to CSV. The totals reconcile

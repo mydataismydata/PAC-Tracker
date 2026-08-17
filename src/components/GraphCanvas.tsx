@@ -81,7 +81,16 @@ export interface GraphCanvasHandle {
   /** Centre and zoom on one node. False when it is not on the canvas. */
   focusOn: (nodeId: string) => boolean;
   getPositions: () => Record<string, { x: number; y: number }>;
+  /** Multiply the zoom about the viewport centre. >1 zooms in. */
+  zoomBy: (factor: number) => void;
+  /** Pan by a fraction of the viewport; +x moves the view right. */
+  panBy: (dx: number, dy: number) => void;
 }
+
+/** One press of + or −. */
+export const ZOOM_STEP = 1.3;
+/** One arrow-key press, as a share of the viewport. */
+export const PAN_STEP = 0.2;
 
 /** Zoom level used when homing in on a single entity. */
 const FOCUS_ZOOM = 1.1;
@@ -636,6 +645,45 @@ export default function GraphCanvas({
     return true;
   }, []);
 
+  /**
+   * Step the zoom about the centre of the viewport.
+   *
+   * Multiplicative, not additive: zoom is a scale, so a fixed step feels
+   * enormous when zoomed out and imperceptible when zoomed in. Anchored on the
+   * viewport centre rather than the pointer, since the caller is a button and
+   * has no pointer position to speak of.
+   */
+  const zoomBy = useCallback((factor: number) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    layoutRef.current?.stop();
+    cy.stop();
+    const next = Math.min(cy.maxZoom(), Math.max(cy.minZoom(), cy.zoom() * factor));
+    // Set rather than animate. An animated zoom rides requestAnimationFrame,
+    // which a backgrounded tab stalls — the graph then jumps when the tab comes
+    // forward, or not at all. A discrete step wants no easing anyway.
+    //
+    // `cy.width()`, not `container().clientWidth`: Cytoscape's own measure of
+    // its viewport, which is what `renderedPosition` is expressed in.
+    cy.zoom({ level: next, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } });
+  }, []);
+
+  /**
+   * Pan by a fraction of the viewport.
+   *
+   * Proportional rather than a fixed pixel count so one press moves the same
+   * share of what is on screen at any zoom level.
+   */
+  const panBy = useCallback((dx: number, dy: number) => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    layoutRef.current?.stop();
+    cy.stop();
+    // Sign is inverted because panning the viewport right means moving the
+    // scene left. `cy.width()` for the same reason as `zoomBy`.
+    cy.panBy({ x: -dx * cy.width(), y: -dy * cy.height() });
+  }, []);
+
   const getPositions = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return {};
@@ -648,8 +696,8 @@ export default function GraphCanvas({
   }, []);
 
   useEffect(() => {
-    if (ready) onReady?.({ exportPng, fit, focusOn, getPositions });
-  }, [ready, exportPng, fit, focusOn, getPositions, onReady]);
+    if (ready) onReady?.({ exportPng, fit, focusOn, getPositions, zoomBy, panBy });
+  }, [ready, exportPng, fit, focusOn, getPositions, zoomBy, panBy, onReady]);
 
   // A new seed means a new graph; whatever the user pinned belonged to the old
   // one and must not constrain the fresh layout.
