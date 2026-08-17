@@ -15,6 +15,7 @@ import {
   formatMoney,
   formatMoneyFull,
   kindLabel,
+  isOfficerNode,
   type GraphNode,
 } from '@/lib/graph/types';
 import { useTrace, type TraceResult } from '@/lib/graph/useTrace';
@@ -88,22 +89,74 @@ export default function NodeDetail({
   const view: LedgerView = mode === 'origins' || mode === 'operators' ? 'sources' : mode;
   const showLedger = mode === 'sources' || mode === 'transactions';
 
+  // An officer hub is a person, not an entity: it has no row, so every
+  // entity-keyed fetch would 400 on its id. Nothing is requested for one.
+  const officerHub = node !== null && isOfficerNode(node.id);
+  const entityId = node && !officerHub ? node.id : null;
+
   const query = useMemo(
     () => ({ view, direction, q, sort, cycle }),
     [view, direction, q, sort, cycle],
   );
-  const ledger = useLedger(node?.id ?? null, query);
+  const ledger = useLedger(entityId, query);
   const traceQuery = useMemo(
     () => ({ depth: 12, min: 100, dateOrdered, cycle }),
     [dateOrdered, cycle],
   );
-  const traced = useTrace(node?.id ?? null, traceQuery, mode === 'origins');
-  const operators = useAffiliations(node?.id ?? null, mode === 'operators');
+  const traced = useTrace(entityId, traceQuery, mode === 'origins');
+  // Always fetched, not just on the operators tab: who runs a committee belongs
+  // in the header next to its name, the same way the office or the city does.
+  const operators = useAffiliations(entityId, true);
 
   if (!node) {
     return (
       <div className="p-4 text-sm text-slate-500">
         Select a tile to inspect it. Double-click a tile to re-center the crawl there.
+      </div>
+    );
+  }
+
+  // A hub has no ledger, no trace and no registration of its own — it *is* the
+  // shared fact. Showing the money panel for one would report $0 received on a
+  // person named across a $95M network.
+  if (officerHub) {
+    const peers = [...nodes.values()].filter(
+      (n) => !isOfficerNode(n.id) && n.kind !== 'officer',
+    );
+    const received = peers.reduce((a, n) => a + Number(n.totalReceived || 0), 0);
+    const given = peers.reduce((a, n) => a + Number(n.totalGiven || 0), 0);
+    return (
+      <div className="space-y-3 p-4">
+        <div>
+          <h3 className="text-sm font-semibold leading-snug text-violet-200">{node.name}</h3>
+          <p className="mt-0.5 text-xs capitalize text-slate-400">
+            {node.office ?? 'officer'} · named on filings
+          </p>
+        </div>
+        <p className="text-[11px] leading-relaxed text-slate-400">
+          A person, not a committee. The dashed spokes are the committees naming them in this
+          role — paperwork, not payments. Nothing flows through this node and no funding trace
+          crosses it.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="rounded border border-slate-800 bg-slate-900/60 p-2">
+            <div className="text-[10px] uppercase tracking-wide text-slate-500">
+              Received, all tiles
+            </div>
+            <div className="text-sm font-semibold text-emerald-400">{formatMoneyFull(received)}</div>
+          </div>
+          <div className="rounded border border-slate-800 bg-slate-900/60 p-2">
+            <div className="text-[10px] uppercase tracking-wide text-slate-500">
+              Given, all tiles
+            </div>
+            <div className="text-sm font-semibold text-amber-400">{formatMoneyFull(given)}</div>
+          </div>
+        </div>
+        <p className="text-[10px] leading-relaxed text-slate-600">
+          Summed across the {peers.length} committees currently drawn, which is the network as
+          crawled rather than everything this person is named on. Raise depth or max-per-node to
+          widen it. Select a committee tile for its own ledger.
+        </p>
       </div>
     );
   }
@@ -192,6 +245,46 @@ export default function NodeDetail({
             {node.status === 'closed' && ' · closed'}
             {node.city && ` · ${node.city}, ${node.stateCode ?? ''}`}
           </p>
+
+          {/* Who runs it, wherever you are in the panel. Each name is a link to
+              the other committees naming the same person, which is the question
+              it always prompts. */}
+          {operators.result && operators.result.officers.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5">
+              {operators.result.officers.map((o) => {
+                const cluster = operators.result?.clusters.find(
+                  (c) => c.basis === o.role && c.value === o.normalizedName,
+                );
+                return (
+                  <li
+                    key={`${o.role}-${o.normalizedName}`}
+                    className="flex items-baseline gap-1.5 text-[11px]"
+                  >
+                    <span className="w-14 shrink-0 capitalize text-slate-600">{o.role}</span>
+                    <button
+                      type="button"
+                      onClick={() => setMode('operators')}
+                      className="min-w-0 flex-1 truncate text-left text-slate-300 hover:text-indigo-300
+                                 hover:underline"
+                      title="See every committee naming this person"
+                    >
+                      {o.fullName}
+                    </button>
+                    {cluster && (
+                      <span
+                        className={`shrink-0 tabular-nums ${
+                          cluster.isVendorScale ? 'text-slate-600' : 'text-indigo-400'
+                        }`}
+                        title={`Named on ${cluster.total} committees`}
+                      >
+                        ×{cluster.total}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-2">

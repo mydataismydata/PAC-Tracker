@@ -13,6 +13,14 @@ outward as the data streams in.
 - **Direct vs donor links.** *Direct* follows only the committee-to-committee chain, which
   keeps the political money path readable. *Donor* additionally pulls in the individuals
   and corporations feeding each committee — the full funding base, and a far bigger graph.
+- **Registration links.** A third mode that hops on shared officers instead of money,
+  reaching committees with no payment between them at all, then draws the money that
+  *does* move inside the network. One treasurer in the live data is named on 103
+  committees holding **$95.9M received, $88.3M given, and $32.3M moving between them** —
+  a shape no transaction discloses. Dashed violet lines are paperwork, never payments,
+  and a shared officer is drawn as a **hub node** rather than as pairwise edges: everyone
+  sharing an officer shares them with everyone else, so the Jones network as a clique is
+  10,308 lines and a solid disc, against 210 spokes that say the same thing.
 - **Progressive rendering.** Each BFS level is streamed over SSE and drawn as it arrives,
   so the first tiles appear immediately instead of after the whole crawl.
 - **Zoomable, pannable canvas** with draggable tiles. A tile you move is pinned, and later

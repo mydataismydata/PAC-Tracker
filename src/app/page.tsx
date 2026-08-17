@@ -17,6 +17,7 @@ import { useCrawl } from '@/lib/graph/useCrawl';
 import {
   DEFAULT_SETTINGS,
   formatMoney,
+  isOfficerNode,
   type CrawlSettings,
   type EntitySearchHit,
   type GraphNode,
@@ -189,6 +190,9 @@ export default function Home() {
         requestFocus(entityId);
         return;
       }
+      // Officer hubs exist only on the canvas; there is nothing to fetch and
+      // the id is not a uuid, so the lookup would 400.
+      if (isOfficerNode(entityId)) return;
       const res = await fetch(`/api/entities/${entityId}`);
       if (!res.ok) return;
       const e = (await res.json()).entity;
@@ -223,7 +227,7 @@ export default function Home() {
    */
   const handleAddToCanvas = useCallback(
     async (entityIds: string[]) => {
-      const missing = entityIds.filter((id) => !crawl.nodes.has(id));
+      const missing = entityIds.filter((id) => !crawl.nodes.has(id) && !isOfficerNode(id));
       if (missing.length === 0) {
         requestFit();
         return;
