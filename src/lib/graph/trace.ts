@@ -121,7 +121,7 @@ interface InboundRow extends Record<string, unknown> {
 
 export async function trace(
   db: Db,
-  seedId: string,
+  seedIds: string | string[],
   opts: TraceOptions = {},
 ): Promise<TraceResult> {
   const maxDepth = opts.maxDepth ?? 12;
@@ -129,7 +129,10 @@ export async function trace(
   const dateOrdered = opts.dateOrdered ?? true;
   const cycle = opts.cycle;
 
-  const [seed] = await db.execute<{
+  const ids = Array.isArray(seedIds) ? seedIds : [seedIds];
+  if (ids.length === 0) throw new Error('trace needs at least one seed');
+
+  const seeds = await db.execute<{
     id: string;
     name: string;
     kind: string;
@@ -146,11 +149,11 @@ export async function trace(
       ? sql`LEFT JOIN entity_cycle_totals ct
               ON ct.entity_id = e.id AND ct.election_cycle = ${cycle}`
       : sql``}
-    WHERE e.id = ${seedId}
+    WHERE e.id = ANY(${sql.param(ids)}::uuid[])
   `);
-  if (!seed) throw new Error(`no entity ${seedId}`);
+  if (seeds.length === 0) throw new Error(`no entity ${ids.join(', ')}`);
 
-  const seedTotal = Number(seed.received);
+  const seedTotal = seeds.reduce((a, s) => a + Number(s.received), 0);
   const origins = new Map<string, { amount: number; hop: number }>();
   const injections = new Map<string, { amount: number; hop: number }>();
   const dark = new Map<string, { amount: number; hop: number }>();
@@ -158,7 +161,13 @@ export async function trace(
   let truncated = false;
   let hops = 0;
 
-  let parcels: Parcel[] = [{ entityId: seedId, cutoff: null, amount: seedTotal }];
+  // One parcel per seed, each carrying its own receipts, so a group is traced
+  // as the sum of its members rather than as a single averaged pot. Transfers
+  // between members resolve naturally: the receiving committee's parcel walks
+  // up into the sending one, which is where that money actually came from.
+  let parcels: Parcel[] = seeds
+    .map((s) => ({ entityId: s.id, cutoff: null, amount: Number(s.received) }))
+    .filter((p) => p.amount > 0);
 
   for (let depth = 1; depth <= maxDepth && parcels.length > 0; depth++) {
     hops = depth;
@@ -242,12 +251,17 @@ export async function trace(
   return {
     cycle: cycle ?? null,
     injectionPoints: toList(injections).map((p) => ({ ...p, funders: funders.get(p.id) ?? [] })),
+    // With several seeds the identity is the group's, so the caller supplies
+    // the name; `id` names the first member only as something to link back to.
     seed: {
-      id: seed.id,
-      name: seed.name,
-      kind: seed.kind,
+      id: seeds[0].id,
+      name:
+        seeds.length === 1
+          ? seeds[0].name
+          : `${seeds.length} committees`,
+      kind: seeds.length === 1 ? seeds[0].kind : 'group',
       total: seedTotal,
-      inDegree: seed.in_degree,
+      inDegree: seeds.reduce((a, s) => a + s.in_degree, 0),
     },
     sources: toList(origins),
     unresolved: toList(dark),

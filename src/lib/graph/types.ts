@@ -36,6 +36,19 @@ export function isOfficerNode(id: string): boolean {
   return id.startsWith(OFFICER_NODE_PREFIX);
 }
 
+/**
+ * API prefix for whichever kind of subject a node id names.
+ *
+ * Entities and officers answer the same questions — what came in, what went
+ * out, where it originated — over different underlying sets, so the panel and
+ * its hooks stay identical and only the base path changes.
+ */
+export function subjectApiBase(id: string): string {
+  return isOfficerNode(id)
+    ? `/api/officers/${encodeURIComponent(id.slice(OFFICER_NODE_PREFIX.length))}`
+    : `/api/entities/${id}`;
+}
+
 export interface GraphEdge {
   id: string;
   source: string;

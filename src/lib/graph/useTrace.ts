@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { TraceResult } from '@/lib/graph/trace';
+import { subjectApiBase } from '@/lib/graph/types';
 
 export type { TraceResult, TracedSource } from '@/lib/graph/trace';
 
@@ -42,7 +43,7 @@ export function useTrace(entityId: string | null, query: TraceQuery, enabled: bo
           dateOrdered: String(query.dateOrdered),
         });
         if (query.cycle) p.set('cycle', query.cycle);
-        const res = await fetch(`/api/entities/${entityId}/trace?${p}`, {
+        const res = await fetch(`${subjectApiBase(entityId)}/trace?${p}`, {
           signal: controller.signal,
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

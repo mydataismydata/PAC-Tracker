@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { subjectApiBase } from '@/lib/graph/types';
 
 export type LedgerView = 'sources' | 'transactions';
 export type LedgerDirection = 'in' | 'out' | 'all';
@@ -66,6 +67,8 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
   const [rows, setRows] = useState<LedgerRow[]>([]);
   const [total, setTotal] = useState(0);
   const [totalAmount, setTotalAmount] = useState('0');
+  /** Of totalAmount, how much moved between committees in the subject set. */
+  const [internalAmount, setInternalAmount] = useState('0');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -106,7 +109,7 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/entities/${entityId}/ledger?${build(0)}`, {
+        const res = await fetch(`${subjectApiBase(entityId)}/ledger?${build(0)}`, {
           signal: controller.signal,
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -114,6 +117,7 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
         setRows(json.rows ?? []);
         setTotal(json.total ?? 0);
         setTotalAmount(json.totalAmount ?? '0');
+        setInternalAmount(json.internalAmount ?? '0');
       } catch (e) {
         if ((e as Error).name !== 'AbortError') setError((e as Error).message);
       } finally {
@@ -131,7 +135,7 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
     if (!entityId || loading || rows.length >= total) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/entities/${entityId}/ledger?${build(rows.length)}`);
+      const res = await fetch(`${subjectApiBase(entityId)}/ledger?${build(rows.length)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setRows((prev) => [...prev, ...(json.rows ?? [])]);
@@ -153,7 +157,7 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
       const p = build(offset);
       p.set('limit', '500');
       p.set('offset', String(offset));
-      const res = await fetch(`/api/entities/${entityId}/ledger?${p}`);
+      const res = await fetch(`${subjectApiBase(entityId)}/ledger?${p}`);
       if (!res.ok) break;
       const json = await res.json();
       all.push(...(json.rows ?? []));
@@ -170,6 +174,7 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
     error,
     hasMore: rows.length < total,
     loadMore,
+    internalAmount,
     fetchAll,
   };
 }
