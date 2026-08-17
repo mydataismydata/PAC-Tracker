@@ -541,6 +541,37 @@ export const committeeOfficers = pgTable(
   ],
 );
 
+/**
+ * One officer key that should be read as another.
+ *
+ * `officerKey` folds a filed name to LAST FIRST, which handles the variation
+ * that carries no information — middle names, initials, punctuation. It cannot
+ * cross a misspelling, and the state's own list contains several: `Williams S
+ * Jones` and `Wiliam S Jones` are the same person as `William S. Jones` and key
+ * apart from him, splitting seven committees off a hundred-committee network.
+ *
+ * Fuzzy-matching officer names automatically is not the answer. Two people
+ * genuinely called J. Smith are common, and a wrong merge here asserts that one
+ * person runs committees they have nothing to do with — the same class of harm
+ * as a wrong entity merge, aimed at a named individual. So corrections are
+ * enumerated by hand and applied at ingest, which keeps them reviewable in the
+ * one place a reader would look.
+ */
+export const officerAliases = pgTable(
+  'officer_aliases',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    /** The key as `officerKey` would derive it from the filed spelling. */
+    alias: text('alias').notNull(),
+    /** The key it should be treated as. */
+    canonical: text('canonical').notNull(),
+    /** Why, so the next reader can check rather than trust. */
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('officer_aliases_alias_key').on(t.alias)],
+);
+
 /* -------------------------------------------------------------------------- */
 /* Saved searches                                                              */
 /* -------------------------------------------------------------------------- */

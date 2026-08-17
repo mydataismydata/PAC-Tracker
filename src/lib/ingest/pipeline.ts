@@ -18,6 +18,7 @@ import {
   entityAliases,
   committeeRegistrations,
   committeeOfficers,
+  officerAliases,
 } from '@/db/schema';
 import { EntityResolver, refreshTraversability } from './resolve';
 import type { RawContributionRow, RegistryCommitteeDetail } from './fl-doe/parse';
@@ -544,6 +545,13 @@ export async function ingestCommitteeRegistrations(
     collisions: [],
   };
 
+  // Hand-entered spelling corrections, loaded once. Small enough to hold, and
+  // consulted on every officer row.
+  const aliasRows = await db
+    .select({ alias: officerAliases.alias, canonical: officerAliases.canonical })
+    .from(officerAliases);
+  const canonicalKey = new Map(aliasRows.map((a) => [a.alias, a.canonical]));
+
   for (const [i, row] of rows.entries()) {
     // 1. The account number is an identity, so prefer it over any name match.
     const claimed = row.acctNum
@@ -670,7 +678,11 @@ export async function ingestCommitteeRegistrations(
         middle: row.treasurerMiddle,
       },
     ]
-      .map((o) => ({ ...o, key: officerKey(o.last, o.first) }))
+      .map((o) => {
+        const raw = officerKey(o.last, o.first);
+        // The filed spelling stays in `fullName`; only the matching key moves.
+        return { ...o, key: raw === null ? null : (canonicalKey.get(raw) ?? raw) };
+      })
       .filter((o): o is typeof o & { key: string } => o.key !== null);
 
     // Anyone we recorded last time who is not on the list now has left the
