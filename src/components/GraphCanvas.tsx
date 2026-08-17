@@ -49,6 +49,8 @@ const KIND_COLORS: Record<string, string> = {
   organization: '#f59e0b',
   individual: '#64748b',
   party: '#f43f5e',
+  /** Not an entity — a person named on filings. See crawl.ts officer hubs. */
+  officer: '#7c3aed',
   unknown: '#475569',
 };
 
@@ -127,6 +129,11 @@ interface Props {
  * the name away.
  */
 function tileLabel(n: GraphNode): string {
+  // An officer hub is a person. "in $0 · out $0" on one would read as a party
+  // to the money rather than the reason the committees around it are grouped.
+  if (n.kind === 'officer') {
+    return [fitLabel(n.name), n.office ?? ''].filter(Boolean).join('\n');
+  }
   const received = Number(n.totalReceived);
   const given = Number(n.totalGiven);
   const money =
@@ -235,6 +242,25 @@ export default function GraphCanvas({
           },
         },
         {
+          // A person, not a committee. Shaped and coloured unlike any tile so
+          // it cannot be mistaken for something that holds or moves money.
+          selector: 'node[kind = "officer"]',
+          style: {
+            shape: 'ellipse',
+            'background-color': '#7c3aed',
+            'background-opacity': 0.3,
+            'border-width': 2,
+            'border-color': '#a78bfa',
+            'border-style': 'dashed',
+            color: '#ddd6fe',
+            'font-size': 11,
+            'font-weight': 700,
+            width: 132,
+            height: 132,
+            'z-index': 12,
+          },
+        },
+        {
           selector: 'node:selected',
           style: { 'border-width': 3, 'border-color': '#fbbf24', 'background-opacity': 0.35 },
         },
@@ -266,6 +292,22 @@ export default function GraphCanvas({
           // Committee-to-committee money is the story; individual gifts recede.
           selector: 'edge[?isDirectLink]',
           style: { 'line-color': '#818cf8', 'target-arrow-color': '#818cf8', opacity: 0.75 },
+        },
+        {
+          // Paperwork, not payment. Dashed and arrowless so it cannot be read
+          // as a direction of money, which is the one misreading that would
+          // turn a shared accountant into a transfer that never happened.
+          selector: 'edge[kind = "registration"]',
+          style: {
+            'line-style': 'dashed',
+            'line-dash-pattern': [5, 4],
+            'line-color': '#7c3aed',
+            'target-arrow-shape': 'none',
+            'source-arrow-shape': 'none',
+            width: 1,
+            opacity: 0.45,
+            color: '#a78bfa',
+          },
         },
         {
           selector: 'edge:selected',
@@ -403,16 +445,21 @@ export default function GraphCanvas({
       // width would render everything below the top donor as a hairline.
       const width = 1 + (Math.log10(amount + 1) / Math.log10(maxAmount + 1)) * 7;
 
+      const isRegistration = e.kind === 'registration';
+
       edgeDefs.push({
         group: 'edges',
         data: {
           id: e.id,
           source: e.source,
           target: e.target,
-          width: Number.isFinite(width) ? width : 1,
-          label: formatMoney(amount),
+          width: isRegistration ? 1 : Number.isFinite(width) ? width : 1,
+          // A registration edge labelled "$0" would read as a payment of
+          // nothing rather than as no payment at all, so it names the role.
+          label: isRegistration ? (e.basis ?? 'shared officer') : formatMoney(amount),
           isDirectLink: e.isDirectLink,
-          amount,
+          kind: e.kind,
+          amount: isRegistration ? 0 : amount,
           txnCount: e.txnCount,
           edge: e,
         },

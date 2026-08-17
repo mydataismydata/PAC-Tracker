@@ -19,7 +19,7 @@ const paramsSchema = z.object({
   seed: z.string().uuid(),
   depth: z.coerce.number().int().min(1).max(6).default(CRAWL_DEFAULTS.depth),
   direction: z.enum(['upstream', 'downstream', 'both']).default(CRAWL_DEFAULTS.direction),
-  linkMode: z.enum(['direct', 'donor']).default(CRAWL_DEFAULTS.linkMode),
+  linkMode: z.enum(['direct', 'donor', 'registration']).default(CRAWL_DEFAULTS.linkMode),
   minAmount: z.coerce.number().min(0).optional(),
   dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

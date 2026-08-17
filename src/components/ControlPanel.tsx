@@ -3,7 +3,13 @@
 /** Crawl controls: depth, direction, link mode and filters. */
 
 import { CYCLES, CURRENT_CYCLE, PREVIOUS_CYCLE } from '@/lib/cycles';
-import type { CrawlSettings, Direction, LinkMode } from '@/lib/graph/types';
+import {
+  DEFAULT_SETTINGS,
+  REGISTRATION_PER_NODE,
+  type CrawlSettings,
+  type Direction,
+  type LinkMode,
+} from '@/lib/graph/types';
 
 interface Props {
   settings: CrawlSettings;
@@ -54,6 +60,11 @@ const LINK_MODES: { value: LinkMode; label: string; hint: string }[] = [
     label: 'Include donor links',
     hint: 'Also pull in the donors feeding each committee reached — the full funding base, and a much larger graph.',
   },
+  {
+    value: 'registration',
+    label: 'Registration links',
+    hint: 'Hop on shared officers instead of money: every committee naming the same chair or treasurer. Reaches committees with no payment between them, then draws the money that does move inside the network. Dashed lines are paperwork, not payments.',
+  },
 ];
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -70,6 +81,28 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 export default function ControlPanel({ settings, onChange, disabled }: Props) {
   const set = <K extends keyof CrawlSettings>(key: K, value: CrawlSettings[K]) =>
     onChange({ ...settings, [key]: value });
+
+  /**
+   * Switching link mode retunes the per-node cap.
+   *
+   * The cap means different things in each mode. On money it trims a long tail
+   * of small donors and 25 loses nothing that matters. On registration it is
+   * not a tail at all — every hop is a co-registered committee, so 25 would
+   * silently show a quarter of a network and look complete. The new value is
+   * written into the visible field rather than applied behind the scenes, so it
+   * can be seen and overridden.
+   */
+  const setLinkMode = (mode: LinkMode) => {
+    const retuned =
+      mode === 'registration'
+        ? settings.maxPerNode <= DEFAULT_SETTINGS.maxPerNode
+          ? REGISTRATION_PER_NODE
+          : settings.maxPerNode
+        : settings.maxPerNode >= REGISTRATION_PER_NODE
+          ? DEFAULT_SETTINGS.maxPerNode
+          : settings.maxPerNode;
+    onChange({ ...settings, linkMode: mode, maxPerNode: retuned });
+  };
 
   return (
     <div className="space-y-4">
@@ -161,7 +194,7 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
               key={m.value}
               type="button"
               disabled={disabled}
-              onClick={() => set('linkMode', m.value)}
+              onClick={() => setLinkMode(m.value)}
               className={`w-full rounded border px-2 py-2 text-left transition
                 ${
                   settings.linkMode === m.value

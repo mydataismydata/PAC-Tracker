@@ -2,7 +2,7 @@ import { CURRENT_CYCLE } from '@/lib/cycles';
 /** Shared graph types between the crawler, the API and the UI. */
 
 export type Direction = 'upstream' | 'downstream' | 'both';
-export type LinkMode = 'direct' | 'donor';
+export type LinkMode = 'direct' | 'donor' | 'registration';
 
 export interface GraphNode {
   id: string;
@@ -22,6 +22,20 @@ export interface GraphNode {
   level: number;
 }
 
+/**
+ * Officer hub nodes carry this id prefix instead of an entity uuid.
+ *
+ * They stand for a person named on filings, not a party to any money, and have
+ * no row anywhere. Anything that would hit `/api/entities/:id` has to check
+ * this first — the ledger, the trace and the affiliations routes all reject a
+ * non-uuid with a 400.
+ */
+export const OFFICER_NODE_PREFIX = 'officer:';
+
+export function isOfficerNode(id: string): boolean {
+  return id.startsWith(OFFICER_NODE_PREFIX);
+}
+
 export interface GraphEdge {
   id: string;
   source: string;
@@ -31,6 +45,10 @@ export interface GraphEdge {
   firstDate: string | null;
   lastDate: string | null;
   isDirectLink: boolean;
+  /** Money, or a shared officer. Never conflate the two — see crawl.ts. */
+  kind: 'money' | 'registration';
+  basis?: 'chair' | 'treasurer';
+  sharedWith?: string;
 }
 
 /**
@@ -63,6 +81,15 @@ export interface CrawlSettings {
   maxPerNode: number;
   maxNodes: number;
 }
+
+/**
+ * Per-node cap used by registration mode.
+ *
+ * High enough to hold the largest real co-registration cluster in the live
+ * data: one Tallahassee treasurer is named on 103 committees, and a network
+ * shown at a quarter of its size looks complete while being wrong.
+ */
+export const REGISTRATION_PER_NODE = 200;
 
 export const DEFAULT_SETTINGS: CrawlSettings = {
   depth: 2,
