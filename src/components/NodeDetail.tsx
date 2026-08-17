@@ -87,7 +87,9 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
     );
   }
 
-  const exportCsv = async () => {
+  const slug = node.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+  const exportLedgerCsv = async () => {
     setExporting(true);
     try {
       const all = await ledger.fetchAll();
@@ -126,19 +128,20 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
             ],
       );
 
-      const csv = [header, ...lines]
-        .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-        .join('\n');
-
-      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${node.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${view}-${direction}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadCsv(`${slug}-${view}-${direction}.csv`, toCsv([header, ...lines]));
     } finally {
       setExporting(false);
     }
+  };
+
+  // No fetch: the trace is already in hand, so this needs no pending state.
+  const exportOriginsCsv = () => {
+    if (!traced.result) return;
+    const r = traced.result;
+    downloadCsv(
+      `${slug}-origins${r.cycle ? `-${r.cycle}` : ''}.csv`,
+      toCsv([ORIGINS_HEADER, ...originsCsvRows(r)]),
+    );
   };
 
   return (
@@ -245,30 +248,31 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
         />
         )}
 
-        {showLedger && (
+        {/* Export stays put across tabs; only the sort is ledger-only. */}
         <div className="flex items-center justify-between gap-2">
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as LedgerSort)}
-            className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[11px]
-                       text-slate-300 outline-none focus:border-indigo-500"
-          >
-            <option value="amount">Largest first</option>
-            <option value="date">Most recent</option>
-            <option value="name">Name A–Z</option>
-            {view === 'sources' && <option value="count">Most transactions</option>}
-          </select>
+          {showLedger && (
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as LedgerSort)}
+              className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[11px]
+                         text-slate-300 outline-none focus:border-indigo-500"
+            >
+              <option value="amount">Largest first</option>
+              <option value="date">Most recent</option>
+              <option value="name">Name A–Z</option>
+              {view === 'sources' && <option value="count">Most transactions</option>}
+            </select>
+          )}
           <button
             type="button"
-            onClick={exportCsv}
-            disabled={exporting || ledger.total === 0}
-            className="rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300
+            onClick={showLedger ? exportLedgerCsv : exportOriginsCsv}
+            disabled={showLedger ? exporting || ledger.total === 0 : !traced.result}
+            className="ml-auto rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300
                        hover:bg-slate-800 disabled:opacity-40"
           >
             {exporting ? 'Exporting…' : 'Export CSV'}
           </button>
         </div>
-        )}
 
         {/* Reconciles against the tile totals above. */}
         {showLedger && (
@@ -349,6 +353,142 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
       </div>
     </div>
   );
+}
+
+/** RFC 4180: quote every field, double any embedded quote. */
+function toCsv(rows: (string | number)[][]): string {
+  return rows
+    .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
+}
+
+function downloadCsv(filename: string, csv: string): void {
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+const ORIGINS_HEADER = [
+  'category',
+  'name',
+  'kind',
+  'hops_away',
+  'amount',
+  'share',
+  'share_of',
+  'counts_toward_total',
+  'entity_id',
+  'notes',
+];
+
+/**
+ * Flatten a trace into rows.
+ *
+ * The report is not a table: it holds traced sources, the national pools money
+ * arrived through, those pools' own funders, dead ends, and a residual. Left as
+ * a bare list of names and dollars, the pool funders are the trap — their
+ * amounts are national money and their shares are shares *of the pool*, so a
+ * reader summing the amount column or multiplying two percentages together gets
+ * a number no filing supports. `share_of` names the denominator on every row and
+ * `counts_toward_total` marks what belongs in the seed's accounting, so the
+ * distinction survives leaving the screen.
+ */
+function originsCsvRows(r: TraceResult): (string | number)[][] {
+  const seed = r.seed.name;
+  const money = (n: number) => n.toFixed(2);
+  const share = (n: number) => n.toFixed(6);
+
+  const rows: (string | number)[][] = [
+    [
+      'seed',
+      seed,
+      r.seed.kind,
+      '',
+      money(r.seed.total),
+      share(1),
+      seed,
+      'yes',
+      r.seed.id,
+      [
+        r.cycle ? `cycle ${r.cycle}` : 'all cycles',
+        `traced ${r.hops} hops`,
+        r.dateOrdered
+          ? 'only credits money a conduit held before it paid out'
+          : 'no date ordering',
+        r.truncated ? 'hit the strand ceiling — some paths fell into the long tail' : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    ],
+  ];
+
+  for (const s of r.sources) {
+    rows.push(['traced', s.name, s.kind, s.hop, money(s.amount), share(s.share), seed, 'yes', s.id, '']);
+  }
+
+  for (const p of r.injectionPoints) {
+    rows.push([
+      'national_pool',
+      p.name,
+      p.kind,
+      p.hop,
+      money(p.amount),
+      share(p.share),
+      seed,
+      'yes',
+      p.id,
+      'Raised nationally and spent across many states; no filing says what share reached Florida.',
+    ]);
+    for (const f of p.funders) {
+      rows.push([
+        'pool_funder',
+        f.name,
+        '',
+        '',
+        money(f.amount),
+        share(f.share),
+        p.name,
+        'no',
+        f.id,
+        `Share of ${p.name}, not of ${seed}. Do not multiply by the pool's share or add to the total.`,
+      ]);
+    }
+  }
+
+  for (const u of r.unresolved) {
+    rows.push([
+      'trail_end',
+      u.name,
+      u.kind,
+      u.hop,
+      money(u.amount),
+      share(u.share),
+      seed,
+      'yes',
+      u.id,
+      'No recorded upstream in this data.',
+    ]);
+  }
+
+  if (r.dispersed > 0) {
+    rows.push([
+      'long_tail',
+      '',
+      '',
+      '',
+      money(r.dispersed),
+      share(r.seed.total > 0 ? r.dispersed / r.seed.total : 0),
+      seed,
+      'yes',
+      '',
+      'Strands abandoned below the minimum, or pruned at the parcel ceiling.',
+    ]);
+  }
+
+  return rows;
 }
 
 /**

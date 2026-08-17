@@ -45,3 +45,6 @@ next-env.d.ts
 # the current question is, often reach into private adapter internals, and are
 # not meant to survive the session that produced them.
 scripts/tmp-*.ts
+
+# CSVs pulled out of the app. Output, not source.
+/.exports/
