@@ -19,6 +19,11 @@ import {
 } from '@/lib/graph/types';
 import { useTrace, type TraceResult } from '@/lib/graph/useTrace';
 import {
+  useAffiliations,
+  type AffiliationCluster,
+  type AffiliationResult,
+} from '@/lib/graph/useAffiliations';
+import {
   isSourceRow,
   useLedger,
   type LedgerDirection,
@@ -43,7 +48,7 @@ const DIRECTIONS: { value: LedgerDirection; label: string }[] = [
   { value: 'all', label: 'Both' },
 ];
 
-type PanelMode = 'sources' | 'transactions' | 'origins';
+type PanelMode = 'sources' | 'transactions' | 'origins' | 'operators';
 
 const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
   { value: 'sources', label: 'By counterparty', hint: 'One row per counterparty, aggregated.' },
@@ -52,6 +57,11 @@ const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
     value: 'origins',
     label: 'Funding origins',
     hint: 'Follow the money past committee-to-committee transfers to whoever originated it.',
+  },
+  {
+    value: 'operators',
+    label: 'Who runs this',
+    hint: 'Registration on file, and which other committees name the same people or address.',
   },
 ];
 
@@ -63,10 +73,11 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
   const [exporting, setExporting] = useState(false);
   const [dateOrdered, setDateOrdered] = useState(true);
 
-  // The origins tab is a different question over the same entity, so the ledger
-  // keeps its last view rather than being torn down and refetched on return.
-  const view: LedgerView = mode === 'origins' ? 'sources' : mode;
-  const showLedger = mode !== 'origins';
+  // The origins and operators tabs ask different questions of the same entity,
+  // so the ledger keeps its last view rather than being torn down and refetched
+  // on return.
+  const view: LedgerView = mode === 'origins' || mode === 'operators' ? 'sources' : mode;
+  const showLedger = mode === 'sources' || mode === 'transactions';
 
   const query = useMemo(
     () => ({ view, direction, q, sort, cycle }),
@@ -78,6 +89,7 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
     [dateOrdered, cycle],
   );
   const traced = useTrace(node?.id ?? null, traceQuery, mode === 'origins');
+  const operators = useAffiliations(node?.id ?? null, mode === 'operators');
 
   if (!node) {
     return (
@@ -143,6 +155,21 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
       toCsv([ORIGINS_HEADER, ...originsCsvRows(r)]),
     );
   };
+
+  const exportOperatorsCsv = () => {
+    if (!operators.result) return;
+    downloadCsv(`${slug}-operators.csv`, toCsv([OPERATORS_HEADER, ...operatorsCsvRows(operators.result)]));
+  };
+
+  // Each tab exports its own view, and a tab with nothing loaded cannot export
+  // another tab's. Sharing one button without this made the operators tab offer
+  // whatever the origins tab had last produced.
+  const exporter =
+    mode === 'operators'
+      ? { run: exportOperatorsCsv, ready: operators.result !== null }
+      : mode === 'origins'
+        ? { run: exportOriginsCsv, ready: traced.result !== null }
+        : { run: exportLedgerCsv, ready: !exporting && ledger.total > 0 };
 
   return (
     <div className="flex h-full flex-col">
@@ -220,7 +247,7 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
           ))}
         </div>
 
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-2 gap-1">
           {PANEL_MODES.map((m) => (
             <button
               key={m.value}
@@ -265,8 +292,8 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
           )}
           <button
             type="button"
-            onClick={showLedger ? exportLedgerCsv : exportOriginsCsv}
-            disabled={showLedger ? exporting || ledger.total === 0 : !traced.result}
+            onClick={exporter.run}
+            disabled={!exporter.ready}
             className="ml-auto rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300
                        hover:bg-slate-800 disabled:opacity-40"
           >
@@ -303,7 +330,7 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
 
       {/* ------------------------------------------------------------ rows */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {!showLedger && (
+        {mode === 'origins' && (
           <OriginsReport
             state={traced}
             dateOrdered={dateOrdered}
@@ -311,6 +338,10 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
             onFocus={onFocus}
             nodes={nodes}
           />
+        )}
+
+        {mode === 'operators' && (
+          <OperatorsReport state={operators} onFocus={onFocus} nodes={nodes} />
         )}
 
         {showLedger && (<>
@@ -355,6 +386,267 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
   );
 }
 
+/**
+ * Who a committee says runs it, and who else says the same.
+ *
+ * The panel's job is to make a shared name usable without letting it be
+ * misread, and those pull in opposite directions. A shared treasurer looks
+ * damning and is usually mundane: 65% of Florida's active committees share one
+ * with somebody, and the largest single treasurer holds 278 of them while
+ * running a compliance practice rather than a network.
+ *
+ * So the count is never optional. Every shared attribute leads with how many
+ * committees share it, large clusters are labelled as the service providers
+ * they almost certainly are and start collapsed, and small ones — where the
+ * signal actually lives — open by default. The wording stays at what the
+ * filings say: *names the same treasurer*, never *is controlled by*.
+ */
+function OperatorsReport({
+  state,
+  onFocus,
+  nodes,
+}: {
+  state: { result: AffiliationResult | null; loading: boolean; error: string | null };
+  onFocus: (nodeId: string) => void;
+  nodes: Map<string, GraphNode>;
+}) {
+  if (state.error) return <p className="p-3 text-xs text-red-400">{state.error}</p>;
+  if (state.loading && !state.result) {
+    return <p className="p-3 text-xs text-slate-500">Reading the registration…</p>;
+  }
+  if (!state.result) return null;
+
+  const r = state.result;
+
+  if (r.unregistered) {
+    return (
+      <div className="space-y-2 p-3">
+        <p className="text-xs text-slate-400">No registration on file for this entity.</p>
+        <p className="text-[10px] leading-relaxed text-slate-600">
+          Only state-registered committees are loaded. County committees publish an address and
+          phone on their own filing pages, and name their officers only inside scanned appointment
+          forms, so neither is here yet. Candidates and donors have no registration at all.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {r.registration && (
+        <div className="space-y-2 border-b border-slate-800 p-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="text-[10px] uppercase tracking-wide text-slate-500">As registered</p>
+            {r.registration.externalId && (
+              <span
+                className="shrink-0 text-[10px] tabular-nums text-slate-500"
+                title="The filing office's own account number"
+              >
+                acct {r.registration.externalId}
+              </span>
+            )}
+          </div>
+          <div className="space-y-0.5 text-xs text-slate-300">
+            {r.registration.addressLines.map((line) => (
+              <div key={line}>{line}</div>
+            ))}
+            {r.registration.cityStateZip && (
+              <div>{formatZipInPlace(r.registration.cityStateZip)}</div>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500">
+            {r.registration.phone && <span>{formatPhone(r.registration.phone)}</span>}
+            {r.registration.countyName && <span>{r.registration.countyName} County</span>}
+            {r.registration.typeDescription && <span>{r.registration.typeDescription}</span>}
+          </div>
+          {(r.registration.email || r.registration.website) && (
+            <div className="space-y-0.5 text-[10px] text-slate-500">
+              {r.registration.email && <div className="truncate">{r.registration.email}</div>}
+              {r.registration.website && <div className="truncate">{r.registration.website}</div>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {r.officers.length > 0 && (
+        <div className="border-b border-slate-800 p-3">
+          <p className="mb-1.5 text-[10px] uppercase tracking-wide text-slate-500">
+            Named on the filings
+          </p>
+          <ul className="space-y-1">
+            {r.officers.map((o) => (
+              <li key={`${o.role}-${o.normalizedName}`} className="flex items-baseline gap-2">
+                <span className="w-16 shrink-0 text-[10px] capitalize text-slate-500">
+                  {o.role.replace(/_/g, ' ')}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-xs text-slate-200">{o.fullName}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {r.clusters.length === 0 ? (
+        <p className="p-3 text-xs text-slate-600">
+          Nothing shared with another committee — this address, phone and officers appear on no
+          other registration we hold.
+        </p>
+      ) : (
+        <>
+          <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wide text-slate-500">
+            Also appears on other committees
+          </p>
+          {r.clusters.map((c) => (
+            <ClusterBlock
+              key={`${c.basis}-${c.value}`}
+              cluster={c}
+              onFocus={onFocus}
+              nodes={nodes}
+            />
+          ))}
+          <p className="px-3 pb-3 pt-1 text-[10px] leading-relaxed text-slate-600">
+            These are shared registration details, not payments. Nothing here is drawn as an edge
+            and nothing here is followed by a funding trace — two committees sharing a treasurer
+            have not, on that evidence, sent each other anything.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Present a phone number and a ZIP the way a person writes them.
+ *
+ * The state stores both unpunctuated — "4075871437", "328225017" — which is
+ * right for matching and unreadable on screen. Anything that is not the
+ * expected length is passed through untouched rather than mangled.
+ */
+function formatPhone(raw: string | null): string | null {
+  if (!raw) return null;
+  const d = raw.replace(/\D+/g, '');
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  if (d.length === 11 && d.startsWith('1')) return formatPhone(d.slice(1));
+  return raw;
+}
+
+function formatZipInPlace(cityStateZip: string | null): string | null {
+  if (!cityStateZip) return null;
+  return cityStateZip.replace(/\b(\d{5})(\d{4})\b/, '$1-$2');
+}
+
+const BASIS_LABEL: Record<AffiliationCluster['basis'], string> = {
+  chair: 'names the same chair',
+  treasurer: 'names the same treasurer',
+  address: 'files from the same address',
+  phone: 'lists the same phone',
+};
+
+function ClusterBlock({
+  cluster,
+  onFocus,
+  nodes,
+}: {
+  cluster: AffiliationCluster;
+  onFocus: (nodeId: string) => void;
+  nodes: Map<string, GraphNode>;
+}) {
+  // Small clusters are the finding; big ones are a vendor's client list. Opening
+  // the interesting one and folding the noisy one away is the whole point.
+  const [open, setOpen] = useState(!cluster.isVendorScale);
+  const others = cluster.total - 1;
+
+  return (
+    <div className="border-t border-slate-800/60">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-start justify-between gap-2 px-3 py-2 text-left
+                   hover:bg-slate-800/50"
+      >
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs text-slate-200">
+            {cluster.basis === 'phone' ? formatPhone(cluster.label) : cluster.label}
+          </span>
+          <span className="block text-[10px] text-slate-500">
+            {BASIS_LABEL[cluster.basis]} as {others} other{others === 1 ? '' : 's'}
+          </span>
+        </span>
+        <span className="shrink-0 text-right">
+          <span
+            className={`block text-xs font-semibold tabular-nums ${
+              cluster.isVendorScale ? 'text-slate-400' : 'text-indigo-300'
+            }`}
+          >
+            {cluster.total}
+          </span>
+          <span className="block text-[9px] text-slate-600">{open ? 'hide' : 'show'}</span>
+        </span>
+      </button>
+
+      {/* A restatement of the count, for scanning several clusters at once. */}
+      <div className="px-3 pb-1.5">
+        <div className="h-1 overflow-hidden rounded bg-slate-800">
+          <div
+            className={`h-full ${cluster.isVendorScale ? 'bg-slate-600' : 'bg-indigo-500'}`}
+            style={{ width: `${Math.round(cluster.strength * 100)}%` }}
+          />
+        </div>
+      </div>
+
+      {cluster.isVendorScale && (
+        <p className="px-3 pb-2 text-[10px] leading-relaxed text-amber-500/80">
+          Shared with {others} committees. At this scale this is almost certainly a compliance firm
+          or a shared office rather than a connection between them.
+        </p>
+      )}
+
+      {open && (
+        <>
+          <ul className="divide-y divide-slate-800/60">
+            {cluster.peers.map((p) => (
+              <li key={p.id} className="hover:bg-slate-800/50">
+                <button
+                  type="button"
+                  onClick={() => onFocus(p.id)}
+                  className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-xs text-slate-300">{p.name}</span>
+                      {nodes.has(p.id) && (
+                        <span className="shrink-0 text-[9px] text-indigo-400" title="On the canvas">
+                          ●
+                        </span>
+                      )}
+                    </span>
+                    <span className="block text-[10px] text-slate-600">
+                      {p.committeeType ?? p.kind}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className="block text-[11px] tabular-nums text-emerald-400/80">
+                      {formatMoney(p.totalReceived)}
+                    </span>
+                    <span className="block text-[10px] tabular-nums text-amber-400/60">
+                      {formatMoney(p.totalGiven)}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {cluster.omitted > 0 && (
+            <p className="px-3 py-1.5 text-[10px] text-slate-600">
+              …and {cluster.omitted} more not listed.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** RFC 4180: quote every field, double any embedded quote. */
 function toCsv(rows: (string | number)[][]): string {
   return rows
@@ -383,6 +675,95 @@ const ORIGINS_HEADER = [
   'entity_id',
   'notes',
 ];
+
+const OPERATORS_HEADER = [
+  'section',
+  'basis',
+  'name',
+  'kind',
+  'shared_value',
+  'committees_sharing',
+  'service_scale',
+  'total_received',
+  'total_given',
+  'notes',
+];
+
+/**
+ * Flatten the registration and its shared attributes into rows.
+ *
+ * `committees_sharing` is on every shared row for the same reason the panel
+ * leads with it: a treasurer held in common with two other committees and one
+ * held in common with 277 are the same fact in a spreadsheet and completely
+ * different findings. `service_scale` marks the ones large enough that the
+ * shared name is almost certainly a vendor.
+ */
+function operatorsCsvRows(r: AffiliationResult): (string | number)[][] {
+  const rows: (string | number)[][] = [];
+  const reg = r.registration;
+
+  rows.push([
+    'registration',
+    '',
+    r.entity.name,
+    '',
+    [...(reg?.addressLines ?? []), reg?.cityStateZip].filter(Boolean).join(', '),
+    '',
+    '',
+    '',
+    '',
+    [
+      reg?.externalId ? `account ${reg.externalId}` : null,
+      reg?.phone,
+      reg?.email,
+      reg?.website,
+      reg?.countyName ? `${reg.countyName} County` : null,
+      reg?.typeDescription,
+      reg?.observedAt ? `observed ${reg.observedAt}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  ]);
+
+  for (const o of r.officers) {
+    rows.push(['officer', o.role, o.fullName, 'person', '', '', '', '', '', 'As named on the filing.']);
+  }
+
+  for (const c of r.clusters) {
+    for (const p of c.peers) {
+      rows.push([
+        'shared',
+        c.basis,
+        p.name,
+        p.committeeType ?? p.kind,
+        c.label,
+        c.total,
+        c.isVendorScale ? 'yes' : 'no',
+        p.totalReceived,
+        p.totalGiven,
+        c.isVendorScale
+          ? `Shared with ${c.total - 1} others — at this scale a shared name is a service provider, not a connection.`
+          : 'Shared registration detail, not a payment. No money is implied between these committees.',
+      ]);
+    }
+    if (c.omitted > 0) {
+      rows.push([
+        'shared',
+        c.basis,
+        '',
+        '',
+        c.label,
+        c.total,
+        c.isVendorScale ? 'yes' : 'no',
+        '',
+        '',
+        `${c.omitted} further committees share this and are not listed.`,
+      ]);
+    }
+  }
+
+  return rows;
+}
 
 /**
  * Flatten a trace into rows.

@@ -30,6 +30,13 @@ outward as the data streams in.
   $32.2M against a $400K committee. Summing the amount column blind is the obvious
   mistake to make once the numbers leave the screen, so the file says which rows belong
   in the total and which are context.
+- **Who runs this.** A fourth tab showing the registration on file — address, phone,
+  account number, chair and treasurer — and which other committees name the same
+  person or file from the same address. Every shared attribute leads with **how many**
+  committees share it, because that is what decides whether it means anything: a
+  treasurer held in common with two others is a finding, and one held in common with
+  102 is a compliance firm. Small clusters open by default and large ones collapse
+  behind a plain warning. None of it is drawn as an edge or followed by a trace.
 - **Election cycle filter.** Current, previous, or all. Rollups are stored per
   cycle, so this narrows an index range rather than filtering after the fact —
   and tile totals, the ledger and the funding trace all follow it, so a filtered
@@ -275,6 +282,21 @@ practice. The distribution is a power law — 56 clusters of exactly two, taperi
 to one of 228 — and the small clusters are the signal. One phone number,
 352-275-5004, covers 105 committees at four addresses that move $92.7M.
 
+`VENDOR_SCALE = 25` in `src/lib/graph/affiliations.ts` is where that judgement
+lives, and it is drawn from the shape of the data rather than taste. Above it the
+UI says so in plain words instead of implying a network. `strength` grades the
+same fact for sorting, but it is a restatement of the count and never a
+substitute for showing it — the two contrasting cases in the live data:
+
+```
+Realtors Political Advocacy Committee     Keep Florida Great
+  chair Deborah Rector             3        address 115 East Park Avenue    47
+  phone (407) 587-1437             3        chair   William S. Jones       101
+  treasurer David Garrison         4        treasurer William S. Jones     103
+  address 7025 Augusta National    5        phone   (352) 275-5004         105
+  → four committees, one office             → a Tallahassee filing agent
+```
+
 **Addresses need normalizing before they group anything.** One operation files
 under six spellings of one door in a single extract ("1722 NW 80th Blvd, Suite
 90", "1722 Northwest 80th Boulevard", "1722 NW 80th Blvd., Suite 90"…), so
@@ -369,6 +391,8 @@ src/
     resolve.ts              entity resolution
     pipeline.ts             rows → entities → transactions → rollups
   lib/graph/crawl.ts        BFS crawler, yields one level at a time
+  lib/graph/trace.ts        pro-rata funding origins, past the conduits
+  lib/graph/affiliations.ts shared officers/address/phone, weighted by rarity
   app/api/graph/stream      SSE endpoint
   components/GraphCanvas    Cytoscape canvas
 ```
@@ -382,6 +406,7 @@ single $1.25M edge rather than five.
 | Command | Description |
 | --- | --- |
 | `pnpm ingest cycle <electionId>` | Sweep a whole state cycle — every committee and candidate. |
+| `pnpm ingest committees` | Registrations, chairs and treasurers for every active state committee. |
 | `pnpm ingest irs <org>` | A national 527's funders, from IRS Form 8872. |
 | `pnpm ingest registry` | Sweep the state committee registry A–Z (~7,600 committees). |
 | `pnpm ingest counties` | List supported VoterFocus counties. |
