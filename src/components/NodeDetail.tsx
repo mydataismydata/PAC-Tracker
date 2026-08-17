@@ -38,6 +38,8 @@ interface Props {
   nodes: Map<string, GraphNode>;
   onFocus: (nodeId: string) => void;
   onRecenter: (nodeId: string) => void;
+  /** Draw these entities alongside the current graph, without re-crawling. */
+  onAddToCanvas: (entityIds: string[]) => void;
   /** Election cycle the graph is filtered to, or undefined for all. */
   cycle?: string;
 }
@@ -65,7 +67,14 @@ const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
   },
 ];
 
-export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: Props) {
+export default function NodeDetail({
+  node,
+  nodes,
+  onFocus,
+  onRecenter,
+  onAddToCanvas,
+  cycle,
+}: Props) {
   const [mode, setMode] = useState<PanelMode>('sources');
   const [direction, setDirection] = useState<LedgerDirection>('in');
   const [sort, setSort] = useState<LedgerSort>('amount');
@@ -341,7 +350,12 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
         )}
 
         {mode === 'operators' && (
-          <OperatorsReport state={operators} onFocus={onFocus} nodes={nodes} />
+          <OperatorsReport
+            state={operators}
+            onFocus={onFocus}
+            onAddToCanvas={onAddToCanvas}
+            nodes={nodes}
+          />
         )}
 
         {showLedger && (<>
@@ -404,10 +418,12 @@ export default function NodeDetail({ node, nodes, onFocus, onRecenter, cycle }: 
 function OperatorsReport({
   state,
   onFocus,
+  onAddToCanvas,
   nodes,
 }: {
   state: { result: AffiliationResult | null; loading: boolean; error: string | null };
   onFocus: (nodeId: string) => void;
+  onAddToCanvas: (entityIds: string[]) => void;
   nodes: Map<string, GraphNode>;
 }) {
   if (state.error) return <p className="p-3 text-xs text-red-400">{state.error}</p>;
@@ -501,6 +517,7 @@ function OperatorsReport({
               key={`${c.basis}-${c.value}`}
               cluster={c}
               onFocus={onFocus}
+              onAddToCanvas={onAddToCanvas}
               nodes={nodes}
             />
           ))}
@@ -545,16 +562,19 @@ const BASIS_LABEL: Record<AffiliationCluster['basis'], string> = {
 function ClusterBlock({
   cluster,
   onFocus,
+  onAddToCanvas,
   nodes,
 }: {
   cluster: AffiliationCluster;
   onFocus: (nodeId: string) => void;
+  onAddToCanvas: (entityIds: string[]) => void;
   nodes: Map<string, GraphNode>;
 }) {
   // Small clusters are the finding; big ones are a vendor's client list. Opening
   // the interesting one and folding the noisy one away is the whole point.
   const [open, setOpen] = useState(!cluster.isVendorScale);
   const others = cluster.total - 1;
+  const undrawn = cluster.peers.filter((p) => !nodes.has(p.id));
 
   return (
     <div className="border-t border-slate-800/60">
@@ -603,6 +623,24 @@ function ClusterBlock({
 
       {open && (
         <>
+          {undrawn.length > 0 && (
+            <div className="px-3 pb-1.5">
+              <button
+                type="button"
+                onClick={() => onAddToCanvas(cluster.peers.map((p) => p.id))}
+                className="w-full rounded border border-indigo-800 bg-indigo-950/40 px-2 py-1
+                           text-[11px] text-indigo-300 hover:bg-indigo-900/40"
+              >
+                Add {undrawn.length} to canvas
+              </button>
+              {/* Said once per cluster, because tiles that appear together read
+                  as connected and these are not. Only money draws an edge. */}
+              <p className="mt-1 text-[9px] leading-relaxed text-slate-600">
+                Drawn as separate tiles. Any line between them is a payment the crawl already
+                found, never the shared {cluster.basis}.
+              </p>
+            </div>
+          )}
           <ul className="divide-y divide-slate-800/60">
             {cluster.peers.map((p) => (
               <li key={p.id} className="hover:bg-slate-800/50">
