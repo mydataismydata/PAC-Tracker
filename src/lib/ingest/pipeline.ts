@@ -9,11 +9,21 @@
 import { sql, eq, and, isNull, inArray } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
-import { transactions, entities, sources, jurisdictions, ingestRuns } from '@/db/schema';
+import {
+  transactions,
+  entities,
+  sources,
+  jurisdictions,
+  ingestRuns,
+  entityAliases,
+  committeeRegistrations,
+  committeeOfficers,
+} from '@/db/schema';
 import { EntityResolver, refreshTraversability } from './resolve';
-import type { RawContributionRow } from './fl-doe/parse';
+import type { RawContributionRow, RegistryCommitteeDetail } from './fl-doe/parse';
 import type { RawTransactionRow } from './types';
 import { derivedCycleSql } from '@/lib/cycles';
+import { normalizeAddress, normalizePhone, officerKey, normalizeName } from '@/lib/normalize';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
 const derivedCycle = derivedCycleSql('t');
@@ -444,6 +454,287 @@ export async function ingestTransactionRows(
  * five separate $250k gifts to the Florida Chamber PAC in 2024 render as a
  * single $1.25M link.
  */
+export interface RegistrationIngestResult {
+  listed: number;
+  entitiesCreated: number;
+  registrations: number;
+  officers: number;
+  /** Officers who held a role at the last load and no longer appear in it. */
+  officersSuperseded: number;
+  /**
+   * Committees name-matching would have merged, kept apart by account number.
+   *
+   * Each one is a node whose transactions are probably still conflated, since
+   * only the registration is split here — the money was filed under names, and
+   * separating it is a different job.
+   */
+  collisions: { name: string; acctNum: string; mergedInto: string }[];
+}
+
+/**
+ * Create a node for a committee the resolver wanted to merge away.
+ *
+ * Deliberately bypasses `EntityResolver`: we already know its answer and that
+ * the account number contradicts it. The alias is recorded at full confidence
+ * because the registry name is the committee's own.
+ */
+async function createDistinctCommittee(
+  db: Db,
+  row: RegistryCommitteeDetail,
+  ctx: { sourceId: string; jurisdictionId: string },
+): Promise<string> {
+  const [created] = await db
+    .insert(entities)
+    .values({
+      kind: row.type === 'PTY' ? 'party' : 'committee',
+      name: row.name,
+      normalizedName: normalizeName(row.name),
+      committeeType: (row.type as never) ?? null,
+      status: 'active',
+      isTraversable: true,
+      jurisdictionId: ctx.jurisdictionId,
+      city: row.city,
+      stateCode: row.state,
+      zip: row.zip,
+      address: row.addr1,
+      sourceId: ctx.sourceId,
+    })
+    .returning({ id: entities.id });
+
+  await db
+    .insert(entityAliases)
+    .values({
+      entityId: created.id,
+      alias: row.name,
+      normalizedAlias: normalizeName(row.name),
+      origin: 'registry',
+      confidence: 1,
+    })
+    .onConflictDoNothing();
+
+  return created.id;
+}
+
+/**
+ * Load committee registration records and the people named on them.
+ *
+ * Separate from the transaction pipeline because it describes committees rather
+ * than money, and nothing here becomes a graph edge. That is a deliberate
+ * boundary: a shared treasurer is not a payment, and if it ever reaches
+ * `edge_rollups` the funding trace will walk it and attribute dollars along it.
+ *
+ * The load is a snapshot. The source dates none of this, so `effectiveDate`
+ * stays null and `isCurrent` carries the state instead — an officer who has
+ * stopped appearing is marked not-current rather than given an expiry we would
+ * be inventing. What we do know is when we looked, which is `observedAt`.
+ */
+export async function ingestCommitteeRegistrations(
+  db: Db,
+  rows: RegistryCommitteeDetail[],
+  ctx: { sourceId: string; jurisdictionId: string },
+  resolver: EntityResolver,
+  onProgress?: (done: number, total: number) => void,
+): Promise<RegistrationIngestResult> {
+  const result: RegistrationIngestResult = {
+    listed: rows.length,
+    entitiesCreated: 0,
+    registrations: 0,
+    officers: 0,
+    officersSuperseded: 0,
+    collisions: [],
+  };
+
+  for (const [i, row] of rows.entries()) {
+    // 1. The account number is an identity, so prefer it over any name match.
+    const claimed = row.acctNum
+      ? await db
+          .select({ entityId: committeeRegistrations.entityId })
+          .from(committeeRegistrations)
+          .where(eq(committeeRegistrations.externalId, row.acctNum))
+          .limit(1)
+      : [];
+
+    let entityId: string;
+    if (claimed.length > 0) {
+      entityId = claimed[0].entityId;
+    } else {
+      const resolved = await resolver.resolve({
+        rawName: row.name,
+        role: 'recipient',
+        committeeType: row.type,
+        city: row.city,
+        state: row.state,
+        zip: row.zip,
+        address: row.addr1,
+        jurisdictionId: ctx.jurisdictionId,
+        sourceId: ctx.sourceId,
+      });
+      if (resolved.created) result.entitiesCreated++;
+      entityId = resolved.entityId;
+
+      // 2. Two account numbers are two committees, whatever the names look
+      //    like. Name matching alone folds all four regional Florida CPA PACs
+      //    onto one node, and "Let Florida Vote II" onto "Let Florida Vote III",
+      //    because a numeral or a compass point is precisely what normalization
+      //    discards and what the trigram score treats as noise. When the node we
+      //    landed on is already spoken for by a different account, the match was
+      //    wrong: this committee gets its own node instead.
+      if (row.acctNum) {
+        const [taken] = await db
+          .select({ externalId: committeeRegistrations.externalId })
+          .from(committeeRegistrations)
+          .where(
+            and(
+              eq(committeeRegistrations.entityId, entityId),
+              eq(committeeRegistrations.isCurrent, true),
+            ),
+          )
+          .limit(1);
+        if (taken?.externalId && taken.externalId !== row.acctNum) {
+          entityId = await createDistinctCommittee(db, row, ctx);
+          result.entitiesCreated++;
+          result.collisions.push({
+            name: row.name,
+            acctNum: row.acctNum,
+            mergedInto: taken.externalId,
+          });
+        }
+      }
+    }
+    const resolved = { entityId };
+
+    // The registry spelling is authoritative — it is the committee's own — so
+    // it replaces a name first learned from a truncated transaction column.
+    await db
+      .update(entities)
+      .set({
+        kind: row.type === 'PTY' ? 'party' : 'committee',
+        committeeType: (row.type as never) ?? null,
+        status: 'active',
+        isTraversable: true,
+        name: row.name,
+        updatedAt: new Date(),
+      })
+      .where(eq(entities.id, resolved.entityId));
+
+    await db
+      .insert(committeeRegistrations)
+      .values({
+        entityId: resolved.entityId,
+        sourceId: ctx.sourceId,
+        externalId: row.acctNum,
+        committeeType: row.type,
+        typeDescription: row.typeDescription,
+        status: 'active',
+        addr1: row.addr1,
+        addr2: row.addr2,
+        city: row.city,
+        stateCode: row.state,
+        zip: row.zip,
+        countyName: row.county,
+        normalizedAddress: normalizeAddress(row.addr1),
+        phone: row.phone,
+        phoneDigits: normalizePhone(row.phone),
+        observedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [committeeRegistrations.entityId, committeeRegistrations.sourceId],
+        targetWhere: sql`is_current`,
+        set: {
+          externalId: row.acctNum,
+          committeeType: row.type,
+          typeDescription: row.typeDescription,
+          status: 'active',
+          addr1: row.addr1,
+          addr2: row.addr2,
+          city: row.city,
+          stateCode: row.state,
+          zip: row.zip,
+          countyName: row.county,
+          normalizedAddress: normalizeAddress(row.addr1),
+          phone: row.phone,
+          phoneDigits: normalizePhone(row.phone),
+          observedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+    result.registrations++;
+
+    const officers = [
+      { role: 'chair' as const, last: row.chairLast, first: row.chairFirst, middle: row.chairMiddle },
+      {
+        role: 'treasurer' as const,
+        last: row.treasurerLast,
+        first: row.treasurerFirst,
+        middle: row.treasurerMiddle,
+      },
+    ]
+      .map((o) => ({ ...o, key: officerKey(o.last, o.first) }))
+      .filter((o): o is typeof o & { key: string } => o.key !== null);
+
+    // Anyone we recorded last time who is not on the list now has left the
+    // role. Superseding rather than deleting keeps the fact that they held it.
+    const superseded = await db
+      .update(committeeOfficers)
+      .set({ isCurrent: false, updatedAt: new Date() })
+      .where(
+        and(
+          eq(committeeOfficers.entityId, resolved.entityId),
+          eq(committeeOfficers.sourceId, ctx.sourceId),
+          eq(committeeOfficers.isCurrent, true),
+          officers.length > 0
+            ? sql`(${committeeOfficers.role}::text, ${committeeOfficers.normalizedName}) NOT IN (${sql.join(
+                officers.map((o) => sql`(${o.role}, ${o.key})`),
+                sql`, `,
+              )})`
+            : sql`true`,
+        ),
+      )
+      .returning({ id: committeeOfficers.id });
+    result.officersSuperseded += superseded.length;
+
+    for (const o of officers) {
+      await db
+        .insert(committeeOfficers)
+        .values({
+          entityId: resolved.entityId,
+          sourceId: ctx.sourceId,
+          role: o.role,
+          nameLast: o.last,
+          nameFirst: o.first,
+          nameMiddle: o.middle,
+          fullName: [o.first, o.middle, o.last].filter(Boolean).join(' '),
+          normalizedName: o.key,
+          observedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [
+            committeeOfficers.entityId,
+            committeeOfficers.sourceId,
+            committeeOfficers.role,
+            committeeOfficers.normalizedName,
+          ],
+          targetWhere: sql`is_current`,
+          set: {
+            nameLast: o.last,
+            nameFirst: o.first,
+            nameMiddle: o.middle,
+            fullName: [o.first, o.middle, o.last].filter(Boolean).join(' '),
+            observedAt: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+      result.officers++;
+    }
+
+    onProgress?.(i + 1, rows.length);
+  }
+
+  return result;
+}
+
 export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<void> {
   if (entityIds.length === 0) return;
 

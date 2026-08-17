@@ -316,3 +316,120 @@ export function isGenericLocalOffice(normalized: string): boolean {
 export function scopedName(normalized: string, jurisdictionCode: string): string {
   return `${normalized} @${jurisdictionCode}`;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Registration details                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** Street-type and directional abbreviations, expanded to their long form. */
+const ADDRESS_SYNONYMS: Record<string, string> = {
+  N: 'NORTH',
+  S: 'SOUTH',
+  E: 'EAST',
+  W: 'WEST',
+  NE: 'NORTHEAST',
+  NW: 'NORTHWEST',
+  SE: 'SOUTHEAST',
+  SW: 'SOUTHWEST',
+  ST: 'STREET',
+  STR: 'STREET',
+  AVE: 'AVENUE',
+  AV: 'AVENUE',
+  BLVD: 'BOULEVARD',
+  BLV: 'BOULEVARD',
+  RD: 'ROAD',
+  DR: 'DRIVE',
+  CT: 'COURT',
+  LN: 'LANE',
+  PL: 'PLACE',
+  PKWY: 'PARKWAY',
+  PKY: 'PARKWAY',
+  HWY: 'HIGHWAY',
+  CIR: 'CIRCLE',
+  TER: 'TERRACE',
+  TRL: 'TRAIL',
+  SQ: 'SQUARE',
+};
+
+/** Sub-address markers. Everything from one of these onward is dropped. */
+const UNIT_MARKERS = /\b(SUITE|STE|UNIT|APT|APARTMENT|FLOOR|FL|RM|ROOM|BLDG|BUILDING|PO BOX|#)\b/;
+
+/**
+ * Fold a street address to a form two filings can be compared on.
+ *
+ * Committees are careless with their own address in exactly the ways that
+ * defeat string equality. One operation appears in a single state extract as
+ * "1722 NW 80TH BLVD, SUITE 90", "1722 NORTHWEST 80TH BOULEVARD" and "1722
+ * NORTH WEST 80TH BOULEVARD" — three spellings of one door.
+ *
+ * The suite number goes deliberately. Sharing a building is weak evidence and
+ * sharing a suite is strong, but the extract is too inconsistent about
+ * recording the suite at all for its absence to mean anything, so dropping it
+ * groups more and claims less. That trade only holds because a shared address
+ * is never meant to stand on its own — see `isGenericLocalOffice` for the same
+ * reasoning about names that need a second signal to mean anything.
+ */
+export function normalizeAddress(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const upper = raw
+    .toUpperCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[.,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!upper) return null;
+
+  const cut = upper.search(UNIT_MARKERS);
+  const street = (cut > 0 ? upper.slice(0, cut) : upper).trim();
+  if (!street) return null;
+
+  const tokens = street
+    .replace(/[^A-Z0-9 ]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((t) => ADDRESS_SYNONYMS[t] ?? t);
+
+  // "80TH" and "80" are the same street; ordinal suffixes carry no information.
+  const folded = tokens.map((t) => t.replace(/^(\d+)(ST|ND|RD|TH)$/, '$1'));
+  return folded.join(' ') || null;
+}
+
+/**
+ * Digits of a phone number, or null if there aren't enough to identify a line.
+ *
+ * A leading country code is dropped so "1-850-404-1000" and "8504041000" are
+ * the same line.
+ */
+export function normalizePhone(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  let digits = raw.replace(/\D+/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) digits = digits.slice(1);
+  return digits.length === 10 ? digits : (digits.length >= 7 ? digits : null);
+}
+
+/**
+ * Stable key for a person named on a filing.
+ *
+ * Middle names are excluded on purpose. Filings are inconsistent about giving
+ * one, so including it would split a single treasurer into two people on the
+ * strength of whether someone typed an initial — and this key exists precisely
+ * to count how many committees one person is named on.
+ */
+export function officerKey(
+  last: string | null | undefined,
+  first: string | null | undefined,
+): string | null {
+  const fold = (s: string | null | undefined) =>
+    (s ?? '')
+      .toUpperCase()
+      .normalize('NFKD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^A-Z0-9]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const l = fold(last);
+  const f = fold(first);
+  if (!l && !f) return null;
+  return [l, f].filter(Boolean).join(' ');
+}

@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   pgTable,
   pgEnum,
@@ -360,6 +361,183 @@ export const entityCycleTotals = pgTable(
   (t) => [
     primaryKey({ columns: [t.entityId, t.electionCycle] }),
     index('entity_cycle_totals_cycle_idx').on(t.electionCycle),
+  ],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Who runs a committee                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Roles a filing office records for a committee.
+ *
+ * Florida requires the same appointments at every level, but the two tiers name
+ * them differently: the state list has one chair and one treasurer column pair,
+ * while a county keeps the underlying forms — `Appointment_of_Committee_Treasurer`,
+ * `Appointment_of_Campaign_Treasurer`, `Election_of_Chairperson` — as separate
+ * filings. `deputy_treasurer` and `registered_agent` appear on the forms but not
+ * in either extract yet.
+ */
+export const officerRole = pgEnum('officer_role', [
+  'chair',
+  'treasurer',
+  'deputy_treasurer',
+  'registered_agent',
+  'other',
+]);
+
+/**
+ * A committee's registration record, as its filing office publishes it.
+ *
+ * Kept apart from `entities` because the provenance is different in kind.
+ * `entities.address` is whatever a contributor happened to write on a cheque;
+ * this is what the committee told the state or the county it is. It is also the
+ * only place the filing office's own identifier lives — Florida's transaction
+ * export carries no entity ids, but its committee list does.
+ *
+ * Columns cover both tiers, so a county loader has somewhere to put every field
+ * it can read. The state list has no email or website; the county pages have no
+ * account number or officer names. Neither has validity dates, and today's load
+ * is a snapshot — but the county's officer filings are dated appointments and
+ * resignations, so the dates are here waiting rather than added later under a
+ * table rewrite.
+ */
+export const committeeRegistrations = pgTable(
+  'committee_registrations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    entityId: uuid('entity_id')
+      .notNull()
+      .references(() => entities.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id').references(() => sources.id),
+
+    /** The filing office's own id: `AcctNum` at the state, `ca=` in a county. */
+    externalId: text('external_id'),
+
+    committeeType: text('committee_type'),
+    /** Spelled-out type, e.g. "Electioneering Communications Organization". */
+    typeDescription: text('type_description'),
+    status: text('status'),
+
+    addr1: text('addr1'),
+    addr2: text('addr2'),
+    city: text('city'),
+    stateCode: text('state_code'),
+    zip: text('zip'),
+    /** County of record, which the state list reports and a county implies. */
+    countyName: text('county_name'),
+    /**
+     * Street address folded to a comparable form.
+     *
+     * The clustering key. One operation files under "1722 NW 80TH BLVD, SUITE
+     * 90", "1722 NORTHWEST 80TH BOULEVARD" and "1722 NORTH WEST 80TH BOULEVARD"
+     * in the same extract, so the raw string cannot group anything.
+     */
+    normalizedAddress: text('normalized_address'),
+
+    phone: text('phone'),
+    /** Digits only, so formatting differences do not split a shared line. */
+    phoneDigits: text('phone_digits'),
+    /** County pages publish these; the state list does not. */
+    email: text('email'),
+    website: text('website'),
+
+    /**
+     * Validity window, when the source dates its record.
+     *
+     * Null on a snapshot load, which is every load today. `isCurrent` is what
+     * queries filter on, so it stays correct whether or not dates are known.
+     */
+    effectiveDate: date('effective_date'),
+    expiredDate: date('expired_date'),
+    isCurrent: boolean('is_current').notNull().default(true),
+
+    /** When we read it, which is the only date a snapshot actually has. */
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One live record per entity per source; superseded rows stay for history.
+    uniqueIndex('committee_registrations_current_key')
+      .on(t.entityId, t.sourceId)
+      .where(sql`is_current`),
+    index('committee_registrations_entity_idx').on(t.entityId),
+    index('committee_registrations_address_idx').on(t.normalizedAddress),
+    index('committee_registrations_phone_idx').on(t.phoneDigits),
+    index('committee_registrations_external_idx').on(t.externalId),
+  ],
+);
+
+/**
+ * A person a committee reports as running it.
+ *
+ * One row per person per role, which is what makes the shared-operative
+ * question answerable: the same name against many committees is the signal.
+ * How much of a signal depends entirely on how many — one treasurer in the
+ * live state list holds 278 committees and is a compliance practice, not a
+ * network — so callers must weigh a match by how common it is rather than
+ * treating any shared name as a relationship.
+ *
+ * `normalizedName` is the join key and deliberately excludes the middle name,
+ * so "JONES, WILLIAM" and "JONES, WILLIAM T" are one person.
+ */
+export const committeeOfficers = pgTable(
+  'committee_officers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    entityId: uuid('entity_id')
+      .notNull()
+      .references(() => entities.id, { onDelete: 'cascade' }),
+    sourceId: uuid('source_id').references(() => sources.id),
+
+    role: officerRole('role').notNull(),
+
+    nameLast: text('name_last'),
+    nameFirst: text('name_first'),
+    nameMiddle: text('name_middle'),
+    /** As filed, or reconstructed from the parts when the source splits them. */
+    fullName: text('full_name').notNull(),
+    normalizedName: text('normalized_name').notNull(),
+
+    /**
+     * Contact details for the officer.
+     *
+     * On the appointment form but in neither extract: the state list gives only
+     * names, and the county's copy is a scanned image. Reserved so an OCR pass
+     * has somewhere to write.
+     */
+    address: text('address'),
+    city: text('city'),
+    stateCode: text('state_code'),
+    zip: text('zip'),
+    phone: text('phone'),
+    email: text('email'),
+
+    /**
+     * Where this came from, when the source is a document rather than a field.
+     *
+     * County officer data exists only as scanned appointment and resignation
+     * PDFs, so anything read out of one needs to point back at it.
+     */
+    documentUrl: text('document_url'),
+
+    effectiveDate: date('effective_date'),
+    expiredDate: date('expired_date'),
+    isCurrent: boolean('is_current').notNull().default(true),
+
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Role is part of the key: one person is routinely both chair and treasurer.
+    uniqueIndex('committee_officers_current_key')
+      .on(t.entityId, t.sourceId, t.role, t.normalizedName)
+      .where(sql`is_current`),
+    index('committee_officers_entity_idx').on(t.entityId),
+    // The clustering lookup: every committee this person is named on.
+    index('committee_officers_name_idx').on(t.normalizedName),
   ],
 );
 

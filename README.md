@@ -243,6 +243,47 @@ What you get instead is the honest shape: *this $51,429 reached First Coast Lead
 through the RSLC, whose own money is 38% unitemized, 2.3% THE FUND, 2.1% U.S. Chamber of
 Commerce, 1.9% Altria…*
 
+### The state committee list — who runs each committee (implemented)
+
+Separate from the money, and deliberately so. The Division of Elections publishes
+a bulk registration extract at `committees/extractComList.asp` — one POST, no
+query, 1,984 active committees — carrying what the transaction exports never do:
+
+```bash
+pnpm ingest committees
+```
+
+Account number, mailing address, phone, and the chair and treasurer by name. It
+lands in `committee_registrations` and `committee_officers`, whose columns are a
+superset of what the two tiers publish, so a county loader has somewhere to put
+every field it can read: the state list has no email or website, county pages
+have no account number or officer names, and neither dates anything. Today's load
+is a snapshot — `effective_date` and `expired_date` stay null and `is_current`
+carries the state, because a county's officer records *are* dated appointments
+and resignations and will need somewhere to go.
+
+**Nothing here becomes a graph edge, and it must stay that way.** A shared
+treasurer is not a payment. If an affiliation ever reaches `edge_rollups`, the
+funding trace will walk it and attribute dollars along "these two committees use
+the same accountant" — the same fabrication the injection-point rule exists to
+prevent.
+
+**Weight any shared attribute by how many share it.** 65% of active committees
+share a treasurer with another committee, which sounds like a finding and is not
+one: the largest single treasurer holds **278 committees** and is a compliance
+practice. The distribution is a power law — 56 clusters of exactly two, tapering
+to one of 228 — and the small clusters are the signal. One phone number,
+352-275-5004, covers 105 committees at four addresses that move $92.7M.
+
+**Addresses need normalizing before they group anything.** One operation files
+under six spellings of one door in a single extract ("1722 NW 80th Blvd, Suite
+90", "1722 Northwest 80th Boulevard", "1722 NW 80th Blvd., Suite 90"…), so
+`normalizeAddress` expands directionals and street types, folds ordinals, and
+drops the suite. Dropping the suite groups more and claims less, which is the
+right trade only because a shared address is never meant to stand alone. A unit
+letter fused to the house number ("2640A" vs "2640 A") still splits — joining
+them would wreck genuine street names like "100 A Street".
+
 ### Others considered
 
 - **Transparency USA** — 25 states, but **state-level only**, and they sell the data
@@ -278,6 +319,35 @@ are stored as low-confidence aliases for review rather than merged. In practice 
 ECO` correctly separate (they score 0.70–0.80) while reuniting the truncated Alliance name
 at 0.95.
 
+### The committee list carries the identifiers the export lacks
+
+The claim above — no entity identifiers — is true of the *transaction* exports and
+false of the committee list, which gives every active committee an `AcctNum`. That
+matters more than it sounds, because loading it exposed **23 committees that name
+matching had already merged**:
+
+```
+60724 Florida CPA PAC-Central  ┐
+60725 Florida CPA PAC-North    ├─ four registrations, one node
+60726 Florida CPA PAC          │
+60728 Florida CPA PAC-South    ┘
+60610/60673/60677  Anesthesiology Leadership Council 3 / 2 / 1
+89544/89565        Let Florida Vote II / III
+```
+
+What distinguishes these is a numeral or a compass point — exactly what
+normalization discards and what a trigram score reads as noise. A shared blocking
+key floors the score at 0.80, a ZIP match adds 0.08, and the pair clears 0.88
+without anything having gone obviously wrong.
+
+`ingestCommitteeRegistrations` treats the account number as identity: it claims by
+`external_id` first, and if name resolution lands on a node another account already
+holds, that committee gets its own node instead. The registrations are therefore
+correct. **The transactions are not** — they were filed under names, so the money
+for all four CPA PACs still sits on one node, and separating it is a different job
+than this one. The loader lists every collision it finds so the work is visible
+rather than assumed away.
+
 ### Traversability is derived, not declared
 
 A node is worth expanding if money flows *into* it, not because it appears in the
@@ -291,7 +361,9 @@ $1.5M and $1.1M to a single committee in 2024 without appearing in the registry 
 ```
 src/
   db/schema.ts              entities · aliases · transactions · edge_rollups · saved_searches
+                            committee_registrations · committee_officers
   lib/normalize.ts          name normalization, truncation + fuzzy match scoring
+                            address/phone/person keys for shared-operative clustering
   lib/ingest/
     fl-doe/{client,parse,adapter}.ts   rate-limited scraper, TSV + registry parsers
     resolve.ts              entity resolution

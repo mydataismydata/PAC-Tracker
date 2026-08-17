@@ -391,6 +391,111 @@ export function parseCommitteeRegistryHtml(html: string): RegistryCommittee[] {
   return out;
 }
 
+/** Column header of the bulk committee list, in the order it is emitted. */
+export const COMMITTEE_LIST_HEADER = [
+  'AcctNum',
+  'Name',
+  'Type',
+  'TypeDesc',
+  'Addr1',
+  'Addr2',
+  'City',
+  'State',
+  'Zip',
+  'County',
+  'Phone',
+  'ChrNameLast',
+  'ChrNameFirst',
+  'ChrNameMiddle',
+  'TrsNameLast',
+  'TrsNameFirst',
+  'TrsNameMiddle',
+] as const;
+
+/** A committee's registration record from the bulk extract. */
+export interface RegistryCommitteeDetail {
+  /** The state's own account number — the identifier the exports lack. */
+  acctNum: string | null;
+  name: string;
+  type: string | null;
+  typeDescription: string | null;
+  addr1: string | null;
+  addr2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  county: string | null;
+  phone: string | null;
+  chairLast: string | null;
+  chairFirst: string | null;
+  chairMiddle: string | null;
+  treasurerLast: string | null;
+  treasurerFirst: string | null;
+  treasurerMiddle: string | null;
+}
+
+/**
+ * Parse the tab-delimited committee list.
+ *
+ * Unlike the transaction exports this one is a genuine TSV with a single header
+ * row and no repeated headers or footer markup, so it needs none of the
+ * defensive skipping the contribution parser does. The header is still checked
+ * by position rather than trusted: the file carries no version marker, and a
+ * silently reordered column would map treasurers onto chairs.
+ */
+export function parseCommitteeListTsv(text: string): {
+  rows: RegistryCommitteeDetail[];
+  skipped: number;
+} {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const rows: RegistryCommitteeDetail[] = [];
+  let skipped = 0;
+  if (lines.length === 0) return { rows, skipped };
+
+  const header = lines[0].split('\t').map((c) => c.trim());
+  const mismatch = COMMITTEE_LIST_HEADER.filter((h, i) => header[i] !== h);
+  if (mismatch.length > 0) {
+    throw new Error(
+      `unexpected committee list header: missing or reordered ${mismatch.join(', ')} — got ${header.join(', ')}`,
+    );
+  }
+
+  const clean = (s: string | undefined): string | null => {
+    const v = decodeHtml((s ?? '').trim()).replace(/\s+/g, ' ').trim();
+    return v.length > 0 ? v : null;
+  };
+
+  for (const line of lines.slice(1)) {
+    const c = line.split('\t');
+    const name = clean(c[1]);
+    if (!name) {
+      skipped++;
+      continue;
+    }
+    rows.push({
+      acctNum: clean(c[0]),
+      name,
+      type: clean(c[2])?.toUpperCase() ?? null,
+      typeDescription: clean(c[3]),
+      addr1: clean(c[4]),
+      addr2: clean(c[5]),
+      city: clean(c[6]),
+      state: clean(c[7]),
+      zip: clean(c[8]),
+      county: clean(c[9]),
+      phone: clean(c[10]),
+      chairLast: clean(c[11]),
+      chairFirst: clean(c[12]),
+      chairMiddle: clean(c[13]),
+      treasurerLast: clean(c[14]),
+      treasurerFirst: clean(c[15]),
+      treasurerMiddle: clean(c[16]),
+    });
+  }
+
+  return { rows, skipped };
+}
+
 /**
  * Decode HTML entities.
  *
