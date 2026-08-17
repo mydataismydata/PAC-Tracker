@@ -21,12 +21,22 @@ export const FLDOE_ENDPOINTS = {
   contributions: `${BASE}/cgi-bin/contrib.exe`,
   expenditures: `${BASE}/cgi-bin/expend.exe`,
   committeeLookup: `${BASE}/committees/ComLkupByName.asp`,
+  /**
+   * Bulk registration extract for every active committee.
+   *
+   * The only place the state publishes what it holds beyond a name: account
+   * number, mailing address, phone, and the chair and treasurer. Unlike the
+   * name lookup this is one request for the whole roster, and unlike the CGI
+   * endpoints it takes no query at all.
+   */
+  committeeList: `${BASE}/committees/extractComList.asp`,
 } as const;
 
 const REFERERS: Record<keyof typeof FLDOE_ENDPOINTS, string> = {
   contributions: `${BASE}/campaign-finance/contributions/`,
   expenditures: `${BASE}/campaign-finance/expenditures/`,
   committeeLookup: `${BASE}/committees/`,
+  committeeList: `${BASE}/committees/downloadcomlist.asp`,
 };
 
 /**

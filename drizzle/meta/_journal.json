@@ -22,6 +22,13 @@
       "when": 1786634257318,
       "tag": "0002_deep_klaw",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786931541927,
+      "tag": "0003_lean_zarda",
+      "breakpoints": true
     }
   ]
 }

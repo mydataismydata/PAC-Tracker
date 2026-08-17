@@ -17,8 +17,10 @@ import {
   parseContributionTsv,
   parseExpenditureTsv,
   parseCommitteeRegistryHtml,
+  parseCommitteeListTsv,
   type RawContributionRow,
   type RegistryCommittee,
+  type RegistryCommitteeDetail,
 } from './parse';
 import type { RawTransactionRow } from '../types';
 
@@ -710,6 +712,26 @@ export class FlDoeAdapter {
       NameSearchBtn: 'Search by Name',
     });
     return parseCommitteeRegistryHtml(html);
+  }
+
+  /**
+   * Every active committee's registration record, in one request.
+   *
+   * Worth preferring over `sweepCommitteeRegistry` where it applies: that one
+   * costs 36 requests and returns three columns, while this returns seventeen
+   * including the account number and the officers. It covers only *active*
+   * committees though, so the alphabet sweep is still what finds closed ones.
+   */
+  async committeeList(): Promise<RegistryCommitteeDetail[]> {
+    const tsv = await this.client.post('committeeList', { FormSubmit: 'Download' });
+    const { rows, skipped } = parseCommitteeListTsv(tsv);
+    if (rows.length === 0) {
+      throw new Error('committee list came back empty — the extract form may have changed');
+    }
+    if (skipped > 0) {
+      console.warn(`committee list: skipped ${skipped} unnamed row(s)`);
+    }
+    return rows;
   }
 
   /** Full registry sweep across the alphabet and digits. */

@@ -12,6 +12,7 @@
  *   pnpm ingest cycle 20261103-GEN               # sweep a whole state election cycle
  *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
+ *   pnpm ingest committees                       # registrations + chairs/treasurers
  *   pnpm ingest county stjohns                   # sweep a county (current cycle)
  *   pnpm ingest county stjohns --all             # every cycle the portal offers
  *   pnpm ingest counties                         # list supported counties
@@ -33,6 +34,7 @@ import {
   ensureIrsSource,
   ingestContributionRows,
   ingestTransactionRows,
+  ingestCommitteeRegistrations,
   startRun,
   finishRun,
   rebuildAll,
@@ -77,6 +79,36 @@ async function main() {
 
   if (mode === 'help') {
     console.log(__filename.replace(/.*\//, ''), '— see header for usage');
+    process.exit(0);
+  }
+
+  if (mode === 'committees') {
+    console.log('Downloading the committee list…');
+    const listed = await fl.committeeList();
+    console.log(`${listed.length} active committees. Resolving and recording…`);
+    const r = await ingestCommitteeRegistrations(
+      db,
+      listed,
+      { sourceId, jurisdictionId },
+      resolver,
+      (done, total) => {
+        if (done % 200 === 0 || done === total) console.log(`  ${done}/${total}`);
+      },
+    );
+    console.log(
+      `\n${r.registrations} registrations, ${r.officers} officer roles, ` +
+        `${r.entitiesCreated} new entities, ${r.officersSuperseded} superseded.`,
+    );
+    if (r.collisions.length > 0) {
+      console.log(
+        `\n${r.collisions.length} committees kept apart by account number that name ` +
+          `matching would have merged. Their registrations are now separate, but the ` +
+          `transactions filed under these names are probably still on one node:`,
+      );
+      for (const c of r.collisions) {
+        console.log(`  ${c.acctNum}  ${c.name}  (would have joined acct ${c.mergedInto})`);
+      }
+    }
     process.exit(0);
   }
 
