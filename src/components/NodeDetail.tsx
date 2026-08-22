@@ -48,7 +48,7 @@ const DIRECTIONS: { value: LedgerDirection; label: string }[] = [
 type PanelMode = 'sources' | 'transactions' | 'origins';
 
 const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
-  { value: 'sources', label: 'By counterparty', hint: 'One row per counterparty, aggregated.' },
+  { value: 'sources', label: 'By party', hint: 'One row per counterparty, aggregated.' },
   { value: 'transactions', label: 'Every transaction', hint: 'One row per reported line item.' },
   {
     value: 'origins',
@@ -56,6 +56,16 @@ const PANEL_MODES: { value: PanelMode; label: string; hint: string }[] = [
     hint: 'Follow the money past committee-to-committee transfers to whoever originated it.',
   },
 ];
+
+/**
+ * A tab's natural default: the transaction list is a chronology, so it opens
+ * newest-first; the aggregated views are about size, so they open largest-first.
+ * Applied on tab switch rather than derived, so a sort the reader picks by hand
+ * survives until they move tabs again.
+ */
+function defaultSortFor(mode: PanelMode): LedgerSort {
+  return mode === 'transactions' ? 'date' : 'amount';
+}
 
 export default function NodeDetail({
   node,
@@ -307,14 +317,17 @@ export default function NodeDetail({
           ))}
         </div>
 
-        <div className="grid grid-cols-2 gap-1">
+        <div className="grid grid-cols-3 gap-1">
           {PANEL_MODES.map((m) => (
             <button
               key={m.value}
               type="button"
-              onClick={() => setMode(m.value)}
+              onClick={() => {
+                setMode(m.value);
+                setSort(defaultSortFor(m.value));
+              }}
               title={m.hint}
-              className={`rounded px-2 py-1 text-[11px] font-medium transition ${
+              className={`rounded px-1.5 py-1 text-[11px] font-medium leading-tight transition ${
                 mode === m.value
                   ? 'bg-indigo-600 text-white'
                   : 'bg-slate-900 text-slate-400 hover:bg-slate-800'

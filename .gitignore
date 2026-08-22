@@ -48,3 +48,6 @@ scripts/tmp-*.ts
 
 # CSVs pulled out of the app. Output, not source.
 /.exports/
+
+# Local-only operational notes (VPS deploy, credentials, runbooks).
+/docs-local/
