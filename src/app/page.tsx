@@ -132,6 +132,29 @@ export default function Home() {
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const seedId = q.get('seed');
+
+    // `?person=Ingoglia,Blaise` is the entry point for links arriving from
+    // another application, which knows a politician's name but not the id of
+    // any of their committees. Seeds on their largest filing — usually the
+    // affiliated committee rather than the campaign account.
+    if (!seedId && q.has('person')) {
+      const [last = '', first = ''] = (q.get('person') ?? '').split(',').map((v) => v.trim());
+      if (last && first) {
+        void (async () => {
+          const res = await fetch(
+            `/api/people/${encodeURIComponent(last)}/${encodeURIComponent(first)}?top=0`,
+          );
+          if (!res.ok) return;
+          const { person } = await res.json();
+          const biggest = person?.parts?.[0]?.id;
+          if (!biggest) return;
+          const e = await fetch(`/api/entities/${biggest}`);
+          if (e.ok) setSeed((await e.json()).entity);
+        })();
+      }
+      return;
+    }
+
     if (!seedId) return;
 
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrating from the URL
