@@ -33,7 +33,11 @@ RUN pnpm build
 FROM base AS tools
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
+# Every cli invocation is a fresh --rm container, so corepack re-fetches pnpm
+# and stops to ask permission each time. Nobody is there to answer it during
+# `docker compose run`, and the answer is always yes.
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ENTRYPOINT ["pnpm"]
 CMD ["db:migrate"]
 
