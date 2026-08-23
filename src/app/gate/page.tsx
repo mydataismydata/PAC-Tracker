@@ -32,7 +32,7 @@ export default async function GatePage({
   const noAccounts = !session && (await countUsers()) === 0;
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-slate-950 px-4 text-slate-100">
+    <main className="flex h-dvh items-center justify-center overflow-y-auto bg-slate-950 px-4 py-8 text-slate-100">
       <div className="w-full max-w-sm">
         <h1 className="text-lg font-semibold tracking-tight">PAC Tracker</h1>
 
