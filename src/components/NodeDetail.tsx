@@ -10,7 +10,7 @@
  * happen to be drawn.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   formatMoney,
   formatMoneyFull,
@@ -111,6 +111,29 @@ export default function NodeDetail({
   const received = subject?.totalReceived ?? node?.totalReceived ?? '0';
   const given = subject?.totalGiven ?? node?.totalGiven ?? '0';
 
+  // Phones scroll the whole panel, so the identity line has to follow and the
+  // totals have to shrink. 150 is where the full tiles clear the pinned header,
+  // so the compact pair takes over exactly as the tiles they replace leave.
+  // Releasing at 110 gives a band wide enough that a finger resting near the
+  // line cannot flutter the two states against each other.
+  // A callback ref, not useRef: the first mount of this panel renders the empty
+  // state, which has no scroller, so an effect keyed on [] would attach to
+  // nothing and never retry. This re-runs the moment the element appears.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    const el = scrollEl;
+    if (!el) return;
+    // No throttle: the updater returns the same boolean for all but two scroll
+    // positions, and React bails out of a re-render when it does.
+    const onScroll = () => {
+      const y = el.scrollTop;
+      setCollapsed((c) => (c ? y > 110 : y > 150));
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [scrollEl]);
+
   if (!node) {
     return (
       <div className="p-4 text-base lg:text-sm text-slate-500">
@@ -185,12 +208,23 @@ export default function NodeDetail({
       : { run: exportLedgerCsv, ready: !exporting && ledger.total > 0 };
 
   return (
-    <div className="flex h-full flex-col">
-      {/* ------------------------------------------------------------ header */}
-      <div className="shrink-0 space-y-3 border-b border-slate-800 p-4">
-        <div>
-          <h3 className="text-base lg:text-sm font-semibold leading-snug text-slate-100">{node.name}</h3>
-          <p className="mt-0.5 text-[13px] lg:text-xs text-slate-400">
+    <div ref={setScrollEl} className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
+      {/* --------------------------------------------------------- identity */}
+      {/* A direct child of the scroller. `sticky` is bounded by its own parent,
+          so nested inside the header card below this would scroll away with the
+          card rather than pin to the top of the panel. */}
+      <div
+        className="sticky top-0 z-20 shrink-0 border-b border-slate-800 bg-slate-950 px-4 pb-2
+                   pt-3 lg:static lg:z-auto lg:border-b-0 lg:pb-0 lg:pt-4"
+      >
+        <h3 className="truncate text-base font-semibold leading-snug text-slate-100 lg:whitespace-normal lg:text-sm">
+          {node.name}
+        </h3>
+        <p
+          className={`mt-0.5 text-[13px] text-slate-400 lg:block lg:text-xs ${
+            collapsed ? 'hidden' : ''
+          }`}
+        >
             {officerHub ? (
               <span className="capitalize">
                 {node.office ?? 'officer'}
@@ -204,8 +238,48 @@ export default function NodeDetail({
                 {node.city && ` · ${node.city}, ${node.stateCode ?? ''}`}
               </>
             )}
-          </p>
+        </p>
 
+        {/* Once the full tiles have scrolled past, the two totals return as one
+            line under the name: same buttons, same direction filter, a
+            fraction of the height. Phones only. */}
+        {collapsed && (
+          <div className="mt-1 flex items-baseline gap-4 lg:hidden">
+            <button
+              type="button"
+              onClick={() => setDirection('in')}
+              className="flex items-baseline gap-1.5"
+            >
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">In</span>
+              <span
+                className={`text-[13px] font-semibold tabular-nums ${
+                  direction === 'in' ? 'text-emerald-300' : 'text-emerald-400/70'
+                }`}
+              >
+                {formatMoney(received)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDirection('out')}
+              className="flex items-baseline gap-1.5"
+            >
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">Out</span>
+              <span
+                className={`text-[13px] font-semibold tabular-nums ${
+                  direction === 'out' ? 'text-amber-300' : 'text-amber-400/70'
+                }`}
+              >
+                {formatMoney(given)}
+              </span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* ------------------------------------------------------------ header */}
+      <div className="space-y-3 border-b border-slate-800 px-4 pb-4 pt-3 lg:shrink-0">
+        <div>
           {/* Every spelling the state filed for this person. Worth showing:
               two of them are misspellings that keyed apart until corrected. */}
           {officerHub && subject && subject.spellings.length > 1 && (
@@ -299,7 +373,7 @@ export default function NodeDetail({
       </div>
 
       {/* ------------------------------------------------------------ controls */}
-      <div className="shrink-0 space-y-2 border-b border-slate-800 p-3">
+      <div className="space-y-2 border-b border-slate-800 p-3 lg:shrink-0">
         <div className="grid grid-cols-3 gap-1">
           {DIRECTIONS.map((d) => (
             <button
@@ -413,7 +487,7 @@ export default function NodeDetail({
       </div>
 
       {/* ------------------------------------------------------------ rows */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         {mode === 'origins' && (
           <OriginsReport
             state={traced}
