@@ -85,6 +85,8 @@ export interface GraphCanvasHandle {
   zoomBy: (factor: number) => void;
   /** Pan by a fraction of the viewport; +x moves the view right. */
   panBy: (dx: number, dy: number) => void;
+  /** Re-measure the container after it has been hidden and shown again. */
+  resize: () => void;
 }
 
 /** One press of + or −. */
@@ -695,9 +697,24 @@ export default function GraphCanvas({
     return out;
   }, []);
 
+  /**
+   * Re-measure the container.
+   *
+   * Cytoscape caches its viewport size, so a canvas that was `display: none`
+   * while another pane showed comes back convinced it is 0x0 and renders
+   * nothing until something forces a measure. The mobile pane switcher hides
+   * it on every tab change, so the graph pane calls this on the way back in.
+   */
+  const resize = useCallback(() => {
+    const cy = cyRef.current;
+    const el = cy?.container();
+    if (!cy || !el || el.clientWidth < 2 || el.clientHeight < 2) return;
+    cy.resize();
+  }, []);
+
   useEffect(() => {
-    if (ready) onReady?.({ exportPng, fit, focusOn, getPositions, zoomBy, panBy });
-  }, [ready, exportPng, fit, focusOn, getPositions, zoomBy, panBy, onReady]);
+    if (ready) onReady?.({ exportPng, fit, focusOn, getPositions, zoomBy, panBy, resize });
+  }, [ready, exportPng, fit, focusOn, getPositions, zoomBy, panBy, resize, onReady]);
 
   // A new seed means a new graph; whatever the user pinned belonged to the old
   // one and must not constrain the fresh layout.
