@@ -13,19 +13,13 @@ import type { Metadata } from 'next';
 import { db } from '@/db';
 import { resolvePerson } from '@/lib/graph/person';
 import { ledger, type LedgerResult, type LedgerSourceRow } from '@/lib/graph/ledger';
+import { trace, type TraceResult } from '@/lib/graph/trace';
 import { formatMoneyFull } from '@/lib/graph/types';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * Every counterparty goes on the page, not a top-N slice — the point of a
- * summary page is that the reader does not have to drive a graph to see who
- * paid. The ceiling is a blast-radius guard, not an editorial choice: nine
- * entities in this database have over ten thousand distinct donors and the
- * largest has 144,107, which on a public uncached route would be tens of
- * megabytes per request. Where it engages, the page says so.
- */
-const CEILING = 5000;
+/** Rows per list. Enough to read; not so many the page stops being a summary. */
+const CEILING = 100;
 
 /**
  * Every cycle on file by default. A sponsor arriving from a bill page is being
@@ -96,6 +90,83 @@ function Caption({ result }: { result: LedgerResult }) {
   );
 }
 
+function pct(share: number): string {
+  const v = share * 100;
+  return v >= 10 ? `${Math.round(v)}%` : v >= 1 ? `${v.toFixed(1)}%` : '<1%';
+}
+
+/**
+ * Where the money started, not who handed it over.
+ *
+ * A committee's donor list is the next set of committees to read, not an
+ * answer. This is the same trace the graph's Funding origins tab runs.
+ */
+function Origins({ result, scope }: { result: TraceResult; scope: string }) {
+  const shown = result.sources.slice(0, CEILING);
+  const capped = result.sources.length > shown.length;
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
+        Funding origins · {scope}
+      </h2>
+      <p className="mt-1 text-xs leading-relaxed text-slate-500">
+        Committee-to-committee transfers followed back to whoever originated the money.
+        Attribution is pro-rata: a conduit that took $1M and passed on $100k passed on 10% of
+        each of its own sources.
+      </p>
+      <p className="mt-1 text-xs text-slate-600">
+        {capped
+          ? `showing the largest ${shown.length.toLocaleString()} of ${result.sources.length.toLocaleString()}`
+          : `${result.sources.length.toLocaleString()} in total`}
+        {result.hops > 0 && `, over ${result.hops} hop${result.hops === 1 ? '' : 's'}`}
+      </p>
+
+      <div className="mt-2 rounded border border-slate-800">
+        {shown.length === 0 ? (
+          <p className="px-4 py-6 text-sm text-slate-500">
+            Nothing traced past the direct donors.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-900">
+            {shown.map((s) => (
+              <li key={s.id} className="flex items-baseline gap-3 px-4 py-2.5">
+                <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{s.name}</span>
+                <span className="shrink-0 font-mono text-xs tabular-nums text-slate-600">
+                  {pct(s.share)}
+                </span>
+                <span className="shrink-0 font-mono text-sm tabular-nums text-emerald-400">
+                  {formatMoneyFull(String(s.amount))}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Kept out of the list above rather than folded in: for each of these the
+          funders are known but the share that reached Florida is not, so adding
+          them to the totals would be inventing a number. */}
+      {result.injectionPoints.length > 0 && (
+        <p className="mt-2 text-xs leading-relaxed text-slate-500">
+          Part of this money entered Florida through{' '}
+          {result.injectionPoints.map((p) => p.name).join(', ')}. What each of those pools was
+          itself funded by is disclosed; what share of it reached this chain is not, so they are
+          named here rather than counted above.
+        </p>
+      )}
+      {(result.unresolved.length > 0 || result.dispersed > 0) && (
+        <p className="mt-2 text-xs leading-relaxed text-slate-600">
+          {result.unresolved.length > 0 &&
+            `${result.unresolved.length} conduit${result.unresolved.length === 1 ? '' : 's'} had no traceable upstream. `}
+          {result.dispersed > 0 &&
+            `${formatMoneyFull(String(result.dispersed))} was spread too thin to follow and is not attributed.`}
+        </p>
+      )}
+    </section>
+  );
+}
+
 export default async function PersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   if (!person) notFound();
@@ -112,9 +183,17 @@ export default async function PersonPage({ params, searchParams }: Params) {
     offset: 0,
     cycle,
   };
-  const [received, given] = await Promise.all([
+  const [received, given, origins] = await Promise.all([
     ledger(db, person.entityIds, { ...base, direction: 'in' }),
     ledger(db, person.entityIds, { ...base, direction: 'out' }),
+    // Same options the graph's Funding origins tab uses, so the two agree.
+    // A failed trace must not take the whole page down with it.
+    trace(db, person.entityIds, {
+      maxDepth: 12,
+      minDollars: 100,
+      dateOrdered: true,
+      cycle,
+    }).catch(() => null),
   ]);
 
   // Seed the graph on whichever filing holds the most; it is the one whose
@@ -187,10 +266,12 @@ export default async function PersonPage({ params, searchParams }: Params) {
           </ul>
         </section>
 
+        {origins && <Origins result={origins} scope={scope} />}
+
         <section className="mt-8 grid gap-6 md:grid-cols-2">
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-              Donors · {scope}
+              Direct donors · {scope}
             </h2>
             <Caption result={received} />
             <div className="mt-2 rounded border border-slate-800">
