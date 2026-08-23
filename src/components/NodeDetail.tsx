@@ -113,7 +113,7 @@ export default function NodeDetail({
 
   if (!node) {
     return (
-      <div className="p-4 text-sm text-slate-500">
+      <div className="p-4 text-base lg:text-sm text-slate-500">
         Select a tile to inspect it. Double-click a tile to re-center the crawl there.
       </div>
     );
@@ -189,8 +189,8 @@ export default function NodeDetail({
       {/* ------------------------------------------------------------ header */}
       <div className="shrink-0 space-y-3 border-b border-slate-800 p-4">
         <div>
-          <h3 className="text-sm font-semibold leading-snug text-slate-100">{node.name}</h3>
-          <p className="mt-0.5 text-xs text-slate-400">
+          <h3 className="text-base lg:text-sm font-semibold leading-snug text-slate-100">{node.name}</h3>
+          <p className="mt-0.5 text-[13px] lg:text-xs text-slate-400">
             {officerHub ? (
               <span className="capitalize">
                 {node.office ?? 'officer'}
@@ -209,7 +209,7 @@ export default function NodeDetail({
           {/* Every spelling the state filed for this person. Worth showing:
               two of them are misspellings that keyed apart until corrected. */}
           {officerHub && subject && subject.spellings.length > 1 && (
-            <p className="mt-1 text-[10px] leading-relaxed text-slate-600">
+            <p className="mt-1 text-[11px] lg:text-[10px] leading-relaxed text-slate-600">
               Filed as {subject.spellings.join(' · ')}
             </p>
           )}
@@ -222,7 +222,7 @@ export default function NodeDetail({
               {officers.map((o) => (
                 <li
                   key={`${o.role}-${o.normalizedName}`}
-                  className="flex items-baseline gap-1.5 text-[11px]"
+                  className="flex items-baseline gap-1.5 text-[13px] lg:text-[11px]"
                 >
                   <span className="w-14 shrink-0 capitalize text-slate-600">{o.role}</span>
                   <button
@@ -258,11 +258,11 @@ export default function NodeDetail({
                 : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
             }`}
           >
-            <div className="text-[10px] uppercase tracking-wide text-slate-500">Received</div>
-            <div className="text-sm font-semibold text-emerald-400">
+            <div className="text-[11px] lg:text-[10px] uppercase tracking-wide text-slate-500">Received</div>
+            <div className="text-base lg:text-sm font-semibold text-emerald-400">
               {formatMoneyFull(received)}
             </div>
-            <div className="text-[10px] text-slate-500">
+            <div className="text-[11px] lg:text-[10px] text-slate-500">
               {officerHub ? `across ${subject?.committees ?? 0} committees` : `${node.inDegree} sources`}
             </div>
           </button>
@@ -275,11 +275,11 @@ export default function NodeDetail({
                 : 'border-slate-800 bg-slate-900/60 hover:border-slate-700'
             }`}
           >
-            <div className="text-[10px] uppercase tracking-wide text-slate-500">Given</div>
-            <div className="text-sm font-semibold text-amber-400">
+            <div className="text-[11px] lg:text-[10px] uppercase tracking-wide text-slate-500">Given</div>
+            <div className="text-base lg:text-sm font-semibold text-amber-400">
               {formatMoneyFull(given)}
             </div>
-            <div className="text-[10px] text-slate-500">
+            <div className="text-[11px] lg:text-[10px] text-slate-500">
               {officerHub ? `across ${subject?.committees ?? 0} committees` : `${node.outDegree} recipients`}
             </div>
           </button>
@@ -290,7 +290,7 @@ export default function NodeDetail({
           <button
             type="button"
             onClick={() => onRecenter(node.id)}
-            className="w-full rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white
+            className="w-full rounded bg-indigo-600 px-3 py-2 text-[13px] lg:text-xs font-medium text-white
                        hover:bg-indigo-500"
           >
             Re-center crawl here
@@ -306,7 +306,7 @@ export default function NodeDetail({
               key={d.value}
               type="button"
               onClick={() => setDirection(d.value)}
-              className={`rounded px-2 py-1 text-[11px] font-medium transition ${
+              className={`rounded px-2 py-1 text-[13px] lg:text-[11px] font-medium transition ${
                 direction === d.value
                   ? 'bg-slate-700 text-slate-100'
                   : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
@@ -327,7 +327,7 @@ export default function NodeDetail({
                 setSort(defaultSortFor(m.value));
               }}
               title={m.hint}
-              className={`rounded px-1.5 py-1 text-[11px] font-medium leading-tight transition ${
+              className={`rounded px-1.5 py-1 text-[13px] lg:text-[11px] font-medium leading-tight transition ${
                 mode === m.value
                   ? 'bg-indigo-600 text-white'
                   : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
@@ -343,7 +343,7 @@ export default function NodeDetail({
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Filter by name…"
-          className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs
+          className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[13px] lg:text-xs
                      text-slate-100 placeholder-slate-600 outline-none focus:border-indigo-500"
         />
         )}
@@ -354,7 +354,7 @@ export default function NodeDetail({
             <select
               value={sort}
               onChange={(e) => setSort(e.target.value as LedgerSort)}
-              className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[11px]
+              className="rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[13px] lg:text-[11px]
                          text-slate-300 outline-none focus:border-indigo-500"
             >
               <option value="amount">Largest first</option>
@@ -367,7 +367,7 @@ export default function NodeDetail({
             type="button"
             onClick={exporter.run}
             disabled={!exporter.ready}
-            className="ml-auto rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300
+            className="ml-auto rounded border border-slate-700 px-2 py-1 text-[13px] lg:text-[11px] text-slate-300
                        hover:bg-slate-800 disabled:opacity-40"
           >
             {exporting ? 'Exporting…' : 'Export CSV'}
@@ -376,7 +376,7 @@ export default function NodeDetail({
 
         {/* Reconciles against the tile totals above. */}
         {showLedger && (
-        <div className="flex items-baseline justify-between text-[11px]">
+        <div className="flex items-baseline justify-between text-[13px] lg:text-[11px]">
           <span className="text-slate-400">
             {ledger.total.toLocaleString()}{' '}
             {view === 'sources'
@@ -404,7 +404,7 @@ export default function NodeDetail({
             entered nor left the group, so a headline that includes it
             overstates what was raised — say so rather than net it away. */}
         {showLedger && Number(ledger.internalAmount) > 0 && (
-          <p className="text-[10px] leading-relaxed text-amber-500/80">
+          <p className="text-[11px] lg:text-[10px] leading-relaxed text-amber-500/80">
             {formatMoneyFull(ledger.internalAmount)} of that moved between committees in this
             group. It is real money but did not enter or leave the network, so subtract it before
             quoting a total raised.
@@ -425,10 +425,10 @@ export default function NodeDetail({
         )}
 
         {showLedger && (<>
-        {ledger.error && <p className="p-3 text-xs text-red-400">{ledger.error}</p>}
+        {ledger.error && <p className="p-3 text-[13px] lg:text-xs text-red-400">{ledger.error}</p>}
 
         {!ledger.loading && ledger.rows.length === 0 && (
-          <p className="p-3 text-xs text-slate-600">
+          <p className="p-3 text-[13px] lg:text-xs text-slate-600">
             {q ? 'No matches.' : 'Nothing recorded in this direction.'}
           </p>
         )}
@@ -449,7 +449,7 @@ export default function NodeDetail({
             type="button"
             onClick={ledger.loadMore}
             disabled={ledger.loading}
-            className="w-full py-2 text-xs text-indigo-400 hover:bg-slate-900 disabled:opacity-50"
+            className="w-full py-2 text-[13px] lg:text-xs text-indigo-400 hover:bg-slate-900 disabled:opacity-50"
           >
             {ledger.loading
               ? 'Loading…'
@@ -458,7 +458,7 @@ export default function NodeDetail({
         )}
 
         {ledger.loading && ledger.rows.length === 0 && (
-          <p className="p-3 text-xs text-slate-500">Loading…</p>
+          <p className="p-3 text-[13px] lg:text-xs text-slate-500">Loading…</p>
         )}
         </>)}
       </div>
@@ -624,9 +624,9 @@ function OriginsReport({
   onFocus: (nodeId: string) => void;
   nodes: Map<string, GraphNode>;
 }) {
-  if (state.error) return <p className="p-3 text-xs text-red-400">{state.error}</p>;
+  if (state.error) return <p className="p-3 text-[13px] lg:text-xs text-red-400">{state.error}</p>;
   if (state.loading && !state.result) {
-    return <p className="p-3 text-xs text-slate-500">Following the money…</p>;
+    return <p className="p-3 text-[13px] lg:text-xs text-slate-500">Following the money…</p>;
   }
   if (!state.result) return null;
 
@@ -638,11 +638,11 @@ function OriginsReport({
 
   const bar = (label: string, value: number, className: string) => (
     <div className="flex items-center gap-2">
-      <span className="w-20 shrink-0 text-[10px] text-slate-500">{label}</span>
+      <span className="w-20 shrink-0 text-[11px] lg:text-[10px] text-slate-500">{label}</span>
       <div className="h-1.5 flex-1 overflow-hidden rounded bg-slate-800">
         <div className={`h-full ${className}`} style={{ width: `${pct(value)}%` }} />
       </div>
-      <span className="w-24 shrink-0 text-right text-[10px] tabular-nums text-slate-400">
+      <span className="w-24 shrink-0 text-right text-[11px] lg:text-[10px] tabular-nums text-slate-400">
         {formatMoney(String(value))} · {pct(value).toFixed(0)}%
       </span>
     </div>
@@ -657,7 +657,7 @@ function OriginsReport({
           {bar('Unresolved', unresolved, 'bg-slate-500')}
           {bar('Long tail', r.dispersed, 'bg-slate-700')}
         </div>
-        <label className="flex cursor-pointer items-center gap-2 text-[10px] text-slate-400">
+        <label className="flex cursor-pointer items-center gap-2 text-[11px] lg:text-[10px] text-slate-400">
           <input
             type="checkbox"
             checked={dateOrdered}
@@ -666,7 +666,7 @@ function OriginsReport({
           />
           Only credit money a conduit held before it paid out
         </label>
-        <p className="text-[10px] leading-relaxed text-slate-600">
+        <p className="text-[11px] lg:text-[10px] leading-relaxed text-slate-600">
           Pro-rata across {r.hops} hops: what share of the pool each source funded, not the route a
           particular dollar took.
           {r.truncated && ' Hit the strand ceiling — some paths folded into the long tail.'}
@@ -674,7 +674,7 @@ function OriginsReport({
       </div>
 
       {r.sources.length === 0 && (
-        <p className="p-3 text-xs text-slate-600">
+        <p className="p-3 text-[13px] lg:text-xs text-slate-600">
           No originating sources found. Every path ends at a committee with no recorded upstream.
         </p>
       )}
@@ -689,22 +689,22 @@ function OriginsReport({
             >
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5">
-                  <span className="truncate text-xs text-slate-200">{s.name}</span>
+                  <span className="truncate text-[13px] lg:text-xs text-slate-200">{s.name}</span>
                   {nodes.has(s.id) && (
                     <span className="shrink-0 text-[9px] text-indigo-400" title="On the canvas">
                       ●
                     </span>
                   )}
                 </span>
-                <span className="block truncate text-[10px] text-slate-500">
+                <span className="block truncate text-[11px] lg:text-[10px] text-slate-500">
                   {s.kind} · {s.hop} hop{s.hop === 1 ? '' : 's'} away
                 </span>
               </span>
               <span className="shrink-0 text-right">
-                <span className="block text-xs font-medium tabular-nums text-emerald-400">
+                <span className="block text-[13px] lg:text-xs font-medium tabular-nums text-emerald-400">
                   {formatMoney(String(s.amount))}
                 </span>
-                <span className="block text-[10px] tabular-nums text-slate-500">
+                <span className="block text-[11px] lg:text-[10px] tabular-nums text-slate-500">
                   {(s.share * 100).toFixed(1)}%
                 </span>
               </span>
@@ -716,24 +716,24 @@ function OriginsReport({
       {r.injectionPoints.map((p) => (
         <div key={p.id} className="border-t border-sky-900/60 bg-sky-950/20">
           <div className="px-3 pb-1 pt-2">
-            <p className="text-[10px] uppercase tracking-wide text-sky-400">
+            <p className="text-[11px] lg:text-[10px] uppercase tracking-wide text-sky-400">
               Entered Florida through a national pool
             </p>
             <div className="mt-1 flex items-baseline justify-between gap-2">
               <button
                 type="button"
                 onClick={() => onFocus(p.id)}
-                className="min-w-0 flex-1 truncate text-left text-xs text-slate-200 hover:underline"
+                className="min-w-0 flex-1 truncate text-left text-[13px] lg:text-xs text-slate-200 hover:underline"
               >
                 {p.name}
               </button>
-              <span className="shrink-0 text-xs font-medium tabular-nums text-sky-300">
+              <span className="shrink-0 text-[13px] lg:text-xs font-medium tabular-nums text-sky-300">
                 {formatMoney(String(p.amount))} · {(p.share * 100).toFixed(1)}%
               </span>
             </div>
             {/* Shares are of the pool, never of the seed: how much of this
                 pool reached Florida is not disclosed anywhere. */}
-            <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+            <p className="mt-1 text-[11px] lg:text-[10px] leading-relaxed text-slate-500">
               Raised nationally and spent across many states. Its own funders are below, as
               shares of <em>its</em> money — not of {r.seed.name}. The two cannot be multiplied
               together, because no filing says which share of this pool came to Florida.
@@ -747,13 +747,13 @@ function OriginsReport({
                   onClick={() => onFocus(f.id)}
                   className="flex w-full items-baseline justify-between gap-2 px-3 py-1 text-left"
                 >
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-slate-300">
+                  <span className="min-w-0 flex-1 truncate text-[13px] lg:text-[11px] text-slate-300">
                     {f.name}
                   </span>
-                  <span className="shrink-0 text-[11px] tabular-nums text-slate-400">
+                  <span className="shrink-0 text-[13px] lg:text-[11px] tabular-nums text-slate-400">
                     {formatMoney(String(f.amount))}
                   </span>
-                  <span className="w-10 shrink-0 text-right text-[10px] tabular-nums text-slate-500">
+                  <span className="w-10 shrink-0 text-right text-[11px] lg:text-[10px] tabular-nums text-slate-500">
                     {(f.share * 100).toFixed(1)}%
                   </span>
                 </button>
@@ -765,7 +765,7 @@ function OriginsReport({
 
       {r.unresolved.length > 0 && (
         <div className="border-t border-slate-800">
-          <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-wide text-slate-500">
+          <p className="px-3 pb-1 pt-2 text-[11px] lg:text-[10px] uppercase tracking-wide text-slate-500">
             Trail ends here
           </p>
           <ul className="divide-y divide-slate-800/60">
@@ -777,16 +777,16 @@ function OriginsReport({
                   className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
                 >
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-xs text-slate-300">{s.name}</span>
-                    <span className="block truncate text-[10px] text-slate-600">
+                    <span className="block truncate text-[13px] lg:text-xs text-slate-300">{s.name}</span>
+                    <span className="block truncate text-[11px] lg:text-[10px] text-slate-600">
                       no recorded upstream in this data
                     </span>
                   </span>
                   <span className="shrink-0 text-right">
-                    <span className="block text-xs font-medium tabular-nums text-slate-400">
+                    <span className="block text-[13px] lg:text-xs font-medium tabular-nums text-slate-400">
                       {formatMoney(String(s.amount))}
                     </span>
-                    <span className="block text-[10px] tabular-nums text-slate-600">
+                    <span className="block text-[11px] lg:text-[10px] tabular-nums text-slate-600">
                       {(s.share * 100).toFixed(1)}%
                     </span>
                   </span>
@@ -832,7 +832,7 @@ function LedgerRowItem({
     <div className="flex items-start justify-between gap-2 px-3 py-1.5">
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-xs text-slate-200">{name}</span>
+          <span className="truncate text-[13px] lg:text-xs text-slate-200">{name}</span>
           {source && row.is_self && (
             <span className="shrink-0 rounded bg-slate-800 px-1 text-[9px] text-slate-400">
               self
@@ -847,7 +847,7 @@ function LedgerRowItem({
             </span>
           )}
         </span>
-        <span className="block truncate text-[10px] text-slate-500">
+        <span className="block truncate text-[11px] lg:text-[10px] text-slate-500">
           {source
             ? `${row.kind}${row.txn_count > 1 ? ` · ${row.txn_count} transactions` : ''}${
                 row.last_date ? ` · ${row.last_date}` : ''
@@ -857,12 +857,12 @@ function LedgerRowItem({
         {/* The mailing address earns its own line: on one line it pushed the
             date and occupation out of a row this narrow. */}
         {!source && formatAddress(row) && (
-          <span className="block truncate text-[10px] text-slate-600" title={formatAddress(row)}>
+          <span className="block truncate text-[11px] lg:text-[10px] text-slate-600" title={formatAddress(row)}>
             {formatAddress(row)}
           </span>
         )}
       </span>
-      <span className={`shrink-0 text-xs font-medium tabular-nums ${amountColor}`}>
+      <span className={`shrink-0 text-[13px] lg:text-xs font-medium tabular-nums ${amountColor}`}>
         {row.flow === 'out' ? '−' : ''}
         {formatMoney(row.amount)}
       </span>

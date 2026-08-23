@@ -7,7 +7,7 @@
  * the network build in progressively as levels stream back from the server.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import dynamic from 'next/dynamic';
 import EntitySearch from '@/components/EntitySearch';
 import ControlPanel from '@/components/ControlPanel';
@@ -34,6 +34,76 @@ const GraphCanvas = dynamic(() => import('@/components/GraphCanvas'), {
     </div>
   ),
 });
+
+/**
+ * Trade the browser's chrome for canvas.
+ *
+ * A phone gives the graph maybe 600px of height once the URL bar and the
+ * switcher have taken their cut; fullscreen gives most of it back. Renders
+ * nothing where the API is unavailable (notably iOS Safari), rather than
+ * offering a button that does nothing.
+ */
+function FullScreenButton() {
+  // Subscribed rather than mirrored into state: fullscreen is owned by the
+  // browser and can be left with the back gesture or Escape, without us
+  // hearing about it through a click handler.
+  const on = useSyncExternalStore(
+    (cb) => {
+      document.addEventListener('fullscreenchange', cb);
+      return () => document.removeEventListener('fullscreenchange', cb);
+    },
+    () => document.fullscreenElement !== null,
+    () => false,
+  );
+  const supported = useSyncExternalStore(
+    () => () => {},
+    () => document.fullscreenEnabled,
+    () => false,
+  );
+
+  if (!supported) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (document.fullscreenElement) void document.exitFullscreen();
+        else void document.documentElement.requestFullscreen().catch(() => {});
+      }}
+      title={on ? 'Leave full screen' : 'Full screen'}
+      aria-label={on ? 'Leave full screen' : 'Full screen'}
+      className="flex h-8 w-8 items-center justify-center rounded border border-slate-700
+                 text-slate-300 hover:bg-slate-800 lg:hidden"
+    >
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {on ? (
+          <>
+            <polyline points="9 4 9 9 4 9" />
+            <polyline points="15 4 15 9 20 9" />
+            <polyline points="9 20 9 15 4 15" />
+            <polyline points="15 20 15 15 20 15" />
+          </>
+        ) : (
+          <>
+            <polyline points="4 9 4 4 9 4" />
+            <polyline points="20 9 20 4 15 4" />
+            <polyline points="4 15 4 20 9 20" />
+            <polyline points="20 15 20 20 15 20" />
+          </>
+        )}
+      </svg>
+    </button>
+  );
+}
 
 /** The three panes the phone layout swaps between. */
 type MobilePane = 'graph' | 'detail' | 'filters';
@@ -327,7 +397,7 @@ export default function Home() {
   for (const e of crawl.edges.values()) totalTracked += Number(e.amount);
 
   return (
-    <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
+    <div className="flex h-dvh flex-col bg-slate-950 text-slate-100">
       {/* ------------------------------------------------------------ header */}
       <header className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-4 py-3">
         <div className="flex shrink-0 items-baseline gap-2">
@@ -372,6 +442,7 @@ export default function Home() {
           >
             Fit
           </button>
+          <FullScreenButton />
           <button
             type="button"
             onClick={() =>
@@ -618,7 +689,10 @@ function MobileTabs({
   ];
 
   return (
-    <nav className="grid shrink-0 grid-cols-3 border-t border-slate-800 bg-slate-950 lg:hidden">
+    <nav
+      className="grid shrink-0 grid-cols-3 border-t border-slate-800 bg-slate-950 lg:hidden"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+    >
       {tabs.map((t) => {
         const on = pane === t.value;
         return (
