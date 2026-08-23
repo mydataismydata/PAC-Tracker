@@ -17,17 +17,26 @@ import { formatMoneyFull } from '@/lib/graph/types';
 
 export const dynamic = 'force-dynamic';
 
-const CYCLE = '20261103-GEN';
 const TOP = 12;
 
-type Params = { params: Promise<{ last: string; first: string }> };
+/**
+ * Every cycle on file by default. A sponsor arriving from a bill page is being
+ * looked up as a person, not as a campaign, so their whole record is the honest
+ * answer; `?cycle=20261103-GEN` narrows it.
+ */
+const ALL_CYCLES = { label: 'all cycles on file', param: '' };
+
+type Params = {
+  params: Promise<{ last: string; first: string }>;
+  searchParams: Promise<{ cycle?: string }>;
+};
 
 async function load(p: Params['params']) {
   const { last, first } = await p;
   return resolvePerson(db, decodeURIComponent(last), decodeURIComponent(first));
 }
 
-export async function generateMetadata({ params }: Params): Promise<Metadata> {
+export async function generateMetadata({ params }: Pick<Params, 'params'>): Promise<Metadata> {
   const person = await load(params);
   if (!person) return { title: 'Not found — PAC Tracker' };
   return {
@@ -67,9 +76,13 @@ function Rows({ rows, tone }: { rows: LedgerSourceRow[]; tone: 'in' | 'out' }) {
   );
 }
 
-export default async function PersonPage({ params }: Params) {
+export default async function PersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   if (!person) notFound();
+
+  const cycle = (await searchParams).cycle || undefined;
+  const scope = cycle ? `${cycle.slice(0, 4)} cycle` : ALL_CYCLES.label;
+  const cycleParam = cycle ?? ALL_CYCLES.param;
 
   const base = {
     view: 'sources' as const,
@@ -77,7 +90,7 @@ export default async function PersonPage({ params }: Params) {
     order: 'desc' as const,
     limit: TOP,
     offset: 0,
-    cycle: CYCLE,
+    cycle,
   };
   const [received, given] = await Promise.all([
     ledger(db, person.entityIds, { ...base, direction: 'in' }),
@@ -119,7 +132,7 @@ export default async function PersonPage({ params }: Params) {
           <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-amber-400">
             {formatMoneyFull(person.totalGiven)}
           </div>
-          <div className="mt-1 text-xs text-slate-500">all cycles on file</div>
+          <div className="mt-1 text-xs text-slate-500">{ALL_CYCLES.label}</div>
         </div>
       </div>
 
@@ -136,7 +149,7 @@ export default async function PersonPage({ params }: Params) {
                 {p.kind}
               </span>
               <Link
-                href={`/?seed=${p.id}&cycle=${CYCLE}`}
+                href={`/?seed=${p.id}&cycle=${cycleParam}`}
                 className="min-w-0 flex-1 truncate text-sm text-slate-200 underline-offset-2 hover:text-indigo-300 hover:underline"
               >
                 {p.name}
@@ -152,7 +165,7 @@ export default async function PersonPage({ params }: Params) {
       <section className="mt-8 grid gap-6 md:grid-cols-2">
         <div>
           <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-            Largest donors · 2026 cycle
+            Largest donors · {scope}
           </h2>
           <p className="mt-1 text-xs text-slate-600">
             {received.total.toLocaleString()} in total, {formatMoneyFull(received.totalAmount)}
@@ -163,7 +176,7 @@ export default async function PersonPage({ params }: Params) {
         </div>
         <div>
           <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-            Largest payments out · 2026 cycle
+            Largest payments out · {scope}
           </h2>
           <p className="mt-1 text-xs text-slate-600">
             {given.total.toLocaleString()} in total, {formatMoneyFull(given.totalAmount)}
@@ -176,7 +189,7 @@ export default async function PersonPage({ params }: Params) {
 
       <div className="mt-8 flex flex-wrap gap-3">
         <Link
-          href={`/?seed=${biggest.id}&cycle=${CYCLE}&depth=2&direction=both&linkMode=direct`}
+          href={`/?seed=${biggest.id}&cycle=${cycleParam}&depth=2&direction=both&linkMode=direct`}
           className="rounded bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500"
         >
           Open the money graph
@@ -198,8 +211,10 @@ export default async function PersonPage({ params }: Params) {
       )}
 
       <p className="mt-6 text-xs leading-relaxed text-slate-600">
-        Totals cover every cycle on file; the donor and payment lists are the 2026 cycle. Figures
-        are as filed with the Florida Division of Elections and may be amended.
+        {cycle
+          ? `Headline totals cover every cycle on file; the donor and payment lists are the ${scope}.`
+          : 'Every cycle on file.'}{' '}
+        Figures are as filed with the Florida Division of Elections and may be amended.
       </p>
     </main>
   );
