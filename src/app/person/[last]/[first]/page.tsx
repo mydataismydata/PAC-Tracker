@@ -12,12 +12,20 @@ import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { db } from '@/db';
 import { resolvePerson } from '@/lib/graph/person';
-import { ledger, type LedgerSourceRow } from '@/lib/graph/ledger';
+import { ledger, type LedgerResult, type LedgerSourceRow } from '@/lib/graph/ledger';
 import { formatMoneyFull } from '@/lib/graph/types';
 
 export const dynamic = 'force-dynamic';
 
-const TOP = 12;
+/**
+ * Every counterparty goes on the page, not a top-N slice — the point of a
+ * summary page is that the reader does not have to drive a graph to see who
+ * paid. The ceiling is a blast-radius guard, not an editorial choice: nine
+ * entities in this database have over ten thousand distinct donors and the
+ * largest has 144,107, which on a public uncached route would be tens of
+ * megabytes per request. Where it engages, the page says so.
+ */
+const CEILING = 5000;
 
 /**
  * Every cycle on file by default. A sponsor arriving from a bill page is being
@@ -76,6 +84,18 @@ function Rows({ rows, tone }: { rows: LedgerSourceRow[]; tone: 'in' | 'out' }) {
   );
 }
 
+function Caption({ result }: { result: LedgerResult }) {
+  const shown = result.rows.length;
+  return (
+    <p className="mt-1 text-xs text-slate-600">
+      {shown < result.total
+        ? `showing the largest ${shown.toLocaleString()} of ${result.total.toLocaleString()}`
+        : `${result.total.toLocaleString()} in total`}
+      , {formatMoneyFull(result.totalAmount)}
+    </p>
+  );
+}
+
 export default async function PersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   if (!person) notFound();
@@ -88,7 +108,7 @@ export default async function PersonPage({ params, searchParams }: Params) {
     view: 'sources' as const,
     sort: 'amount' as const,
     order: 'desc' as const,
-    limit: TOP,
+    limit: CEILING,
     offset: 0,
     cycle,
   };
@@ -170,22 +190,18 @@ export default async function PersonPage({ params, searchParams }: Params) {
         <section className="mt-8 grid gap-6 md:grid-cols-2">
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-              Largest donors · {scope}
+              Donors · {scope}
             </h2>
-            <p className="mt-1 text-xs text-slate-600">
-              {received.total.toLocaleString()} in total, {formatMoneyFull(received.totalAmount)}
-            </p>
+            <Caption result={received} />
             <div className="mt-2 rounded border border-slate-800">
               <Rows rows={received.rows as LedgerSourceRow[]} tone="in" />
             </div>
           </div>
           <div>
             <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-              Largest payments out · {scope}
+              Payments out · {scope}
             </h2>
-            <p className="mt-1 text-xs text-slate-600">
-              {given.total.toLocaleString()} in total, {formatMoneyFull(given.totalAmount)}
-            </p>
+            <Caption result={given} />
             <div className="mt-2 rounded border border-slate-800">
               <Rows rows={given.rows as LedgerSourceRow[]} tone="out" />
             </div>
