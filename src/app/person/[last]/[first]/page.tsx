@@ -77,6 +77,47 @@ function Rows({ rows, tone }: { rows: LedgerSourceRow[]; tone: 'in' | 'out' }) {
   );
 }
 
+/**
+ * A headline figure.
+ *
+ * The type size comes off the length of the number rather than the viewport:
+ * $196,500 and $125,502,148 need different treatment in the same box, and only
+ * one of them is knowable from a breakpoint.
+ */
+function Tile({
+  label,
+  value,
+  tone,
+  children,
+}: {
+  label: string;
+  value: string;
+  tone: 'in' | 'out';
+  children: React.ReactNode;
+}) {
+  const text = formatMoneyFull(value);
+  const size =
+    text.length > 11 ? 'text-lg sm:text-2xl' : text.length > 8 ? 'text-xl sm:text-2xl' : 'text-2xl';
+
+  return (
+    <div
+      className={`min-w-0 rounded border p-4 ${
+        tone === 'in' ? 'border-emerald-900 bg-emerald-950/30' : 'border-slate-800 bg-slate-900/40'
+      }`}
+    >
+      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div
+        className={`mt-1 font-mono font-semibold tabular-nums ${size} ${
+          tone === 'in' ? 'text-emerald-400' : 'text-amber-400'
+        }`}
+      >
+        {text}
+      </div>
+      <div className="mt-1 text-xs text-slate-500">{children}</div>
+    </div>
+  );
+}
+
 function Caption({ result }: { result: LedgerResult }) {
   const shown = result.rows.length;
   return (
@@ -135,23 +176,15 @@ export default async function PersonPage({ params, searchParams }: Params) {
           </p>
         )}
 
-        <div className="mt-6 grid grid-cols-2 gap-3">
-          <div className="rounded border border-emerald-900 bg-emerald-950/30 p-4">
-            <div className="text-[11px] uppercase tracking-wide text-slate-500">Raised</div>
-            <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-emerald-400">
-              {formatMoneyFull(person.totalReceived)}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">
-              across {person.parts.length} filing{person.parts.length === 1 ? '' : 's'}
-            </div>
-          </div>
-          <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
-            <div className="text-[11px] uppercase tracking-wide text-slate-500">Spent</div>
-            <div className="mt-1 font-mono text-2xl font-semibold tabular-nums text-amber-400">
-              {formatMoneyFull(person.totalGiven)}
-            </div>
-            <div className="mt-1 text-xs text-slate-500">{ALL_CYCLES.label}</div>
-          </div>
+        {/* Stacks on a narrow phone. Two columns cannot hold a nine-figure sum
+            beside another one, and a governor's race produces those. */}
+        <div className="mt-6 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1">
+          <Tile label="Raised" value={person.totalReceived} tone="in">
+            across {person.parts.length} filing{person.parts.length === 1 ? '' : 's'}
+          </Tile>
+          <Tile label="Spent" value={person.totalGiven} tone="out">
+            {ALL_CYCLES.label}
+          </Tile>
         </div>
 
         {/* The split is the point: linking to any one of these understates the
@@ -160,19 +193,22 @@ export default async function PersonPage({ params, searchParams }: Params) {
           <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
             The filings
           </h2>
+          {/* Rows wrap on a phone. Kind, name and a nine-figure sum on one line
+              leaves the name as "Donalds…", which is the one part of the row a
+              reader needs to tell two filings apart. */}
           <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
             {person.parts.map((p) => (
-              <li key={p.id} className="flex items-baseline gap-3 px-4 py-3">
-                <span className="w-16 shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-600">
+              <li key={p.id} className="px-4 py-3 sm:flex sm:items-baseline sm:gap-3">
+                <span className="font-mono text-[10px] uppercase tracking-wide text-slate-600 sm:w-16 sm:shrink-0">
                   {p.kind}
                 </span>
                 <Link
                   href={`/?seed=${p.id}&cycle=${cycleParam}`}
-                  className="min-w-0 flex-1 truncate text-sm text-slate-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                  className="mt-0.5 block truncate text-sm text-slate-200 underline-offset-2 hover:text-indigo-300 hover:underline sm:mt-0 sm:min-w-0 sm:flex-1"
                 >
                   {p.name}
                 </Link>
-                <span className="shrink-0 text-sm">
+                <span className="mt-0.5 block text-sm sm:mt-0 sm:shrink-0">
                   <Money value={p.totalReceived} tone="in" />
                 </span>
               </li>
@@ -180,8 +216,12 @@ export default async function PersonPage({ params, searchParams }: Params) {
           </ul>
         </section>
 
+        {/* min-w-0 on the columns is load-bearing: a grid item's automatic
+            minimum size is its content's min-content width, so without it the
+            column refuses to shrink below the longest donor name and the
+            amounts end up off-screen on a phone. */}
         <section className="mt-8 grid gap-6 md:grid-cols-2">
-          <div>
+          <div className="min-w-0">
             <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
               Donors · {scope}
             </h2>
@@ -190,7 +230,7 @@ export default async function PersonPage({ params, searchParams }: Params) {
               <Rows rows={received.rows as LedgerSourceRow[]} tone="in" />
             </div>
           </div>
-          <div>
+          <div className="min-w-0">
             <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
               Payments out · {scope}
             </h2>
