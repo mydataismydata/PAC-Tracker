@@ -631,9 +631,25 @@ export const ingestRuns = pgTable(
   (t) => [index('ingest_runs_source_idx').on(t.sourceId, t.startedAt)],
 );
 
+/* -------------------------------------------------------------------------- */
+/* Application settings                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Small key/value store for operator-changeable configuration. Holds the site
+ * passphrase hash and the session signing secret, so the password can be
+ * rotated from the UI instead of by editing nginx and reloading it.
+ */
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type Entity = typeof entities.$inferSelect;
 export type NewEntity = typeof entities.$inferInsert;
 export type Transaction = typeof transactions.$inferSelect;
 export type NewTransaction = typeof transactions.$inferInsert;
 export type EdgeRollup = typeof edgeRollups.$inferSelect;
 export type SavedSearch = typeof savedSearches.$inferSelect;
+export type AppSetting = typeof appSettings.$inferSelect;

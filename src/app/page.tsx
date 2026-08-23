@@ -13,6 +13,7 @@ import EntitySearch from '@/components/EntitySearch';
 import ControlPanel from '@/components/ControlPanel';
 import NodeDetail from '@/components/NodeDetail';
 import SavedSearches from '@/components/SavedSearches';
+import PasswordButton from '@/components/PasswordButton';
 import { useCrawl } from '@/lib/graph/useCrawl';
 import {
   DEFAULT_SETTINGS,
@@ -479,6 +480,7 @@ export default function Home() {
           >
             Save PNG
           </button>
+          <PasswordButton />
         </div>
       </header>
 
