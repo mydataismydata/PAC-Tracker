@@ -5,5 +5,5 @@
  * client component would drag both into the bundle.
  */
 
-/** Shortest passphrase accepted when setting a new one. */
-export const MIN_PASSPHRASE = 6;
+/** Shortest password accepted when setting one. */
+export const MIN_PASSWORD = 10;

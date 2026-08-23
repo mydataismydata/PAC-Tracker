@@ -636,15 +636,39 @@ export const ingestRuns = pgTable(
 /* -------------------------------------------------------------------------- */
 
 /**
- * Small key/value store for operator-changeable configuration. Holds the site
- * passphrase hash and the session signing secret, so the password can be
- * rotated from the UI instead of by editing nginx and reloading it.
+ * Small key/value store for operator-managed configuration. Currently holds
+ * only the session signing secret.
  */
 export const appSettings = pgTable('app_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Someone allowed into the graph explorer.
+ *
+ * Accounts are created by an operator, the way htpasswd lines used to be. What
+ * the old file could not do is let the person change their own password, so a
+ * new account starts with a temporary one and `mustChangePassword` forces a
+ * replacement before anything else loads.
+ *
+ * Email is stored already lowercased; addresses are not case sensitive in
+ * practice, and a plain unique index then does the right thing.
+ */
+export const users = pgTable(
+  'users',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    email: text('email').notNull(),
+    passwordHash: text('password_hash').notNull(),
+    mustChangePassword: boolean('must_change_password').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSignInAt: timestamp('last_sign_in_at', { withTimezone: true }),
+  },
+  (t) => [uniqueIndex('users_email_idx').on(t.email)],
+);
 
 export type Entity = typeof entities.$inferSelect;
 export type NewEntity = typeof entities.$inferInsert;
@@ -653,3 +677,4 @@ export type NewTransaction = typeof transactions.$inferInsert;
 export type EdgeRollup = typeof edgeRollups.$inferSelect;
 export type SavedSearch = typeof savedSearches.$inferSelect;
 export type AppSetting = typeof appSettings.$inferSelect;
+export type User = typeof users.$inferSelect;
