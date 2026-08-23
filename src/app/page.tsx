@@ -35,6 +35,9 @@ const GraphCanvas = dynamic(() => import('@/components/GraphCanvas'), {
   ),
 });
 
+/** The three panes the phone layout swaps between. */
+type MobilePane = 'graph' | 'detail' | 'filters';
+
 export default function Home() {
   const [seed, setSeed] = useState<EntitySearchHit | null>(null);
   const [settings, setSettings] = useState<CrawlSettings>(DEFAULT_SETTINGS);
@@ -42,6 +45,9 @@ export default function Home() {
   const [restoredPositions, setRestoredPositions] =
     useState<Record<string, { x: number; y: number }> | null>(null);
   const [tab, setTab] = useState<'controls' | 'saved'>('controls');
+  // Which pane the phone layout is showing. Ignored from `lg` up, where all
+  // three are on screen at once, so it can be set unconditionally.
+  const [pane, setPane] = useState<MobilePane>('graph');
 
   const crawl = useCrawl();
   const canvasRef = useRef<GraphCanvasHandle | null>(null);
@@ -115,6 +121,24 @@ export default function Home() {
    * a filtered graph sits next to unfiltered numbers.
    */
   const selectedNode = selected ? (crawl.nodes.get(selected.id) ?? selected) : null;
+
+  /**
+   * Tapping a node on a phone should show what you tapped. Harmless on
+   * desktop, where every pane is visible and `pane` goes unread.
+   */
+  const handleSelectNode = useCallback((node: GraphNode | null) => {
+    setSelected(node);
+    if (node) setPane('detail');
+  }, []);
+
+  // Cytoscape measures its container once and caches it, so the canvas comes
+  // back from `display: none` believing it is 0x0. Remeasure after the browser
+  // has laid the pane back out, not in the same frame that unhides it.
+  useEffect(() => {
+    if (pane !== 'graph') return;
+    const id = requestAnimationFrame(() => canvasRef.current?.resize());
+    return () => cancelAnimationFrame(id);
+  }, [pane]);
 
   /**
    * Tell the canvas what to do with the viewport once the stream closes.
@@ -306,18 +330,18 @@ export default function Home() {
     <div className="flex h-screen flex-col bg-slate-950 text-slate-100">
       {/* ------------------------------------------------------------ header */}
       <header className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-4 py-3">
-        <div className="flex items-baseline gap-2">
-          <h1 className="text-base font-semibold tracking-tight">PAC Tracker</h1>
-          <span className="text-xs text-slate-500">Florida</span>
+        <div className="flex shrink-0 items-baseline gap-2">
+          <h1 className="text-sm font-semibold tracking-tight lg:text-base">PAC Tracker</h1>
+          <span className="hidden text-xs text-slate-500 lg:inline">Florida</span>
         </div>
 
         <div className="max-w-xl flex-1">
           <EntitySearch onSelect={handleSearchSelect} cycle={settings.cycle} />
         </div>
 
-        <div className="flex items-center gap-3 text-xs text-slate-400">
+        <div className="flex shrink-0 items-center gap-3 text-xs text-slate-400">
           {crawl.loading && (
-            <span className="flex items-center gap-1.5 text-indigo-400">
+            <span className="hidden items-center gap-1.5 text-indigo-400 lg:flex">
               <span
                 className="h-3 w-3 animate-spin rounded-full border-2 border-indigo-900
                            border-t-indigo-400"
@@ -326,7 +350,7 @@ export default function Home() {
             </span>
           )}
           {crawl.nodes.size > 0 && (
-            <span className="tabular-nums">
+            <span className="hidden tabular-nums lg:inline">
               {crawl.nodes.size} nodes · {crawl.edges.size} edges ·{' '}
               <span className="text-emerald-400">{formatMoney(totalTracked)}</span>
               {crawl.elapsedMs != null && !crawl.loading && (
@@ -335,7 +359,7 @@ export default function Home() {
             </span>
           )}
           {crawl.truncated && (
-            <span className="rounded bg-amber-950 px-2 py-0.5 text-amber-400">
+            <span className="hidden rounded bg-amber-950 px-2 py-0.5 text-amber-400 lg:inline">
               capped at {settings.maxNodes} nodes
             </span>
           )}
@@ -356,8 +380,8 @@ export default function Home() {
               )
             }
             disabled={crawl.nodes.size === 0}
-            className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800
-                       disabled:opacity-40"
+            className="hidden rounded border border-slate-700 px-2 py-1 hover:bg-slate-800
+                       disabled:opacity-40 lg:block"
           >
             Save PNG
           </button>
@@ -366,7 +390,10 @@ export default function Home() {
 
       <div className="flex min-h-0 flex-1">
         {/* --------------------------------------------------------- sidebar */}
-        <aside className="flex w-72 shrink-0 flex-col border-r border-slate-800">
+        <aside
+          className={`w-full shrink-0 flex-col border-slate-800 lg:flex lg:w-72 lg:border-r
+            ${pane === 'filters' ? 'flex' : 'hidden'}`}
+        >
           <div className="flex shrink-0 border-b border-slate-800">
             {(['controls', 'saved'] as const).map((t) => (
               <button
@@ -421,7 +448,7 @@ export default function Home() {
         </aside>
 
         {/* ---------------------------------------------------------- canvas */}
-        <main className="relative min-w-0 flex-1">
+        <main className={`relative min-w-0 flex-1 lg:block ${pane === 'graph' ? 'block' : 'hidden'}`}>
           {!seed ? (
             <EmptyState />
           ) : (
@@ -430,7 +457,7 @@ export default function Home() {
               edges={crawl.edges}
               seedId={seed.id}
               initialPositions={restoredPositions}
-              onSelectNode={setSelected}
+              onSelectNode={handleSelectNode}
               onExpandNode={handleRecenter}
               viewIntent={viewIntent}
               selectedId={selectedNode?.id ?? null}
@@ -454,7 +481,10 @@ export default function Home() {
         </main>
 
         {/* --------------------------------------------------------- detail */}
-        <aside className="flex w-80 shrink-0 flex-col overflow-hidden border-l border-slate-800">
+        <aside
+          className={`w-full shrink-0 flex-col overflow-hidden border-slate-800 lg:flex lg:w-80
+            lg:border-l ${pane === 'detail' ? 'flex' : 'hidden'}`}
+        >
           {/* Keyed on the entity so the ledger's paging, filter and scroll
               state reset cleanly when the selection changes. */}
           <NodeDetail
@@ -467,6 +497,8 @@ export default function Home() {
           />
         </aside>
       </div>
+
+      <MobileTabs pane={pane} onChange={setPane} hasSelection={selectedNode !== null} />
     </div>
   );
 }
@@ -487,7 +519,7 @@ function ViewControls({
     'text-slate-300 hover:bg-slate-800 hover:text-slate-100';
 
   return (
-    <div className="absolute bottom-4 left-4 flex flex-col items-start gap-1">
+    <div className="absolute bottom-20 left-4 flex flex-col items-start gap-1 lg:bottom-4">
       <div className="flex gap-1">
         <button
           type="button"
@@ -508,7 +540,7 @@ function ViewControls({
           −
         </button>
       </div>
-      <p className="text-[10px] text-slate-600">Arrow keys pan</p>
+      <p className="hidden text-[10px] text-slate-600 lg:block">Arrow keys pan</p>
     </div>
   );
 }
@@ -529,6 +561,101 @@ function EmptyState() {
   );
 }
 
+/**
+ * Pane switcher for phone widths.
+ *
+ * The desktop layout puts controls, canvas and inspector side by side; below
+ * `lg` there is room for exactly one, so they become tabs. Hidden from `lg` up,
+ * where all three are on screen and `pane` is not read.
+ */
+function MobileTabs({
+  pane,
+  onChange,
+  hasSelection,
+}: {
+  pane: MobilePane;
+  onChange: (p: MobilePane) => void;
+  hasSelection: boolean;
+}) {
+  const tabs: { value: MobilePane; label: string; icon: React.ReactNode }[] = [
+    {
+      value: 'graph',
+      label: 'Graph',
+      icon: (
+        <>
+          <circle cx="6" cy="7" r="2.5" />
+          <circle cx="18" cy="6" r="2.5" />
+          <circle cx="12" cy="17" r="2.5" />
+          <line x1="7.7" y1="8.6" x2="10.6" y2="15" />
+          <line x1="16.6" y1="8" x2="13.4" y2="15.2" />
+          <line x1="8.4" y1="6.6" x2="15.5" y2="6.2" />
+        </>
+      ),
+    },
+    {
+      value: 'detail',
+      label: 'Detail',
+      icon: (
+        <>
+          <line x1="4" y1="7" x2="20" y2="7" />
+          <line x1="4" y1="12" x2="20" y2="12" />
+          <line x1="4" y1="17" x2="14" y2="17" />
+        </>
+      ),
+    },
+    {
+      value: 'filters',
+      label: 'Filters',
+      icon: (
+        <>
+          <line x1="4" y1="8" x2="20" y2="8" />
+          <circle cx="15" cy="8" r="2.5" />
+          <line x1="4" y1="16" x2="20" y2="16" />
+          <circle cx="9" cy="16" r="2.5" />
+        </>
+      ),
+    },
+  ];
+
+  return (
+    <nav className="grid shrink-0 grid-cols-3 border-t border-slate-800 bg-slate-950 lg:hidden">
+      {tabs.map((t) => {
+        const on = pane === t.value;
+        return (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => onChange(t.value)}
+            aria-current={on ? 'page' : undefined}
+            className={`flex h-14 flex-col items-center justify-center gap-1 transition
+              ${on ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            <span className="relative">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+              >
+                {t.icon}
+              </svg>
+              {/* A node is selected but its pane is not showing — say so, so the
+                  tap that opened it does not look like it did nothing. */}
+              {t.value === 'detail' && hasSelection && !on && (
+                <span className="absolute -right-1 -top-0.5 h-1.5 w-1.5 rounded-full bg-indigo-400" />
+              )}
+            </span>
+            <span className="text-[10px] font-medium">{t.label}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 function Legend() {
   const items = [
     ['#6366f1', 'Committee / PAC'],
@@ -538,8 +665,8 @@ function Legend() {
   ] as const;
   return (
     <div
-      className="pointer-events-none absolute bottom-4 right-4 space-y-1 rounded
-                 border border-slate-800 bg-slate-900/80 px-3 py-2 backdrop-blur"
+      className="pointer-events-none absolute bottom-4 right-4 hidden space-y-1 rounded
+                 border border-slate-800 bg-slate-900/80 px-3 py-2 backdrop-blur lg:block"
     >
       {items.map(([color, label]) => (
         <div key={label} className="flex items-center gap-2 text-[11px] text-slate-400">
