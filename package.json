@@ -13,7 +13,8 @@
     "db:push": "drizzle-kit push",
     "ingest": "tsx --env-file-if-exists=.env scripts/ingest.ts",
     "probe:voterfocus": "tsx --env-file-if-exists=.env scripts/probe-voterfocus.ts",
-    "trace": "tsx scripts/trace.ts"
+    "trace": "tsx scripts/trace.ts",
+    "user": "tsx --env-file-if-exists=.env scripts/user.ts"
   },
   "dependencies": {
     "cytoscape": "^3.34.0",
