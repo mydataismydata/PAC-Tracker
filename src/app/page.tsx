@@ -480,6 +480,17 @@ export default function Home() {
           >
             Save PNG
           </button>
+          {/* Its own tab, not a route change: the guide is meant to be read
+              while driving the graph, and navigating away would drop the
+              crawl that prompted the question. */}
+          <a
+            href="/guide"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded border border-slate-700 px-2 py-1 hover:bg-slate-800"
+          >
+            Guide
+          </a>
           <AccountButton />
         </div>
       </header>
