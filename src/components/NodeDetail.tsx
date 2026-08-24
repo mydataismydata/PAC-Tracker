@@ -508,14 +508,17 @@ export default function NodeDetail({
         )}
 
         <ul className="divide-y divide-slate-800/60">
-          {ledger.rows.map((r) => (
-            <LedgerRowItem
-              key={isSourceRow(r) ? `${r.entity_id}-${r.flow}` : r.id}
-              row={r}
-              onFocus={onFocus}
-              inGraph={isSourceRow(r) ? nodes.has(r.entity_id) : false}
-            />
-          ))}
+          {ledger.rows.map((r) => {
+            const target = rowTarget(r);
+            return (
+              <LedgerRowItem
+                key={isSourceRow(r) ? `${r.entity_id}-${r.flow}` : r.id}
+                row={r}
+                onFocus={onFocus}
+                inGraph={target !== null && nodes.has(target)}
+              />
+            );
+          })}
         </ul>
 
         {ledger.hasMore && (
@@ -889,6 +892,18 @@ function formatAddress(row: LedgerRow): string {
   return [row.address, cityState].filter(Boolean).join(' · ');
 }
 
+/**
+ * The entity a row points at, or null when there is nowhere to go.
+ *
+ * An aggregated row is a counterparty by definition. A transaction row is not
+ * itself a node, but the party it names is the same entity the aggregated view
+ * would link to — so both navigate. Only an unresolved counterparty has no
+ * target.
+ */
+function rowTarget(row: LedgerRow): string | null {
+  return isSourceRow(row) ? row.entity_id : row.counterparty_id;
+}
+
 function LedgerRowItem({
   row,
   onFocus,
@@ -943,11 +958,15 @@ function LedgerRowItem({
     </div>
   );
 
-  // Counterparty rows navigate; individual transactions are not themselves nodes.
+  // Both shapes name a party worth opening. A row whose counterparty never
+  // resolved stays inert, and drops the hover highlight with it: an unclickable
+  // row that lights up under the cursor reads as broken rather than as absent.
+  const target = rowTarget(row);
+
   return (
-    <li className="hover:bg-slate-800/50">
-      {source ? (
-        <button type="button" onClick={() => onFocus(row.entity_id)} className="w-full text-left">
+    <li className={target ? 'hover:bg-slate-800/50' : ''}>
+      {target ? (
+        <button type="button" onClick={() => onFocus(target)} className="w-full text-left">
           {body}
         </button>
       ) : (
