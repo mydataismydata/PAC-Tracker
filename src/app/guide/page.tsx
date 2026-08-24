@@ -89,9 +89,7 @@ export default async function GuidePage() {
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">User guide</h1>
 
         <P>
-          PAC Tracker draws Florida political money as a graph. You pick a starting entity, and
-          the app walks outward along recorded payments and draws what it finds. Every figure on
-          the screen comes from a filed report, and every row links to the party it names.
+          PAC Tracker draws Florida political money as a graph. Start by searching for a PAC, organization or person in the search bar. As you type, the system will auto-fill matching entities. Click on an entity to load the graph and contribution details with the selected name.
         </P>
         <P>
           The database currently holds {totalTxns.toLocaleString()} transactions across{' '}
@@ -100,71 +98,60 @@ export default async function GuidePage() {
         </P>
 
         {/* ---------------------------------------------------------- start */}
-        <H2>Choosing where to start</H2>
+        <H2>Basic usage</H2>
         <P>
-          The search box sits in the header. Type at least two characters; it queries after a
-          220ms pause and returns up to 15 matches. Each result shows the entity kind and its
-          totals for the cycle you have selected, so the numbers in the dropdown are the numbers
-          you get on the canvas. Arrow keys move through the list and Enter picks one.
+          The search box sits in the header. As you type, it returns up to 15 matches. It will continue to refine the search as you type. Use the arrow keys (or scroll on a mobile device) to move through the list and Enter/tap to pick one.
         </P>
         <P>
-          Choosing a result makes that entity the seed and starts a crawl. Nothing is drawn until
-          you pick one.
+          Selecting an entity makes that the &quot;seed&quot; and starts a crawl: it builds the graph and populates the funding details. The links in the graph build based on which Controls you have active.
         </P>
 
         {/* ------------------------------------------------------- controls */}
         <H2>Controls</H2>
         <P>
-          The left sidebar has two tabs, Controls and Saved searches. Controls holds eight
+          The Controls sidebar has two tabs, Controls and Saved searches. Controls holds eight
           settings. Changing any of them re-runs the crawl from the same seed.
         </P>
 
         <Setting name="Depth" meta="1 to 6, default 2">
-          How many hops out from the seed to walk. Depth 1 draws only what touches the seed
-          directly. The crawl fetches one level at a time and streams tiles in as they arrive, so
-          the header counts up through &quot;level 2…&quot; while it runs.
+          How many hops out from the seed to walk in the graph. Depth 1 draws only what touches the entity
+          directly. The crawl fetches one level at a time and streams tiles in as they arrive. Note that the &quot;Funding origins&quot; data will pull from as many hops as it can trace, regardless of this setting. Likewise, the &quot;Money in&quot; and &quot;Money out&quot; are also independent of the number of levels.
         </Setting>
 
         <Setting name="Election cycle" meta={`default Current (${CURRENT_CYCLE.label})`}>
           Florida files a whole cycle under its general-election id, so a contribution dated 2023
           for the {CURRENT_CYCLE.label} election is a {CURRENT_CYCLE.label} row. Three buttons
           cover Current ({CURRENT_CYCLE.label}), Previous ({PREVIOUS_CYCLE.label}) and All; the
-          dropdown below them reaches every cycle back to 2000. All is offered but is not the
-          default, because an unfiltered graph quietly answers &quot;who has ever funded this&quot;,
-          which is rarely the question being asked.
+          dropdown below them reaches every cycle back to 2000. Select &quot;All&quot; to see connections for all available history.
         </Setting>
 
         <Setting name="Direction" meta="default Both">
-          Up follows money into the entity. Down follows money out of it. Both does each.
+          &quot;Up&quot; follows money into the entity. &quot;Down&quot; follows money out of it. &quot;Both&quot; draws the graph showing both inbound and outbound links.
         </Setting>
 
         <Setting name="Link mode" meta="default Direct links only">
-          <p>What counts as a connection worth following:</p>
+          <p>What connections are drawn in the graph:</p>
           <ul className="mt-2 space-y-2">
             <li>
               <span className="text-slate-200">Direct links only</span> follows the
-              committee-to-committee chain and leaves individual and corporate donors out, which
-              keeps the political money path readable.
+              committee-to-committee chain and leaves individual and corporate donors out.
             </li>
             <li>
-              <span className="text-slate-200">Include donor links</span> also pulls in the donors
-              feeding each committee reached. That is the full funding base and a much larger
-              graph.
+              <span className="text-slate-200">Include donor links</span> pulls committee-to-committee and also pulls in the donors
+              feeding each committee. That is the full funding base and a much larger graph.
             </li>
             <li>
-              <span className="text-slate-200">Registration links</span> hops on shared officers
+              <span className="text-slate-200">Registration links</span> creates links based on shared officers
               instead of money: every committee naming the same chair or treasurer. It reaches
               committees with no payment between them, then draws the money that does move inside
-              that network. Dashed lines in this mode are paperwork, not payments.
+              that network.
             </li>
           </ul>
           <p className="mt-2">
             Switching to Registration raises Max per node from 25 to 200, and switching away
             lowers it again. The cap means different things in each mode: on money it trims a tail
             of small donors, but on registration every hop is a co-registered committee, so 25
-            would show a quarter of a network and look complete. One Tallahassee treasurer is
-            named on 103 committees. The retuned value is written into the visible field rather
-            than applied behind your back, so you can see it and override it.
+            would show a fraction of some networks and look complete.
           </p>
         </Setting>
 
@@ -175,19 +162,18 @@ export default async function GuidePage() {
 
         <Setting name="Max per node" meta="1 to 200, default 25">
           How many connections to follow out of each entity reached. Connections are taken largest
-          first, so raising this adds smaller money rather than different money.
+          first, so raising this adds smaller money rather than different money. Increasing this setting is most useful for the largest PACs, more than ones with numerous small donors.
         </Setting>
 
         <Setting name="From date / To date" meta="default unset">
           Restricts the crawl to transactions dated inside the window. This is the transaction
-          date, which is not the same filter as the cycle: a 2026-cycle contribution can be dated
-          2023.
+          date, which is not the same filter as the cycle, which comes from the filing.
         </Setting>
 
         <Setting name="Node ceiling" meta="50 to 3000, default 600">
           A hard stop on graph size. When a crawl hits it, an amber
           &quot;capped at N nodes&quot; badge appears in the header, so a truncated graph is never
-          presented as a complete one.
+          presented as a complete one. This is strictly for performance and display reasons. The numbers shown in the detail panel always represent the full data set, regardless of how many links are drawn on the graph.
         </Setting>
 
         {/* --------------------------------------------------------- canvas */}
@@ -229,7 +215,7 @@ export default async function GuidePage() {
             that tile and the ones it trades with is dimmed, and the Details panel fills.
           </li>
           <li>
-            <span className="text-slate-100">Double-click a tile</span> to re-root the crawl
+            <span className="text-slate-100">Double-click a tile</span> to re-center the crawl
             there.
           </li>
           <li>
@@ -273,19 +259,17 @@ export default async function GuidePage() {
         {/* ---------------------------------------------------------- detail */}
         <H2>The Details panel</H2>
         <P>
-          The right pane fills when you select an entity. On a phone it is the Detail tab at the
-          bottom of the screen.
+          The right pane fills when you select an entity.
         </P>
         <P>
-          The top of the panel names the entity, its kind, the office it seeks, its city, and
-          whether the committee is closed. Under that, its officers. Each officer name opens that
-          person along with everything their committees raised. The ×N beside a name counts the
-          committees they appear on; names on 25 or more are greyed out, since a treasurer of
-          record on 100 committees says little about any one of them.
+          The Details panel shows the entity, its kind, the office it seeks, its city, and
+          whether the committee is open or closed. For committees, it displays its officers. Each officer name opens that
+          person along with everything their committees raised. The number beside an officer&#apos;s name counts the
+          committees they appear on. &quot;Re-center crawl here&quot; re-roots the graph on this entity; it is absent for officers, who are not crawlable entities.
         </P>
         <P>
-          The Received and Given tiles are buttons. Clicking one filters the list below to that
-          direction. Received counts distinct sources, Given counts recipients. Re-center crawl
+          The Received and Given tiles are buttons. Clicking one filters the list of transactions below to that
+          direction.Re-center crawl
           here re-roots the graph on this entity; it is absent for officers, who are not crawlable
           entities.
         </P>
@@ -300,13 +284,13 @@ export default async function GuidePage() {
           mailing address as filed. Sorted newest first by default.
         </Setting>
         <Setting name="Funding origins" meta="described in the next section">
-          Follows the money past committee-to-committee transfers to whoever originated it.
+          Follows the money past committee-to-committee transfers to whoever originated it. This does a percentage calculation from donors to determine the actual amount passed through each connected committee. For example, if Trulieve donated $100,000 out of $200,000 to a PAC (50% of its funding), then money coming from that PAC will show 50% of the donation coming from Trulieve.
         </Setting>
 
         <H3>Filtering and export</H3>
         <P>
           Money in, Money out and Both set the direction. The text box filters by counterparty
-          name. The sort offers Largest first, Most recent and Name A to Z, plus Most transactions
+          name. Sort offers Largest first, Most recent and Name A to Z, plus Most transactions
           on the By party tab. Switching tabs resets the sort to that tab&apos;s default, and a
           sort you pick by hand survives until you change tabs again.
         </P>
@@ -320,7 +304,7 @@ export default async function GuidePage() {
         <P>
           Export CSV writes the current tab for the current filters. Every row in every tab links
           to the party it names, including individual transactions, and a dot marks the parties
-          already drawn on the canvas.
+          already drawn on the canvas. Click on the entity to show it on the graph, however, the entity may not show up on the graph if the Controls settings are hiding it (for example, if &quot;Donor links&quot; are not selected, clicking on a donor will not show in the graph.)
         </P>
 
         {/* --------------------------------------------------------- origins */}
@@ -343,8 +327,7 @@ export default async function GuidePage() {
         <P>
           Attribution is pro-rata, because money in an account is fungible. A conduit that took
           $1M and passed on $100k passed on 10% of each of its own sources. That is a claim about
-          proportions of a pool, not about the route a particular dollar took, and the panel says
-          so under the bars.
+          proportions of a pool, not about the route a particular dollar took.
         </P>
 
         <H3>How far it walks</H3>
@@ -386,14 +369,9 @@ export default async function GuidePage() {
           </li>
         </ul>
 
-        <H3>Why national pools sit apart</H3>
+        <H3>National pools</H3>
         <P>
-          One entity is currently marked as a national pool: the Republican State Leadership
-          Committee, which files IRS Form 8872 rather than reporting to Florida. Its own largest
-          funders are listed beneath it, up to 12 of them, as shares of that pool rather than of
-          your seed. The two figures cannot be multiplied together, because no filing states what
-          share of the pool came to Florida. Keeping the money in its own bar is what stops that
-          multiplication from looking reasonable.
+          National entities do not file the same data to the state of Florida. Since they usually have broader and unspecified funding, they are listed separately on the details, with an estimated breakdown of donor money. This tracker is not meant for Federal PACs, only state and county ones.
         </P>
 
         {/* --------------------------------------------------------- saved */}
@@ -479,20 +457,6 @@ export default async function GuidePage() {
         </ul>
 
         {/* --------------------------------------------------------- limits */}
-        <H2>Where the numbers stop being exact</H2>
-        <P>
-          The Florida feed states the cycle a transaction belongs to. The two county portals and
-          the IRS filings do not: county portals have no cycle field at all, and 8872 rows carry a
-          filing period that would split one national committee across four cycles nobody would
-          think to select. Both fall back to the cycle their date lands in, which puts a filing
-          made late in one cycle for the next election in the wrong bucket.
-        </P>
-        <P>
-          A crawl that hits the node ceiling or the per-node cap says so in the header. Funding
-          origins reports its long tail and its unresolved money as their own bars for the same
-          reason: the parts that did not resolve are visible instead of folded into the parts that
-          did.
-        </P>
 
         <p className="mt-12 border-t border-slate-800 pt-4 text-xs text-slate-600">
           Every figure traces to a filed report. Where this app infers something the filings do
