@@ -123,6 +123,16 @@ This source is **richer than the state feed**: ISO dates, expenditures inline, a
 `S` self). That code feeds `ResolveInput.kindHint`, so a county committee is identified as
 a committee from evidence rather than from a name heuristic.
 
+The export also carries an **`Amend. code`** column, and it is not optional bookkeeping.
+A filer's export is their whole history at once, amendments included: a correction files a
+`D` row restating the line being deleted and an `A` row for its replacement, on top of the
+untouched original. Every one of those lines carries a distinct report/line number and so a
+distinct `rowHash`, meaning nothing downstream can collapse them — a $521.15 check later
+corrected to $500 counts as $1,021.15 unless the amendment is applied at parse time.
+`reconcileAmendments` in `voterfocus/parse.ts` does that: a `D` never becomes a transaction,
+and it cancels one matching live line by the contribution's natural key (direction, donor,
+date, amount) rather than by the ids the amendment changes.
+
 ## The remaining gap
 
 | Tier | Offices | Files with | Status |

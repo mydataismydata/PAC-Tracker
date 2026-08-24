@@ -262,9 +262,9 @@ export interface ParseExportOptions {
 export function parseTransactionExport(
   csv: string,
   opts: ParseExportOptions,
-): { rows: RawTransactionRow[]; skipped: number } {
+): { rows: RawTransactionRow[]; skipped: number; superseded: number } {
   const table = parseCsv(csv);
-  if (table.length === 0) return { rows: [], skipped: 0 };
+  if (table.length === 0) return { rows: [], skipped: 0, superseded: 0 };
 
   const header = table[0].map((h) => h.trim().toLowerCase().replace(/^"|"$/g, ''));
   const idx = (name: ExportColumn) => header.indexOf(name);
@@ -275,7 +275,8 @@ export function parseTransactionExport(
   const iAmount = idx('amount');
 
   // Without these four the file is not a CFINANCE export.
-  if (iDate < 0 || iDir < 0 || iName < 0 || iAmount < 0) return { rows: [], skipped: 0 };
+  if (iDate < 0 || iDir < 0 || iName < 0 || iAmount < 0)
+    return { rows: [], skipped: 0, superseded: 0 };
 
   const iRpt = idx('rpt code');
   const iLine = idx('line number');
@@ -288,8 +289,9 @@ export function parseTransactionExport(
   const iOcc = idx('occupation');
   const iItemType = idx('item type');
   const iDesc = idx('description');
+  const iAmend = idx('amend. code');
 
-  const rows: RawTransactionRow[] = [];
+  const built: BuiltRow[] = [];
   let skipped = 0;
 
   for (const cells of table.slice(1)) {
@@ -306,8 +308,9 @@ export function parseTransactionExport(
 
     const date = normalizeDate(get(iDate));
     const contType = get(iContType).toUpperCase();
+    const amend = amendCode(get(iAmend));
 
-    rows.push({
+    const row: RawTransactionRow = {
       filerRaw: opts.filerName,
       filerTruncated: false,
       filerTypeTag: null,
@@ -342,11 +345,85 @@ export function parseTransactionExport(
         date ?? '',
         dirCode,
       ]),
-    });
+    };
+    built.push({ amend, row });
   }
 
-  return { rows, skipped };
+  const { rows, superseded } = reconcileAmendments(built);
+  return { rows, skipped, superseded };
 }
+
+type AmendCode = 'A' | 'D' | '';
+
+interface BuiltRow {
+  amend: AmendCode;
+  row: RawTransactionRow;
+}
+
+/** Read the export's `Amend. code` column: `A` added, `D` deleted, else original. */
+function amendCode(raw: string): AmendCode {
+  const c = raw.trim().toUpperCase();
+  return c === 'A' ? 'A' : c === 'D' ? 'D' : '';
+}
+
+/**
+ * Apply a filing's amendments to its own rows.
+ *
+ * A VoterFocus export is the filer's whole history at once: every original
+ * line, plus the amendment rows that revise it. Each amendment row is flagged
+ * `A` (added) or `D` (deleted); an untouched original is blank. A correction is
+ * filed as a pair — a `D` restating the line being removed, then an `A` for its
+ * replacement — so a $521.15 check later fixed to $500 arrives as three lines:
+ * the $521.15 original, a $521.15 `D`, and a $500 `A`.
+ *
+ * Left alone, all three count and the donor shows $1,021.15 where they gave
+ * $500 — and because the row hash includes the report and line number, every
+ * one of those lines is a distinct hash that survives dedupe. So a `D` is never
+ * a transaction: it cancels one matching live line (an original, or an earlier
+ * `A`) by the natural key of the contribution. Blanks and surviving `A`s are
+ * what actually stands.
+ *
+ * The match is on restated content, not ids: a `D` sits in a later report than
+ * the line it removes and carries its own line number, so report and line never
+ * agree — but direction, donor, date and amount do.
+ */
+export function reconcileAmendments(built: BuiltRow[]): {
+  rows: RawTransactionRow[];
+  superseded: number;
+} {
+  const live: RawTransactionRow[] = [];
+  const deletes: RawTransactionRow[] = [];
+  for (const b of built) {
+    if (b.amend === 'D') deletes.push(b.row);
+    else live.push(b.row);
+  }
+
+  let superseded = 0;
+  for (const d of deletes) {
+    const i = live.findIndex((k) => sameContribution(k, d));
+    if (i >= 0) {
+      live.splice(i, 1);
+      superseded++;
+    }
+    // A `D` that matches nothing cancels nothing: the line it removed was itself
+    // amended away earlier, or never reached this export. Dropping the `D` — which
+    // is already done by leaving it out of `live` — is the whole correction.
+  }
+
+  return { rows: live, superseded };
+}
+
+/** Same reported money movement, ignoring the report and line ids that amendments change. */
+function sameContribution(a: RawTransactionRow, b: RawTransactionRow): boolean {
+  return (
+    a.direction === b.direction &&
+    a.amount === b.amount &&
+    (a.date ?? '') === (b.date ?? '') &&
+    contribNameKey(a.counterpartyRaw) === contribNameKey(b.counterpartyRaw)
+  );
+}
+
+const contribNameKey = (s: string): string => s.trim().toUpperCase().replace(/\s+/g, ' ');
 
 /**
  * VoterFocus emits ISO dates, but falls back to m/d/yyyy defensively.
