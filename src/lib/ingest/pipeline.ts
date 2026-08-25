@@ -747,6 +747,137 @@ export async function ingestCommitteeRegistrations(
   return result;
 }
 
+/**
+ * How far apart two filings of the same transfer may be dated and still count as
+ * the same money. Filers routinely disagree by a day or two — the payer books the
+ * cheque, the recipient books the deposit — but a same-amount transfer between the
+ * same two committees weeks apart is more likely a second, genuine gift.
+ */
+const MIRROR_WINDOW_DAYS = 14;
+
+/**
+ * Collapse mirror pairs: one committee→committee transfer that both filers
+ * reported — the recipient as a contribution, the payer as an expenditure.
+ *
+ * They are the same dollars, so keeping both doubles the edge between the two
+ * committees and, through it, the recipient's `total_received` and the payer's
+ * `total_given`. "Friends of Tammie McClafferty" showed $60k against $30k
+ * actually raised for exactly this reason: a $25k and a $5k transfer, each filed
+ * from both sides and each counted twice.
+ *
+ * The inline drop in `ingestTransactionRows` catches the simple case, but it
+ * matches on an exact date and only sees contributions already loaded — so a
+ * filing dated a day apart, or an expenditure sweep that ran before the
+ * contribution sweep, slips a mirror through. This pass is order-independent and
+ * date-tolerant: inside each committee→committee pair that carries both
+ * directions, it matches every expenditure to one unused contribution of the
+ * same amount within `MIRROR_WINDOW_DAYS`, nearest date first, and deletes those
+ * expenditures. The pairing is 1:1, so a genuine second transfer of the same
+ * amount keeps its own record, and only same-amount rows between the same two
+ * traversable nodes are ever touched.
+ *
+ * Deleting the expenditure (not the contribution) follows the pipeline's standing
+ * rule that the recipient's filing wins. Pass `entityIds` to limit the scan to
+ * pairs touching those nodes; omit it to sweep the whole graph.
+ */
+export async function collapseMirrors(
+  db: Db,
+  entityIds?: string[],
+  opts: { dryRun?: boolean } = {},
+): Promise<{ deleted: number; pairs: number }> {
+  const scoped = entityIds != null && entityIds.length > 0;
+  const outerScope = scoped
+    ? sql`AND (t.from_entity_id = ANY(${sql.param(entityIds)}::uuid[])
+             OR t.to_entity_id = ANY(${sql.param(entityIds)}::uuid[]))`
+    : sql``;
+  const innerScope = scoped
+    ? sql`AND (x.from_entity_id = ANY(${sql.param(entityIds)}::uuid[])
+             OR x.to_entity_id = ANY(${sql.param(entityIds)}::uuid[]))`
+    : sql``;
+
+  // Every row in a committee→committee pair that carries *both* directions.
+  const rows = await db.execute<{
+    id: string;
+    from_entity_id: string;
+    to_entity_id: string;
+    amount: string;
+    txn_date: string | null;
+    direction: 'contribution' | 'expenditure';
+  }>(sql`
+    SELECT t.id, t.from_entity_id, t.to_entity_id, t.amount::text AS amount,
+           t.txn_date::text AS txn_date, t.direction
+    FROM transactions t
+    WHERE t.from_entity_id IS NOT NULL AND t.to_entity_id IS NOT NULL
+      AND t.from_entity_id <> t.to_entity_id
+      ${outerScope}
+      AND (t.from_entity_id, t.to_entity_id) IN (
+        SELECT x.from_entity_id, x.to_entity_id
+        FROM transactions x
+        JOIN entities ef ON ef.id = x.from_entity_id AND ef.is_traversable
+        JOIN entities et ON et.id = x.to_entity_id AND et.is_traversable
+        WHERE x.from_entity_id <> x.to_entity_id
+          ${innerScope}
+        GROUP BY x.from_entity_id, x.to_entity_id
+        HAVING bool_or(x.direction = 'contribution')
+           AND bool_or(x.direction = 'expenditure')
+      )
+  `);
+
+  type Contrib = { amount: number; date: number | null; used: boolean };
+  type Expend = { id: string; amount: number; date: number | null };
+  const groups = new Map<string, { contribs: Contrib[]; expends: Expend[] }>();
+  for (const r of rows) {
+    const key = `${r.from_entity_id} ${r.to_entity_id}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { contribs: [], expends: [] };
+      groups.set(key, g);
+    }
+    const date = r.txn_date ? Date.parse(r.txn_date) : null;
+    if (r.direction === 'contribution') {
+      g.contribs.push({ amount: Number(r.amount), date, used: false });
+    } else {
+      g.expends.push({ id: r.id, amount: Number(r.amount), date });
+    }
+  }
+
+  const window = MIRROR_WINDOW_DAYS * 86_400_000;
+  const toDelete: string[] = [];
+  let pairsHit = 0;
+  for (const g of groups.values()) {
+    let hit = false;
+    for (const e of g.expends) {
+      let best = -1;
+      let bestDiff = Infinity;
+      for (let i = 0; i < g.contribs.length; i++) {
+        const c = g.contribs[i];
+        // Same amount, both dated, within the window; when unsure, leave it be.
+        if (c.used || c.amount !== e.amount) continue;
+        if (c.date === null || e.date === null) continue;
+        const diff = Math.abs(c.date - e.date);
+        if (diff > window) continue;
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = i;
+        }
+      }
+      if (best >= 0) {
+        g.contribs[best].used = true;
+        toDelete.push(e.id);
+        hit = true;
+      }
+    }
+    if (hit) pairsHit++;
+  }
+
+  if (toDelete.length > 0 && !opts.dryRun) {
+    await db.execute(
+      sql`DELETE FROM transactions WHERE id = ANY(${sql.param(toDelete)}::uuid[])`,
+    );
+  }
+  return { deleted: toDelete.length, pairs: pairsHit };
+}
+
 export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<void> {
   if (entityIds.length === 0) return;
 
@@ -853,6 +984,16 @@ export async function purgeSource(
  */
 export async function rebuildAll(db: Db): Promise<{ edges: number; entities: number }> {
   await refreshTraversability(db);
+
+  // A payer's expenditure and the recipient's contribution for the same transfer
+  // are one edge, not two; left in, they double it and both endpoints' totals.
+  // Collapse them before the rollups are built off the transaction table.
+  const mirrors = await collapseMirrors(db);
+  if (mirrors.deleted > 0) {
+    console.log(
+      `  collapsed ${mirrors.deleted} mirror expenditures across ${mirrors.pairs} committee pairs`,
+    );
+  }
 
   await db.execute(sql`TRUNCATE edge_rollups`);
   await db.execute(sql`
