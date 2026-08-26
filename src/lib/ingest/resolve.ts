@@ -36,6 +36,7 @@ import {
   scopedName,
   REVIEW_FLOOR,
 } from '@/lib/normalize';
+import { classifyIndustry } from './industry';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -322,6 +323,10 @@ export class EntityResolver {
     if (input.state) patch.stateCode = sql`COALESCE(${entities.stateCode}, ${input.state})`;
     if (input.occupation) {
       patch.occupation = sql`COALESCE(${entities.occupation}, ${input.occupation})`;
+      const inferred = classifyIndustry(input.occupation, input.rawName);
+      if (inferred) {
+        patch.industry = sql`COALESCE(${entities.industry}, ${inferred})`;
+      }
     }
     if (Object.keys(patch).length === 0) return;
     await this.db.update(entities).set(patch).where(eq(entities.id, entityId));
@@ -358,6 +363,7 @@ export class EntityResolver {
         zip: input.zip ?? null,
         address: input.address ?? null,
         occupation: input.occupation ?? null,
+        industry: classifyIndustry(input.occupation, displayName, kind),
         office: input.office ?? null,
         party: input.party ?? null,
         sourceId: input.sourceId ?? null,

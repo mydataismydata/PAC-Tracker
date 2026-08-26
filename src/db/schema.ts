@@ -152,6 +152,13 @@ export const entities = pgTable(
     stateCode: text('state_code'),
     zip: text('zip'),
     occupation: text('occupation'),
+    /**
+     * Industry/type derived from `occupation` (and, for a curated set of
+     * well-known organizations, real-world identity) by `classifyIndustry` in
+     * `src/lib/ingest/industry.ts`. Null means nothing matched — a blank
+     * column beats a confident-looking wrong one.
+     */
+    industry: text('industry'),
 
     /**
      * True when money can flow *out* of this node as well as in, i.e. it is

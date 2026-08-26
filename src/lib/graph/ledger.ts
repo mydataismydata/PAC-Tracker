@@ -34,6 +34,7 @@ export interface LedgerSourceRow extends Record<string, unknown> {
   name: string;
   kind: string;
   committee_type: string | null;
+  industry: string | null;
   amount: string;
   txn_count: number;
   first_date: string | null;
@@ -56,6 +57,8 @@ export interface LedgerTransactionRow extends Record<string, unknown> {
   state_code: string | null;
   zip: string | null;
   occupation: string | null;
+  /** The counterparty entity's industry, when it resolved to one; not per-transaction. */
+  industry: string | null;
   source_key: string | null;
   is_self: boolean;
 }
@@ -164,6 +167,7 @@ async function sourcesView(
   const rows = await db.execute<LedgerSourceRow>(sql`
     SELECT x.entity_id, e.name, e.kind::text AS kind,
            e.committee_type::text AS committee_type,
+           e.industry,
            x.amount::text AS amount, x.txn_count,
            x.first_date::text AS first_date, x.last_date::text AS last_date,
            x.flow, x.is_self
@@ -260,9 +264,10 @@ async function transactionsView(
     SELECT x.id, x.counterparty_id, x.counterparty_name,
            x.amount::text AS amount, x.txn_date::text AS txn_date, x.flow, x.is_self,
            x.txn_type_code, x.description, x.address, x.city, x.state_code, x.zip,
-           x.occupation, s.key AS source_key
+           x.occupation, ce.industry, s.key AS source_key
       FROM (${base}) x
       LEFT JOIN sources s ON s.id = x.source_id
+      LEFT JOIN entities ce ON ce.id = x.counterparty_id
      WHERE true ${filters}
      ORDER BY ${orderBy}
      LIMIT ${limit} OFFSET ${offset}
