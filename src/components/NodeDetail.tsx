@@ -149,11 +149,12 @@ export default function NodeDetail({
     try {
       const all = await ledger.fetchAll();
       const header = isSourceRow(all[0] ?? ({} as LedgerRow))
-        ? ['counterparty', 'kind', 'direction', 'amount', 'transactions', 'first_date', 'last_date']
+        ? ['counterparty', 'kind', 'industry', 'direction', 'amount', 'transactions', 'first_date', 'last_date']
         : [
             'date',
             'direction',
             'counterparty',
+            'industry',
             'amount',
             'type',
             'occupation',
@@ -166,11 +167,12 @@ export default function NodeDetail({
 
       const lines = all.map((r) =>
         isSourceRow(r)
-          ? [r.name, r.kind, r.flow, r.amount, r.txn_count, r.first_date ?? '', r.last_date ?? '']
+          ? [r.name, r.kind, r.industry ?? '', r.flow, r.amount, r.txn_count, r.first_date ?? '', r.last_date ?? '']
           : [
               r.txn_date ?? '',
               r.flow,
               r.counterparty_name,
+              r.industry ?? '',
               r.amount,
               r.txn_type_code ?? '',
               r.occupation ?? '',
@@ -562,6 +564,7 @@ function downloadCsv(filename: string, csv: string): void {
 const ORIGINS_HEADER = [
   'category',
   'name',
+  'industry',
   'kind',
   'hops_away',
   'amount',
@@ -593,6 +596,8 @@ function originsCsvRows(r: TraceResult): (string | number)[][] {
     [
       'seed',
       seed,
+      // Not a donor — this is the trace's own destination, not one of its sources.
+      '',
       r.seed.kind,
       '',
       money(r.seed.total),
@@ -614,13 +619,26 @@ function originsCsvRows(r: TraceResult): (string | number)[][] {
   ];
 
   for (const s of r.sources) {
-    rows.push(['traced', s.name, s.kind, s.hop, money(s.amount), share(s.share), seed, 'yes', s.id, '']);
+    rows.push([
+      'traced',
+      s.name,
+      s.industry ?? '',
+      s.kind,
+      s.hop,
+      money(s.amount),
+      share(s.share),
+      seed,
+      'yes',
+      s.id,
+      '',
+    ]);
   }
 
   for (const p of r.injectionPoints) {
     rows.push([
       'national_pool',
       p.name,
+      p.industry ?? '',
       p.kind,
       p.hop,
       money(p.amount),
@@ -634,6 +652,7 @@ function originsCsvRows(r: TraceResult): (string | number)[][] {
       rows.push([
         'pool_funder',
         f.name,
+        f.industry ?? '',
         '',
         '',
         money(f.amount),
@@ -650,6 +669,7 @@ function originsCsvRows(r: TraceResult): (string | number)[][] {
     rows.push([
       'trail_end',
       u.name,
+      u.industry ?? '',
       u.kind,
       u.hop,
       money(u.amount),
@@ -664,6 +684,7 @@ function originsCsvRows(r: TraceResult): (string | number)[][] {
   if (r.dispersed > 0) {
     rows.push([
       'long_tail',
+      '',
       '',
       '',
       '',

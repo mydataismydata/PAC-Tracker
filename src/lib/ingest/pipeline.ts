@@ -25,6 +25,7 @@ import type { RawContributionRow, RegistryCommitteeDetail } from './fl-doe/parse
 import type { RawTransactionRow } from './types';
 import { derivedCycleSql } from '@/lib/cycles';
 import { normalizeAddress, normalizePhone, officerKey, normalizeName } from '@/lib/normalize';
+import { classifyIndustry } from './industry';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
 const derivedCycle = derivedCycleSql('t');
@@ -1141,6 +1142,71 @@ export async function refreshEntityTotals(db: Db, entityIds: string[]): Promise<
     ) agg
     WHERE e.id = agg.id
   `);
+}
+
+/**
+ * Backfill `entities.industry` from each entity's occupation, name and kind.
+ *
+ * A new entity gets this at resolve time (`EntityResolver.create`, in
+ * `resolve.ts`); this covers everything that existed before that hook did,
+ * or that never had a usable occupation until a later filing supplied one.
+ *
+ * Idempotent by default — only rows where `industry IS NULL` are touched, so
+ * a re-run after new ingest just picks up what's new. `force` reclassifies
+ * every entity instead, for when the taxonomy in `industry.ts` changes.
+ */
+export async function backfillIndustry(
+  db: Db,
+  opts: { force?: boolean } = {},
+  onBatch?: (scanned: number) => void,
+): Promise<{ scanned: number; classified: number }> {
+  const BATCH = 10_000;
+  let cursor = '00000000-0000-0000-0000-000000000000';
+  let scanned = 0;
+  let classified = 0;
+
+  for (;;) {
+    const rows = await db.execute<{
+      id: string;
+      name: string;
+      kind: string;
+      occupation: string | null;
+    }>(sql`
+      SELECT id, name, kind::text AS kind, occupation
+        FROM entities
+       WHERE id > ${cursor}::uuid
+         ${opts.force ? sql`` : sql`AND industry IS NULL`}
+       ORDER BY id
+       LIMIT ${BATCH}
+    `);
+    if (rows.length === 0) break;
+    cursor = rows[rows.length - 1].id;
+    scanned += rows.length;
+
+    const ids: string[] = [];
+    const labels: string[] = [];
+    for (const r of rows) {
+      const label = classifyIndustry(r.occupation, r.name, r.kind);
+      if (label) {
+        ids.push(r.id);
+        labels.push(label);
+      }
+    }
+    if (ids.length > 0) {
+      await db.execute(sql`
+        UPDATE entities e SET industry = v.industry
+        FROM (
+          SELECT * FROM unnest(${sql.param(ids)}::uuid[], ${sql.param(labels)}::text[])
+            AS v(id, industry)
+        ) v
+        WHERE e.id = v.id
+      `);
+      classified += ids.length;
+    }
+    onBatch?.(scanned);
+  }
+
+  return { scanned, classified };
 }
 
 /** Bookkeeping helpers for observability of long scrape jobs. */

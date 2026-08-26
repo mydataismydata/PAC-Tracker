@@ -64,6 +64,8 @@ export interface TracedSource {
   id: string;
   name: string;
   kind: string;
+  /** Null when nothing classified it — see `classifyIndustry`. */
+  industry: string | null;
   amount: number;
   share: number;
   hop: number;
@@ -72,6 +74,7 @@ export interface TracedSource {
 export interface Funder {
   id: string;
   name: string;
+  industry: string | null;
   amount: number;
   share: number;
 }
@@ -242,6 +245,7 @@ export async function trace(
         id,
         name: names.get(id)?.name ?? id,
         kind: names.get(id)?.kind ?? 'unknown',
+        industry: names.get(id)?.industry ?? null,
         amount: v.amount,
         share: seedTotal > 0 ? v.amount / seedTotal : 0,
         hop: v.hop,
@@ -327,12 +331,14 @@ async function topFunders(db: Db, ids: string[]): Promise<Map<string, Funder[]>>
     pool_id: string;
     id: string;
     name: string;
+    industry: string | null;
     amount: string;
     pool_total: string;
   }>(sql`
     SELECT e.to_entity_id AS pool_id,
            e.from_entity_id AS id,
            d.name,
+           d.industry,
            e.total_amount::text AS amount,
            SUM(e.total_amount) OVER (PARTITION BY e.to_entity_id)::text AS pool_total
       FROM edge_rollups e
@@ -348,6 +354,7 @@ async function topFunders(db: Db, ids: string[]): Promise<Map<string, Funder[]>>
     list.push({
       id: r.id,
       name: r.name,
+      industry: r.industry,
       amount: Number(r.amount),
       share: total > 0 ? Number(r.amount) / total : 0,
     });
@@ -357,12 +364,12 @@ async function topFunders(db: Db, ids: string[]): Promise<Map<string, Funder[]>>
 }
 
 async function namesFor(db: Db, ids: string[]) {
-  if (ids.length === 0) return new Map<string, { name: string; kind: string }>();
-  const rows = await db.execute<{ id: string; name: string; kind: string }>(sql`
-    SELECT id, name, kind::text AS kind FROM entities
+  if (ids.length === 0) return new Map<string, { name: string; kind: string; industry: string | null }>();
+  const rows = await db.execute<{ id: string; name: string; kind: string; industry: string | null }>(sql`
+    SELECT id, name, kind::text AS kind, industry FROM entities
     WHERE id = ANY(${sql.param(ids)}::uuid[])
   `);
-  return new Map(rows.map((r) => [r.id, { name: r.name, kind: r.kind }]));
+  return new Map(rows.map((r) => [r.id, { name: r.name, kind: r.kind, industry: r.industry }]));
 }
 
 function bump(

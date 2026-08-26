@@ -19,6 +19,8 @@
  *   pnpm ingest irs rslc                         # a national 527's funders (IRS 8872)
  *   pnpm ingest purge voterfocus-duval           # drop one source, to re-ingest cleanly
  *   pnpm ingest expand 2                         # auto-expand frontier N rounds
+ *   pnpm ingest backfill-industry                # classify entities left over from before this existed
+ *   pnpm ingest backfill-industry --force         # reclassify every entity (taxonomy changed)
  *
  * Options: --election=20241105-GEN --limit=2000 --min=1000
  */
@@ -39,6 +41,7 @@ import {
   finishRun,
   rebuildAll,
   purgeSource,
+  backfillIndustry,
 } from '@/lib/ingest/pipeline';
 import { Irs8872Adapter, TRACKED_ORGS, findOrg } from '@/lib/ingest/irs-8872/adapter';
 import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
@@ -205,6 +208,16 @@ async function main() {
     const counts = await rebuildAll(db);
     console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
     await summarize();
+    process.exit(0);
+  }
+
+  if (mode === 'backfill-industry') {
+    const force = flags.force === 'true';
+    console.log(force ? 'Reclassifying every entity…' : 'Classifying entities with no industry yet…');
+    const result = await backfillIndustry(db, { force }, (scanned) => {
+      if (scanned % 50_000 === 0) console.log(`  ${scanned} scanned…`);
+    });
+    console.log(`  ${result.scanned} scanned, ${result.classified} classified`);
     process.exit(0);
   }
 

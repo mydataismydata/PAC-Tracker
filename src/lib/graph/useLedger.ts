@@ -20,6 +20,7 @@ export interface LedgerSourceRow {
   name: string;
   kind: string;
   committee_type: string | null;
+  industry: string | null;
   amount: string;
   txn_count: number;
   first_date: string | null;
@@ -43,6 +44,7 @@ export interface LedgerTransactionRow {
   state_code: string | null;
   zip: string | null;
   occupation: string | null;
+  industry: string | null;
   source_key: string | null;
 }
 
