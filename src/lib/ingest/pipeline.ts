@@ -1272,6 +1272,100 @@ export async function backfillCommitteeKind(
   return { scanned, reclassified };
 }
 
+/**
+ * Merge one or more duplicate entities into a survivor.
+ *
+ * For a genuine near-duplicate — a typo, an abbreviation, a truncated column,
+ * a singular/plural variant — normalization and the fuzzy-match safety net
+ * both missed it (that's *why* it's still two rows), so nothing short of a
+ * human confirming the pair is safe here. This is the tool for after that
+ * confirmation.
+ *
+ * Every table that references an entity gets the loser's rows reassigned to
+ * `keepId` before the loser is deleted — `transactions`, `committee_registrations`
+ * and `committee_officers` (real filings, not safe to just cascade-delete),
+ * and `saved_searches` (a user's saved search should not silently vanish out
+ * from under them). `entity_aliases` gets the loser's spellings folded in too,
+ * so a future filing using that same misspelling still resolves straight to
+ * the survivor — skipping any that collide with an alias the survivor already
+ * has, since `(entity_id, normalized_alias)` is unique. `edge_rollups` and
+ * `entity_cycle_totals` are left to cascade away with the loser; both are
+ * derived from `transactions` and are wrong until the caller re-derives them
+ * — call `rebuildAll` after merging, not per pair, once the whole batch is
+ * reassigned.
+ *
+ * Each (keepId, loserIds) group runs in one transaction: touching six tables
+ * per entity, a failure partway through must not leave a transaction pointing
+ * at an entity row that no longer exists.
+ */
+export async function mergeEntities(
+  db: Db,
+  keepId: string,
+  loserIds: string[],
+): Promise<{ merged: number }> {
+  const ids = loserIds.filter((id) => id !== keepId);
+  if (ids.length === 0) return { merged: 0 };
+
+  await db.transaction(async (tx) => {
+    for (const loserId of ids) {
+      const [loser] = await tx
+        .select({ name: entities.name, normalizedName: entities.normalizedName })
+        .from(entities)
+        .where(eq(entities.id, loserId));
+      if (!loser) continue; // already merged away by an earlier group in this batch
+
+      await tx.execute(sql`
+        UPDATE transactions SET from_entity_id = ${keepId} WHERE from_entity_id = ${loserId}
+      `);
+      await tx.execute(sql`
+        UPDATE transactions SET to_entity_id = ${keepId} WHERE to_entity_id = ${loserId}
+      `);
+      await tx.execute(sql`
+        UPDATE committee_registrations SET entity_id = ${keepId} WHERE entity_id = ${loserId}
+      `);
+      await tx.execute(sql`
+        UPDATE committee_officers SET entity_id = ${keepId} WHERE entity_id = ${loserId}
+      `);
+      await tx.execute(sql`
+        UPDATE saved_searches SET seed_entity_id = ${keepId} WHERE seed_entity_id = ${loserId}
+      `);
+
+      // The loser's own name becomes an alias of the survivor, so the exact
+      // spelling that used to create a second node now resolves straight to
+      // it. onConflictDoNothing: the survivor may already carry this alias.
+      await tx
+        .insert(entityAliases)
+        .values({
+          entityId: keepId,
+          alias: loser.name,
+          normalizedAlias: loser.normalizedName,
+          origin: 'resolved',
+          confidence: 1,
+        })
+        .onConflictDoNothing();
+
+      // Fold in the loser's other aliases the same way — skip anything that
+      // would collide with one the survivor already has.
+      await tx.execute(sql`
+        UPDATE entity_aliases SET entity_id = ${keepId}
+         WHERE entity_id = ${loserId}
+           AND NOT EXISTS (
+             SELECT 1 FROM entity_aliases keep_ea
+              WHERE keep_ea.entity_id = ${keepId}
+                AND keep_ea.normalized_alias = entity_aliases.normalized_alias
+           )
+      `);
+
+      // Whatever's left either collides, or belongs to edge_rollups /
+      // entity_cycle_totals, which are stale the moment transactions moved —
+      // both are recomputed by the caller's rebuildAll, not preserved here.
+      await tx.execute(sql`DELETE FROM entities WHERE id = ${loserId}`);
+    }
+  });
+
+  return { merged: ids.length };
+}
+
 /** Bookkeeping helpers for observability of long scrape jobs. */
 export async function startRun(
   db: Db,
