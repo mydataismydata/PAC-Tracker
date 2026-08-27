@@ -21,6 +21,7 @@
  *   pnpm ingest expand 2                         # auto-expand frontier N rounds
  *   pnpm ingest backfill-industry                # classify entities left over from before this existed
  *   pnpm ingest backfill-industry --force         # reclassify every entity (taxonomy changed)
+ *   pnpm ingest backfill-committee-kind           # fix PACs stuck as "organization" from before classifyContributor knew better
  *
  * Options: --election=20241105-GEN --limit=2000 --min=1000
  */
@@ -42,6 +43,7 @@ import {
   rebuildAll,
   purgeSource,
   backfillIndustry,
+  backfillCommitteeKind,
 } from '@/lib/ingest/pipeline';
 import { Irs8872Adapter, TRACKED_ORGS, findOrg } from '@/lib/ingest/irs-8872/adapter';
 import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
@@ -218,6 +220,15 @@ async function main() {
       if (scanned % 50_000 === 0) console.log(`  ${scanned} scanned…`);
     });
     console.log(`  ${result.scanned} scanned, ${result.classified} classified`);
+    process.exit(0);
+  }
+
+  if (mode === 'backfill-committee-kind') {
+    console.log('Reclassifying PAC-shaped contributors stuck as organization…');
+    const result = await backfillCommitteeKind(db, (scanned) => {
+      if (scanned % 50_000 === 0) console.log(`  ${scanned} scanned…`);
+    });
+    console.log(`  ${result.scanned} scanned, ${result.reclassified} reclassified to committee`);
     process.exit(0);
   }
 

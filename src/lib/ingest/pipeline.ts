@@ -24,7 +24,13 @@ import { EntityResolver, refreshTraversability } from './resolve';
 import type { RawContributionRow, RegistryCommitteeDetail } from './fl-doe/parse';
 import type { RawTransactionRow } from './types';
 import { derivedCycleSql } from '@/lib/cycles';
-import { normalizeAddress, normalizePhone, officerKey, normalizeName } from '@/lib/normalize';
+import {
+  normalizeAddress,
+  normalizePhone,
+  officerKey,
+  normalizeName,
+  looksLikeCommittee,
+} from '@/lib/normalize';
 import { classifyIndustry } from './industry';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
@@ -1207,6 +1213,63 @@ export async function backfillIndustry(
   }
 
   return { scanned, classified };
+}
+
+/**
+ * Reclassify PAC-shaped contributors that were resolved as `organization`.
+ *
+ * Florida's state contribution export carries no contributor-type code, so
+ * entities created from it fall back to `classifyContributor` (`resolve.ts`)
+ * — which, before it learned to recognize a committee-shaped name, put every
+ * non-person contributor in the same generic `organization` bucket a PAC has
+ * no business sharing. That matters beyond the label: a funding-origins trace
+ * only walks back through `committee`/`party` kinds, so a PAC stuck at
+ * `organization` reads as an original source instead of a conduit — a
+ * "$128K from FL CHAMBER OF COMM PAC" line where the chamber's own donors are
+ * sitting right there in this same data, unwalked.
+ *
+ * New ingests get this right at resolve time; this corrects everything that
+ * existed before that fix landed. Idempotent: only rows still kinded
+ * `organization` are examined, so a re-run after new ingest just picks up
+ * what's new.
+ */
+export async function backfillCommitteeKind(
+  db: Db,
+  onBatch?: (scanned: number) => void,
+): Promise<{ scanned: number; reclassified: number }> {
+  const BATCH = 10_000;
+  let cursor = '00000000-0000-0000-0000-000000000000';
+  let scanned = 0;
+  let reclassified = 0;
+
+  for (;;) {
+    const rows = await db.execute<{ id: string; name: string }>(sql`
+      SELECT id, name FROM entities
+       WHERE id > ${cursor}::uuid AND kind = 'organization'
+       ORDER BY id
+       LIMIT ${BATCH}
+    `);
+    if (rows.length === 0) break;
+    cursor = rows[rows.length - 1].id;
+    scanned += rows.length;
+
+    const ids = rows.filter((r) => looksLikeCommittee(r.name)).map((r) => r.id);
+    if (ids.length > 0) {
+      await db.execute(sql`
+        UPDATE entities SET kind = 'committee', updated_at = now()
+        WHERE id = ANY(${sql.param(ids)}::uuid[])
+      `);
+      reclassified += ids.length;
+    }
+    onBatch?.(scanned);
+  }
+
+  // A newly-committee entity that also receives money elsewhere in this data
+  // should be crawlable like any other committee, not stuck non-traversable
+  // because it was created back when its kind still said `organization`.
+  await refreshTraversability(db);
+
+  return { scanned, reclassified };
 }
 
 /** Bookkeeping helpers for observability of long scrape jobs. */
