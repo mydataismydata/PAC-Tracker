@@ -29,6 +29,7 @@ import {
   normalizeName,
   scoreMatch,
   looksTruncated,
+  looksLikeCommittee,
   looksLikePerson,
   personDisplayName,
   AUTO_LINK_THRESHOLD,
@@ -115,14 +116,18 @@ function kindFromHint(
 /**
  * Classify a contributor string when the source offers no type code.
  *
- * Occupation is the strongest available signal — Florida requires it for
- * individuals, and organizations put a sector description there instead
+ * Committee-shaped names are checked first: a PAC is a conduit, not a
+ * terminal donor, and a trace needs `kind` to say so or it stops there and
+ * credits the PAC itself as an original source instead of walking back
+ * through it. Occupation is the next-strongest signal — Florida requires it
+ * for individuals, and organizations put a sector description there instead
  * ("SOCIAL WELFARE ORGANIZATION", "AGRICULTURE", "ENERGY COMPANY").
  */
 export function classifyContributor(
   rawName: string,
   occupation?: string | null,
-): 'individual' | 'organization' {
+): 'individual' | 'organization' | 'committee' {
+  if (looksLikeCommittee(rawName)) return 'committee';
   if (looksLikePerson(rawName)) return 'individual';
   if (occupation && /\b(RETIRED|HOMEMAKER|ATTORNEY|PHYSICIAN|SELF[- ]EMPLOYED)\b/i.test(occupation)) {
     return 'individual';

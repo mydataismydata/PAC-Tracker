@@ -132,6 +132,17 @@ export function looksTruncated(raw: string, width = FL_NAME_TRUNCATION_WIDTH): b
 }
 
 /**
+ * Heuristic: does this contributor string name a political committee?
+ *
+ * Checked ahead of `looksLikePerson` so a name like "UPS PAC" or "GrayRobinson
+ * Florida PAC" is recognized as a committee specifically, not folded into the
+ * same generic non-person bucket as an ordinary corporation.
+ */
+export function looksLikeCommittee(raw: string): boolean {
+  return /\bPAC\b|\bCOMMITTEE\b/i.test(raw.trim());
+}
+
+/**
  * Heuristic: does this contributor string name a person rather than an org?
  *
  * Florida reports individuals as "LAST, FIRST" or "LAST, FIRST M" and reports
