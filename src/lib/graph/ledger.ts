@@ -73,6 +73,15 @@ export interface LedgerQuery {
   offset: number;
   minAmount?: number;
   cycle?: string;
+  /**
+   * Inclusive bounds on the transaction date.
+   *
+   * Both optional and independent, so one end alone is a valid window. Applied
+   * to the same dates the graph is filtered on, so the panel and the map agree
+   * about what is in range.
+   */
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface LedgerResult {
@@ -110,6 +119,18 @@ type ViewArgs = LedgerQuery & {
   dir: ReturnType<typeof sql.raw>;
 };
 
+/** The date window as a fragment for a query aliasing `transactions` as `t`. */
+function dateWindow(from?: string, to?: string) {
+  return sql.join(
+    [
+      from ? sql`AND t.txn_date >= ${from}` : sql``,
+      to ? sql`AND t.txn_date <= ${to}` : sql``,
+    ],
+    sql` `,
+  );
+}
+
+
 /** One row per counterparty, from the pre-aggregated rollups. */
 async function sourcesView(
   db: Db,
@@ -117,20 +138,50 @@ async function sourcesView(
   a: ViewArgs,
 ): Promise<LedgerResult> {
   const { wantIn, wantOut, needle, sort, dir, limit, offset, minAmount, cycle } = a;
+  const { dateFrom, dateTo } = a;
 
-  // Rollups are stored per cycle, so this narrows the index range rather than
-  // filtering after the fact.
-  const cyc = cycle ? sql`AND r.election_cycle = ${cycle}` : sql``;
-  const inbound = sql`
-    SELECT r.from_entity_id AS entity_id, r.total_amount AS amount, r.txn_count,
-           r.first_date, r.last_date, 'in'::text AS flow
-      FROM edge_rollups r WHERE r.to_entity_id = ANY(${ids}) ${cyc}
-  `;
-  const outbound = sql`
-    SELECT r.to_entity_id AS entity_id, r.total_amount AS amount, r.txn_count,
-           r.first_date, r.last_date, 'out'::text AS flow
-      FROM edge_rollups r WHERE r.from_entity_id = ANY(${ids}) ${cyc}
-  `;
+  /**
+   * Where the counterparty totals come from.
+   *
+   * Normally the rollups, which are already grouped per pair and per cycle, so
+   * the query is an index range rather than a scan of three million rows. A
+   * rollup holds only the first and last date of the pair's dealings, though,
+   * and no way to say how much of its total fell inside an arbitrary window —
+   * so a date filter drops to the transactions themselves and re-aggregates.
+   * Slower, and the only way to get an answer that is actually true.
+   */
+  const windowed = dateFrom != null || dateTo != null;
+  const dates = dateWindow(dateFrom, dateTo);
+  const cyc = cycle
+    ? windowed
+      ? sql`AND ${derivedCycleSql('t')} = ${cycle}`
+      : sql`AND r.election_cycle = ${cycle}`
+    : sql``;
+
+  const inbound = windowed
+    ? sql`
+        SELECT t.from_entity_id AS entity_id, t.amount, 1 AS txn_count,
+               t.txn_date AS first_date, t.txn_date AS last_date, 'in'::text AS flow
+          FROM transactions t
+         WHERE t.to_entity_id = ANY(${ids}) AND t.from_entity_id IS NOT NULL ${cyc} ${dates}
+      `
+    : sql`
+        SELECT r.from_entity_id AS entity_id, r.total_amount AS amount, r.txn_count,
+               r.first_date, r.last_date, 'in'::text AS flow
+          FROM edge_rollups r WHERE r.to_entity_id = ANY(${ids}) ${cyc}
+      `;
+  const outbound = windowed
+    ? sql`
+        SELECT t.to_entity_id AS entity_id, t.amount, 1 AS txn_count,
+               t.txn_date AS first_date, t.txn_date AS last_date, 'out'::text AS flow
+          FROM transactions t
+         WHERE t.from_entity_id = ANY(${ids}) AND t.to_entity_id IS NOT NULL ${cyc} ${dates}
+      `
+    : sql`
+        SELECT r.to_entity_id AS entity_id, r.total_amount AS amount, r.txn_count,
+               r.first_date, r.last_date, 'out'::text AS flow
+          FROM edge_rollups r WHERE r.from_entity_id = ANY(${ids}) ${cyc}
+      `;
   const union =
     wantIn && wantOut ? sql`(${inbound}) UNION ALL (${outbound})` : wantIn ? inbound : outbound;
 
@@ -216,6 +267,7 @@ async function transactionsView(
   // rule the rollups were built with has to be applied here or a filtered
   // ledger disagrees with the filtered graph beside it.
   const cyc = cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``;
+  const dates = dateWindow(a.dateFrom, a.dateTo);
 
   // `flow` is relative to the set, and the counterparty is whichever end is not
   // in it. A transfer inside the set has both ends in it; `to` decides the flow
@@ -242,8 +294,9 @@ async function transactionsView(
            t.from_address AS address, t.from_city AS city, t.from_state AS state_code,
            t.from_zip AS zip, t.from_occupation AS occupation, t.source_id
       FROM transactions t
-     WHERE (${sides}) ${cyc}
+     WHERE (${sides}) ${cyc} ${dates}
   `;
+
 
   const filters = sql.join(
     [

@@ -24,6 +24,9 @@ const querySchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
   cycle: z.string().max(32).optional(),
+  /** Inclusive bounds on the transaction date, as the graph filters on. */
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ key: string }> }) {
@@ -35,7 +38,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ key: string
   if (!parsed.success) {
     return Response.json({ error: 'invalid query', detail: parsed.error.flatten() }, { status: 400 });
   }
-  const { depth, min, dateOrdered, cycle } = parsed.data;
+  const { depth, min, dateOrdered, cycle, dateFrom, dateTo } = parsed.data;
 
   try {
     const subject = await officerSubject(db, parts.role, parts.normalizedName, cycle);
@@ -45,7 +48,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ key: string
       minDollars: min,
       dateOrdered,
       cycle,
+      dateFrom,
+      dateTo,
     });
+
     // The group's identity is the person, which the trace cannot know.
     return Response.json({
       ...result,

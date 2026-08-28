@@ -131,13 +131,14 @@ export default function NodeDetail({
   const subjectId = node?.id ?? null;
 
   const query = useMemo(
-    () => ({ view, direction, q, sort, cycle }),
-    [view, direction, q, sort, cycle],
+    () => ({ view, direction, q, sort, cycle, dateFrom, dateTo }),
+    [view, direction, q, sort, cycle, dateFrom, dateTo],
   );
+
   const ledger = useLedger(subjectId, query);
   const traceQuery = useMemo(
-    () => ({ depth: 12, min: 100, dateOrdered, cycle }),
-    [dateOrdered, cycle],
+    () => ({ depth: 12, min: 100, dateOrdered, cycle, dateFrom, dateTo }),
+    [dateOrdered, cycle, dateFrom, dateTo],
   );
   const traced = useTrace(subjectId, traceQuery, mode === 'origins');
 

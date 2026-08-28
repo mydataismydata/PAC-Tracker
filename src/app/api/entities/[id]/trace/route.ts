@@ -26,6 +26,9 @@ const querySchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
   cycle: z.string().max(32).optional(),
+  /** Inclusive bounds on the transaction date, as the graph filters on. */
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -38,10 +41,17 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   if (!parsed.success) {
     return Response.json({ error: 'invalid query', detail: parsed.error.flatten() }, { status: 400 });
   }
-  const { depth, min, dateOrdered, cycle } = parsed.data;
+  const { depth, min, dateOrdered, cycle, dateFrom, dateTo } = parsed.data;
 
   try {
-    const result = await trace(db, id, { maxDepth: depth, minDollars: min, dateOrdered, cycle });
+    const result = await trace(db, id, {
+      maxDepth: depth,
+      minDollars: min,
+      dateOrdered,
+      cycle,
+      dateFrom,
+      dateTo,
+    });
     return Response.json(result);
   } catch (err) {
     return Response.json({ error: String(err) }, { status: 500 });
