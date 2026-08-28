@@ -134,7 +134,26 @@ cp .env.example .env && pnpm db:migrate && pnpm dev
 
 `.env.example` points at `localhost:5439`, which is the same database the containers use.
 
+## Letting people ask for an account
+
+Accounts are issued by hand and there is no self-service sign-up. Someone who reaches the
+sign-in page without one has nowhere to go, so the page can offer to mail a request to
+whoever runs the instance.
+
+Set the SMTP block in `.env` — see `.env.example`. For IONOS that is `smtp.ionos.com` on
+port 587, with `SMTP_USER` and `SMTP_FROM` both set to the same real mailbox; IONOS rejects
+a sender it has not authenticated. `ACCESS_REQUEST_TO` is where the requests land, and
+defaults to `SMTP_FROM`.
+
+Leave the block out and the form is not offered at all. Nothing else depends on it.
+
+The endpoint is the one public thing here that makes the server do work, so it is capped at
+three requests an hour from an address and forty an hour in total, counted whether or not
+the send succeeds. Each request arrives with the address, the note, the requester's IP and
+the `user add` command that would issue the account.
+
 ## Data sources
+
 
 ### Florida Division of Elections (implemented)
 

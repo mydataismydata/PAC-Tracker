@@ -6,7 +6,9 @@
  */
 
 import GateForm from '@/components/GateForm';
+import RequestAccessForm from '@/components/RequestAccessForm';
 import { GATE_COOKIE, countUsers, readSession } from '@/lib/gate';
+import { mailConfigured } from '@/lib/mail';
 import { cookies } from 'next/headers';
 
 export const dynamic = 'force-dynamic';
@@ -30,6 +32,9 @@ export default async function GatePage({
   const session = await readSession((await cookies()).get(GATE_COOKIE)?.value);
   const mustChange = params.change === '1' && session != null;
   const noAccounts = !session && (await countUsers()) === 0;
+  // Offered only where there is somewhere for the request to go. A form that
+  // cannot send is worse than no form: it reads as being ignored.
+  const canRequest = mailConfigured();
 
   return (
     <main className="flex h-dvh items-center justify-center overflow-y-auto bg-slate-950 px-4 py-8 text-slate-100">
@@ -67,6 +72,8 @@ export default async function GatePage({
               Forgot your password? Accounts are managed by hand — ask whoever set yours up to
               issue a new one. Individual sponsor summaries are public and need no account.
             </p>
+            {canRequest && <RequestAccessForm />}
+
           </>
         )}
       </div>
