@@ -59,8 +59,18 @@ services:
     environment:
       DATABASE_URL: *db-url
       NODE_ENV: production
+      # Optional. Set these in a .env file beside this one to offer the
+      # "request an account" form on the sign-in page; leave them out and the
+      # form is not shown. See .env.example.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      ACCESS_REQUEST_TO: ${ACCESS_REQUEST_TO:-}
     ports:
       - '3000:3000'
+
     depends_on:
       db:
         condition: service_healthy
