@@ -24,7 +24,9 @@ import cytoscape, {
 } from 'cytoscape';
 import fcose from 'cytoscape-fcose';
 import {
+  KIND_COLORS,
   formatMoney,
+
   type GraphEdge,
   type GraphNode,
   type ViewIntent,
@@ -36,23 +38,16 @@ cytoscape.use(fcose);
 const TILE_W = 168;
 const TILE_H = 58;
 
+/** How far each ghost tile is stepped off the one before it. */
+const GHOST_DX = TILE_W + 150;
+const GHOST_DY = TILE_H + 70;
+
 /** Trim a name to what fits two lines of a tile without overflowing it. */
 function fitLabel(name: string, max = 38): string {
   const clean = name.trim();
   return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
 }
 
-/** Tile fill by entity kind. Committees are the spine of the graph, so they lead. */
-const KIND_COLORS: Record<string, string> = {
-  committee: '#6366f1',
-  candidate: '#10b981',
-  organization: '#f59e0b',
-  individual: '#64748b',
-  party: '#f43f5e',
-  /** Not an entity — a person named on filings. See crawl.ts officer hubs. */
-  officer: '#7c3aed',
-  unknown: '#475569',
-};
 
 /**
  * Deterministic starting point for a newly added tile.
@@ -103,10 +98,70 @@ const FOCUS_ZOOM = 1.1;
  * Shared by tapping a tile and by focusing one from search or the ledger, so
  * an entity reached any of those ways reads the same on the canvas.
  */
-function highlightNeighborhood(cy: Core, node: NodeSingular): void {
+function highlightNeighborhood(cy: Core, node: NodeSingular, keepLit: string[] = []): void {
   cy.elements().addClass('dimmed').removeClass('highlighted');
+  for (const id of keepLit) {
+    const el = cy.getElementById(id);
+    if (el.nonempty() && el.isNode()) el.removeClass('dimmed');
+  }
   node.closedNeighborhood().removeClass('dimmed').addClass('highlighted');
 }
+
+/**
+ * Dim everything except one route through the graph.
+ *
+ * Used where the interesting thing is not who a tile trades with but how it
+ * connects back to the entity the reader started from — a donor several
+ * transfers upstream, say, whose neighbourhood says nothing about why it is on
+ * screen. Returns false when the route has fewer than two tiles drawn, so the
+ * caller can fall back to the neighbourhood rather than dimming the whole map
+ * down to a single tile.
+ */
+function highlightRoute(cy: Core, chain: string[], keepLit: string[]): boolean {
+  const hops = chain
+    .map((id) => cy.getElementById(id))
+    .filter((el) => el.nonempty() && el.isNode());
+  if (hops.length < 2) return false;
+
+  let route = cy.collection();
+  for (const [i, hop] of hops.entries()) {
+    route = route.union(hop);
+    // Either direction: a chain is a route the money took, and the edge
+    // recording it points whichever way the filing did.
+    if (i > 0) route = route.union(hops[i - 1].edgesWith(hop));
+  }
+
+  // Tiles that stay readable without being part of this route — the seed and
+  // everywhere the reader has been. Nodes only: two tiles being on the same
+  // trail says nothing about money passing between them, and lighting an edge
+  // would claim it did.
+  let lit = cy.collection();
+  for (const id of keepLit) {
+    const el = cy.getElementById(id);
+    if (el.nonempty() && el.isNode()) lit = lit.union(el);
+  }
+
+  cy.elements().addClass('dimmed').removeClass('highlighted');
+  lit.removeClass('dimmed');
+  route.removeClass('dimmed').addClass('highlighted');
+  return true;
+}
+
+/**
+ * Tiles pulled onto the canvas to show a link the crawl itself did not draw.
+ *
+ * The graph is a filtered slice — in `direct` mode an individual donor is
+ * never drawn at all — so a row in the ledger routinely names an entity with
+ * no tile. Rather than have the click do nothing visible, the parent hands
+ * over the missing tiles and the hops joining them, and they are laid in
+ * beside the graph without disturbing it.
+ */
+export interface GhostGraph {
+  /** Route order, the anchor already on the canvas first. */
+  nodes: GraphNode[];
+  edges: { id: string; source: string; target: string; label: string }[];
+}
+
 
 interface Props {
   nodes: Map<string, GraphNode>;
@@ -129,6 +184,24 @@ interface Props {
   viewIntent?: ViewIntent;
   /** Entity selected elsewhere (search, ledger), mirrored into the canvas. */
   selectedId?: string | null;
+  /**
+   * The route back from the selection to where the reader came from.
+   *
+   * Takes the place of the neighbourhood highlight when present, so following
+   * money out of the panel shows the connection rather than a fresh, unrelated
+   * cluster around wherever you landed.
+   */
+  highlightChain?: string[] | null;
+  /**
+   * Tiles to leave readable whatever else is dimmed.
+   *
+   * The entity being searched and every tile the reader has opened on the way
+   * here, so the path taken through the graph stays visible behind whatever is
+   * currently in focus.
+   */
+  keepLit?: string[];
+  /** Tiles to lay in for the parts of that route the crawl never drew. */
+  ghost?: GhostGraph | null;
 }
 
 /**
@@ -168,7 +241,12 @@ export default function GraphCanvas({
   onReady,
   viewIntent,
   selectedId,
+  highlightChain,
+  keepLit,
+  ghost,
 }: Props) {
+
+
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   /** Nodes the user has dragged; never re-laid-out. */
@@ -176,6 +254,15 @@ export default function GraphCanvas({
   /** The in-flight layout, so a new batch can cancel it instead of racing it. */
   const layoutRef = useRef<cytoscape.Layouts | null>(null);
   const relayoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The route to favour over the neighbourhood, readable from a callback.
+   *
+   * `focusOn` and the tap handler are created once and live for the lifetime of
+   * the canvas, so neither can close over the current prop. A ref lets both ask
+   * what the route is at the moment they run.
+   */
+  const chainRef = useRef<string[] | null>(null);
+  const keepLitRef = useRef<string[]>([]);
   /**
    * Bumped every time a Cytoscape instance is created.
    *
@@ -195,9 +282,24 @@ export default function GraphCanvas({
     return max || 1;
   }, [edges]);
 
+  /**
+   * Highlight a tile the way the reader arrived at it.
+   *
+   * A route wins where there is one, because someone who clicked a name in the
+   * panel is asking how it connects to what they were already looking at. A
+   * tap on the tile itself asks the other question, so it keeps the
+   * neighbourhood.
+   */
+  const applyHighlight = useCallback((cy: Core, node: NodeSingular) => {
+    const chain = chainRef.current;
+    if (chain && chain.length > 1 && highlightRoute(cy, chain, keepLitRef.current)) return;
+    highlightNeighborhood(cy, node, keepLitRef.current);
+  }, []);
+
   /* ---------------------------------------------------------------- init -- */
   useEffect(() => {
     if (!containerRef.current || cyRef.current) return;
+
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -325,13 +427,55 @@ export default function GraphCanvas({
           style: { 'line-color': '#fbbf24', 'target-arrow-color': '#fbbf24', opacity: 1 },
         },
         {
+          // Not part of the crawl — pulled in to show one link. Dotted so it
+          // cannot be read as a tile the current settings would have drawn.
+          selector: 'node.ghost',
+          style: {
+            'border-style': 'dotted',
+            'border-width': 2,
+            'background-opacity': 0.1,
+          },
+        },
+        {
+          selector: 'edge.ghost',
+          style: {
+            'line-style': 'dotted',
+            'line-color': '#94a3b8',
+            'target-arrow-color': '#94a3b8',
+            width: 2,
+            opacity: 0.7,
+          },
+        },
+        {
           selector: '.dimmed',
           style: { opacity: 0.12, 'text-opacity': 0 },
         },
+
         {
           selector: '.highlighted',
           style: { opacity: 1, 'text-opacity': 1 },
         },
+        {
+          // A hop on the route the reader is following. Lighter and thicker
+          // than the same edge unhighlighted, so the line can be traced across
+          // a dimmed graph without hunting for it.
+          selector: 'edge.highlighted',
+          style: {
+            'line-color': '#818cf8',
+            'target-arrow-color': '#818cf8',
+            width: 3,
+            color: '#c7d2fe',
+            'font-size': 9.5,
+            'text-background-color': '#1e1b4b',
+            'text-background-opacity': 1,
+            'text-background-padding': '3px',
+            'text-border-color': '#6366f1',
+            'text-border-opacity': 1,
+            'text-border-width': 1,
+            'text-background-shape': 'roundrectangle',
+          },
+        },
+
       ],
     });
 
@@ -398,6 +542,10 @@ export default function GraphCanvas({
     // the cycle used to leave the previous cycle's tiles sitting underneath the
     // new ones.
     const stale = cy.elements().filter((el) => {
+      // Ghosts are the parent's to add and remove; they are absent from these
+      // maps by definition, and sweeping them here would delete each one in
+      // the same beat it was laid in.
+      if (el.hasClass('ghost')) return false;
       const id = el.id();
       return el.isNode() ? !nodes.has(id) : !edges.has(id);
     });
@@ -636,7 +784,7 @@ export default function GraphCanvas({
 
     cy.nodes().unselect();
     node.select();
-    highlightNeighborhood(cy, node as NodeSingular);
+    applyHighlight(cy, node as NodeSingular);
 
     cy.animate({
       center: { eles: node },
@@ -645,7 +793,7 @@ export default function GraphCanvas({
       easing: 'ease-out',
     });
     return true;
-  }, []);
+  }, [applyHighlight]);
 
   /**
    * Step the zoom about the centre of the viewport.
@@ -746,8 +894,83 @@ export default function GraphCanvas({
     return () => timers.forEach(clearTimeout);
   }, [viewIntent, cyEpoch, ready, fit, focusOn]);
 
+  // Declared above the two effects that read it, so a route arriving with a
+  // selection is in place before the highlight for that selection runs.
+  useEffect(() => {
+    chainRef.current = highlightChain ?? null;
+    keepLitRef.current = keepLit ?? [];
+  }, [highlightChain, keepLit]);
+
+  /**
+   * Lay in the route's missing tiles, and take the previous set away.
+
+   *
+   * Placed by stepping off whichever tile of the route is already on screen,
+   * never by running a layout: a layout pass moves every other tile on the
+   * canvas, which is the precise disorientation this exists to prevent. Only
+   * one route's worth of ghosts is ever present, so following a second name
+   * clears the first rather than silting the map up.
+   */
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy || !ready) return;
+
+    cy.batch(() => {
+      cy.remove(cy.elements('.ghost'));
+      if (!ghost || ghost.nodes.length === 0) return;
+
+      const drawn = cy.nodes();
+      const box = drawn.nonempty() ? drawn.boundingBox() : null;
+      let from = box ? { x: (box.x1 + box.x2) / 2, y: (box.y1 + box.y2) / 2 } : { x: 0, y: 0 };
+      let step = 0;
+
+      for (const n of ghost.nodes) {
+        const already = cy.getElementById(n.id);
+        if (already.nonempty()) {
+          from = already.position();
+          continue;
+        }
+        step++;
+        // Fanned above and below the line so a long route does not lay its
+        // tiles end to end off the edge of the viewport.
+        const position = {
+          x: from.x - GHOST_DX,
+          y: from.y + (step % 2 === 1 ? -GHOST_DY : GHOST_DY),
+        };
+        cy.add({
+          group: 'nodes',
+          classes: 'ghost',
+          data: {
+            id: n.id,
+            label: tileLabel(n),
+            fullName: n.name,
+            kind: n.kind,
+            isSeed: false,
+            hasMore: false,
+            entity: n,
+          },
+          position,
+        });
+        from = position;
+      }
+
+      for (const e of ghost.edges) {
+        if (cy.getElementById(e.id).nonempty()) continue;
+        // Both ends have to exist first, and one of them can be an officer hub
+        // that this route never managed to resolve.
+        if (cy.getElementById(e.source).empty() || cy.getElementById(e.target).empty()) continue;
+        cy.add({
+          group: 'edges',
+          classes: 'ghost',
+          data: { id: e.id, source: e.source, target: e.target, label: e.label, width: 2 },
+        });
+      }
+    });
+  }, [ghost, cyEpoch, ready]);
+
   /**
    * Mirror a selection made outside the canvas.
+
    *
    * Selecting from search or the ledger should look the same as tapping the
    * tile — otherwise the panel and the canvas disagree about what is selected.
@@ -763,11 +986,16 @@ export default function GraphCanvas({
     }
 
     const node = cy.getElementById(selectedId);
-    if (node.empty() || !node.isNode() || node.selected()) return;
+    if (node.empty() || !node.isNode()) return;
+    // Not skipped when the node is already selected: the same tile can be
+    // arrived at twice by different routes, and the second arrival still has a
+    // different route to draw.
     cy.nodes().unselect();
     node.select();
-    highlightNeighborhood(cy, node as NodeSingular);
-  }, [selectedId, cyEpoch, ready, nodes]);
+    applyHighlight(cy, node as NodeSingular);
+  }, [selectedId, highlightChain, keepLit, ghost, cyEpoch, ready, nodes, applyHighlight]);
+
+
 
   return <div ref={containerRef} className="h-full w-full bg-slate-950" />;
 }

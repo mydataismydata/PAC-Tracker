@@ -14,6 +14,14 @@ export interface GraphNode {
   party: string | null;
   city: string | null;
   stateCode: string | null;
+  /**
+   * What this entity's money comes from — see `src/lib/ingest/industry.ts`.
+   *
+   * Already a display label rather than a code, and null wherever nothing
+   * classified it. Carried on the node so the bar can name a seed's sector
+   * without a second request.
+   */
+  industry: string | null;
   totalReceived: string;
   totalGiven: string;
   inDegree: number;
@@ -49,7 +57,41 @@ export function subjectApiBase(id: string): string {
     : `/api/entities/${id}`;
 }
 
+/**
+ * How a name in the panel connects back to what the reader was already on.
+ *
+ * Opening a name from the ledger or the origins report moves the whole panel
+ * to a different entity, and on a graph this size that is easy to experience
+ * as having lost your place. Handing the route over with the click lets the
+ * canvas draw the connection instead of jumping to an unexplained tile.
+ */
+export interface FocusLink {
+  /** The whole route: where the reader came from first, the target last. */
+  chain?: string[];
+  /** What to write on the hop into the target where it has to be drawn in. */
+  label?: string;
+  /**
+   * Identity for an officer hub the graph is not currently drawing.
+   *
+   * A hub is a person rather than a row in `entities`, so there is nothing to
+   * look up by id. Without this, opening a chair or treasurer while the graph
+   * is following money does nothing at all.
+   */
+  officer?: { name: string; role: string };
+
+  /**
+   * Which way the money ran along the route, from the target's point of view.
+   *
+   * Only used to point the arrows the right way. A route is written outwards
+   * from the reader, which for money coming in is the opposite of the way it
+   * was paid.
+   */
+  flow?: 'in' | 'out';
+}
+
+
 export interface GraphEdge {
+
   id: string;
   source: string;
   target: string;
@@ -104,6 +146,8 @@ export interface CrawlSettings {
  */
 export const REGISTRATION_PER_NODE = 200;
 
+
+
 export const DEFAULT_SETTINGS: CrawlSettings = {
   depth: 2,
   direction: 'both',
@@ -114,6 +158,30 @@ export const DEFAULT_SETTINGS: CrawlSettings = {
   maxNodes: 600,
 };
 
+/**
+ * Switch link mode, retuning the per-node cap to suit it.
+ *
+ * The cap means different things in each mode. On money it trims a long tail
+ * of small donors and 25 loses nothing that matters. On registration it is not
+ * a tail at all — every hop is a co-registered committee, so 25 would silently
+ * show a quarter of a network and look complete. A cap the reader has moved
+ * off the default is left alone either way.
+ *
+ * Lives here rather than in the control panel because the bar over the canvas
+ * offers the same switch, and two copies would drift.
+ */
+export function withLinkMode(settings: CrawlSettings, mode: LinkMode): CrawlSettings {
+  const maxPerNode =
+    mode === 'registration'
+      ? settings.maxPerNode <= DEFAULT_SETTINGS.maxPerNode
+        ? REGISTRATION_PER_NODE
+        : settings.maxPerNode
+      : settings.maxPerNode >= REGISTRATION_PER_NODE
+        ? DEFAULT_SETTINGS.maxPerNode
+        : settings.maxPerNode;
+  return { ...settings, linkMode: mode, maxPerNode };
+}
+
 export interface EntitySearchHit {
   id: string;
   name: string;
@@ -122,6 +190,7 @@ export interface EntitySearchHit {
   status: string;
   city: string | null;
   state_code: string | null;
+  industry: string | null;
   total_received: string;
   total_given: string;
   in_degree: number;
@@ -151,7 +220,64 @@ export function formatMoneyFull(value: string | number): string {
 }
 
 /** Human label for an entity's type. */
+/**
+ * Labels that restate what an entity is rather than what its money is from.
+ *
+ * Eight thousand of the nine thousand committees classify as "Political
+ * committee", which is the kind line again in different words. Dropping those
+ * leaves the classification saying something wherever it survives — a
+ * committee reading "Labor union" or "Agriculture" is worth the line.
+ */
+const SELF_DESCRIBING = new Set(['political committee', 'candidate committee', 'political party']);
+
+/**
+ * What this entity's money is from, or null where the answer adds nothing.
+ *
+ * See `src/lib/ingest/industry.ts` for how the classification is made.
+ */
+export function industryLabel(
+  node: Pick<GraphNode, 'kind' | 'committeeType' | 'industry'>,
+): string | null {
+  if (!node.industry) return null;
+  const low = node.industry.toLowerCase();
+  if (low === kindLabel(node).toLowerCase()) return null;
+  if (SELF_DESCRIBING.has(low) && node.kind !== 'organization' && node.kind !== 'individual') {
+    return null;
+  }
+  return node.industry;
+}
+
+/**
+ * Tile fill by entity kind. Committees are the spine of the graph, so they lead.
+ *
+ * Shared with the panels, which put the same colour on a dot beside a name, so
+ * that a tile and a row naming the same kind read as the same thing.
+ */
+export const KIND_COLORS: Record<string, string> = {
+  committee: '#6366f1',
+  candidate: '#10b981',
+  organization: '#f59e0b',
+  individual: '#64748b',
+  party: '#f43f5e',
+  /** Not an entity — a person named on filings. See crawl.ts officer hubs. */
+  officer: '#7c3aed',
+  unknown: '#475569',
+};
+
+/** The colour standing for an entity's kind, with a fallback for unknowns. */
+export function kindColor(kind: string): string {
+  return KIND_COLORS[kind] ?? KIND_COLORS.unknown;
+}
+
+/** "1 committee", "12 committees". */
+
+export function committeeCount(n: number): string {
+  return `${n} committee${n === 1 ? '' : 's'}`;
+}
+
 export function kindLabel(node: Pick<GraphNode, 'kind' | 'committeeType'>): string {
+
+
   if (node.committeeType) {
     const names: Record<string, string> = {
       PAC: 'Political Committee',

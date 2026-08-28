@@ -69,6 +69,15 @@ export interface TracedSource {
   amount: number;
   share: number;
   hop: number;
+  /**
+   * The route this money took, seed first and this entity last.
+   *
+   * A source is usually reached by several routes at once, and the amount is
+   * the sum over all of them. This records the shallowest one, which is the
+   * same route `hop` counts — so the two never disagree about how far away the
+   * source is. Names for the conduits in the middle are in `conduits`.
+   */
+  chain: string[];
 }
 
 export interface Funder {
@@ -78,6 +87,7 @@ export interface Funder {
   amount: number;
   share: number;
 }
+
 
 export interface InjectionPoint extends TracedSource {
   /** The pool's own largest funders, as context rather than attribution. */
@@ -111,7 +121,10 @@ interface Parcel {
   /** Latest date this money could have been contributed, or null if unbounded. */
   cutoff: string | null;
   amount: number;
+  /** How this parcel got here: seed first, `entityId` last. */
+  chain: string[];
 }
+
 
 interface InboundRow extends Record<string, unknown> {
   to_id: string;
@@ -157,9 +170,9 @@ export async function trace(
   if (seeds.length === 0) throw new Error(`no entity ${ids.join(', ')}`);
 
   const seedTotal = seeds.reduce((a, s) => a + Number(s.received), 0);
-  const origins = new Map<string, { amount: number; hop: number }>();
-  const injections = new Map<string, { amount: number; hop: number }>();
-  const dark = new Map<string, { amount: number; hop: number }>();
+  const origins = new Map<string, Attribution>();
+  const injections = new Map<string, Attribution>();
+  const dark = new Map<string, Attribution>();
   let dispersed = 0;
   let truncated = false;
   let hops = 0;
@@ -169,7 +182,7 @@ export async function trace(
   // between members resolve naturally: the receiving committee's parcel walks
   // up into the sending one, which is where that money actually came from.
   let parcels: Parcel[] = seeds
-    .map((s) => ({ entityId: s.id, cutoff: null, amount: Number(s.received) }))
+    .map((s) => ({ entityId: s.id, cutoff: null, amount: Number(s.received), chain: [s.id] }))
     .filter((p) => p.amount > 0);
 
   for (let depth = 1; depth <= maxDepth && parcels.length > 0; depth++) {
@@ -192,12 +205,13 @@ export async function trace(
 
       const known = eligible.reduce((s, e) => s + Number(e.amount), 0);
       if (known <= 0) {
-        bump(dark, parcel.entityId, parcel.amount, depth - 1);
+        bump(dark, parcel.entityId, parcel.amount, depth - 1, parcel.chain);
         continue;
       }
 
       for (const e of eligible) {
         const share = (Number(e.amount) / known) * parcel.amount;
+        const chain = [...parcel.chain, e.from_id];
         if (share < minDollars) {
           dispersed += share;
           continue;
@@ -208,11 +222,11 @@ export async function trace(
           // which share. Stop here and name it rather than manufacturing a
           // per-donor estimate that would sit alongside observed transfers
           // looking equally solid.
-          bump(injections, e.from_id, share, depth);
+          bump(injections, e.from_id, share, depth, chain);
           continue;
         }
         if (!CONDUIT_KINDS.has(e.from_kind)) {
-          bump(origins, e.from_id, share, depth);
+          bump(origins, e.from_id, share, depth, chain);
           continue;
         }
         // Each hop tightens the cutoff: money can only have funded this
@@ -221,7 +235,7 @@ export async function trace(
         const key = `${e.from_id}|${cutoff ?? ''}`;
         const existing = next.get(key);
         if (existing) existing.amount += share;
-        else next.set(key, { entityId: e.from_id, cutoff, amount: share });
+        else next.set(key, { entityId: e.from_id, cutoff, amount: share, chain });
       }
     }
 
@@ -235,11 +249,11 @@ export async function trace(
   }
 
   // Anything still moving when depth ran out is unexplained, not resolved.
-  for (const p of parcels) bump(dark, p.entityId, p.amount, hops);
+  for (const p of parcels) bump(dark, p.entityId, p.amount, hops, p.chain);
 
   const names = await namesFor(db, [...origins.keys(), ...injections.keys(), ...dark.keys()]);
   const funders = await topFunders(db, [...injections.keys()]);
-  const toList = (m: Map<string, { amount: number; hop: number }>): TracedSource[] =>
+  const toList = (m: Map<string, Attribution>): TracedSource[] =>
     [...m.entries()]
       .map(([id, v]) => ({
         id,
@@ -249,6 +263,7 @@ export async function trace(
         amount: v.amount,
         share: seedTotal > 0 ? v.amount / seedTotal : 0,
         hop: v.hop,
+        chain: v.chain,
       }))
       .sort((a, b) => b.amount - a.amount);
 
@@ -270,6 +285,7 @@ export async function trace(
     sources: toList(origins),
     unresolved: toList(dark),
     dispersed,
+
     hops,
     dateOrdered,
     truncated,
@@ -372,13 +388,22 @@ async function namesFor(db: Db, ids: string[]) {
   return new Map(rows.map((r) => [r.id, { name: r.name, kind: r.kind, industry: r.industry }]));
 }
 
-function bump(
-  m: Map<string, { amount: number; hop: number }>,
-  k: string,
-  v: number,
-  hop: number,
-) {
+interface Attribution {
+  amount: number;
+  hop: number;
+  chain: string[];
+}
+
+/**
+ * Add one strand's worth of money to an entity's attribution.
+ *
+ * Depth ascends, so the first sighting of an entity is always its shallowest.
+ * Both `hop` and `chain` are kept from that first sighting and never revised,
+ * which is what stops the recorded route from contradicting the hop count.
+ */
+function bump(m: Map<string, Attribution>, k: string, v: number, hop: number, chain: string[]) {
   const cur = m.get(k);
   if (cur) cur.amount += v;
-  else m.set(k, { amount: v, hop });
+  else m.set(k, { amount: v, hop, chain });
 }
+

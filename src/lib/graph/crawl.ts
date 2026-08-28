@@ -79,6 +79,8 @@ export interface GraphNode {
   party: string | null;
   city: string | null;
   stateCode: string | null;
+  /** Display label from `src/lib/ingest/industry.ts`, or null if unclassified. */
+  industry: string | null;
   totalReceived: string;
   totalGiven: string;
   inDegree: number;
@@ -145,6 +147,7 @@ interface NeighborRow extends Record<string, unknown> {
   party: string | null;
   city: string | null;
   state_code: string | null;
+  industry: string | null;
   total_received: string;
   total_given: string;
   in_degree: number;
@@ -237,6 +240,7 @@ async function fetchNeighbors(
            hop.is_direct_link, hop.neighbor_id,
            e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
            e.status::text AS status, e.office, e.party, e.city, e.state_code,
+           e.industry,
            ${totalsSelect}
            e.is_traversable
       FROM unnest(${sql.param(frontier)}::uuid[]) AS f(id)
@@ -262,6 +266,7 @@ interface RegistrationRow extends Record<string, unknown> {
   party: string | null;
   city: string | null;
   state_code: string | null;
+  industry: string | null;
   total_received: string;
   total_given: string;
   in_degree: number;
@@ -306,6 +311,7 @@ async function fetchRegistrationNeighbors(
     SELECT f.id AS from_id, hop.neighbor_id, hop.basis, hop.shared_key, hop.shared_with,
            e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
            e.status::text AS status, e.office, e.party, e.city, e.state_code,
+           e.industry,
            ${totalsSelect}
            e.is_traversable
       FROM unnest(${sql.param(frontier)}::uuid[]) AS f(id)
@@ -357,6 +363,7 @@ async function fetchInternalMoneyEdges(
            r.is_direct_link, r.to_entity_id AS neighbor_id,
            '' AS name, '' AS kind, NULL AS committee_type, '' AS status,
            NULL AS office, NULL AS party, NULL AS city, NULL AS state_code,
+           NULL AS industry,
            '0' AS total_received, '0' AS total_given,
            0 AS in_degree, 0 AS out_degree, false AS is_traversable
       FROM edge_rollups r
@@ -378,6 +385,7 @@ function toRegistrationNode(r: RegistrationRow, level: number): GraphNode {
     party: r.party,
     city: r.city,
     stateCode: r.state_code,
+    industry: r.industry,
     totalReceived: r.total_received,
     totalGiven: r.total_given,
     inDegree: r.in_degree,
@@ -412,6 +420,8 @@ function officerHubNode(role: string, normalizedName: string, fullName: string):
     party: null,
     city: null,
     stateCode: null,
+    // A person, not a business: nothing classifies them.
+    industry: null,
     totalReceived: '0',
     totalGiven: '0',
     inDegree: 0,
@@ -433,6 +443,7 @@ function toNode(r: NeighborRow, level: number): GraphNode {
     party: r.party,
     city: r.city,
     stateCode: r.state_code,
+    industry: r.industry,
     totalReceived: r.total_received,
     totalGiven: r.total_given,
     inDegree: r.in_degree,
@@ -453,6 +464,7 @@ interface EntityRow extends Record<string, unknown> {
   party: string | null;
   city: string | null;
   state_code: string | null;
+  industry: string | null;
   total_received: string;
   total_given: string;
   in_degree: number;
@@ -475,7 +487,7 @@ async function fetchSeed(db: Db, id: string, cycle?: string): Promise<GraphNode 
   const rows = await db.execute<EntityRow>(sql`
     SELECT e.id, e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
            e.status::text AS status, e.office, e.party, e.city, e.state_code,
-           ${totals}, e.is_traversable
+           e.industry, ${totals}, e.is_traversable
       FROM entities e ${join} WHERE e.id = ${id}
   `);
   const r = rows[0];
@@ -490,6 +502,7 @@ async function fetchSeed(db: Db, id: string, cycle?: string): Promise<GraphNode 
     party: r.party,
     city: r.city,
     stateCode: r.state_code,
+    industry: r.industry,
     totalReceived: r.total_received,
     totalGiven: r.total_given,
     inDegree: r.in_degree,

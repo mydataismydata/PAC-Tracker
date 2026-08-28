@@ -16,6 +16,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const rows = await db.execute<EntitySearchHit>(sql`
     SELECT e.id, e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
            e.status::text AS status, e.office, e.party, e.city, e.state_code,
+           e.industry,
            e.total_received::text AS total_received,
            e.total_given::text    AS total_given,
            e.in_degree, e.out_degree, e.is_traversable, 1::real AS score

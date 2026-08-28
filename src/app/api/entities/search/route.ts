@@ -39,6 +39,7 @@ export interface EntitySearchHit extends Record<string, unknown> {
   status: string;
   city: string | null;
   state_code: string | null;
+  industry: string | null;
   total_received: string;
   total_given: string;
   in_degree: number;
@@ -72,7 +73,7 @@ export async function GET(req: NextRequest) {
 
   const rows = await db.execute<EntitySearchHit>(sql`
     SELECT e.id, e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
-           e.status::text AS status, e.city, e.state_code,
+           e.status::text AS status, e.city, e.state_code, e.industry,
            ${cycleTotals}
            e.is_traversable,
            (
