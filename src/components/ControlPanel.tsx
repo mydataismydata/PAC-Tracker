@@ -4,12 +4,12 @@
 
 import { CYCLES, CURRENT_CYCLE, PREVIOUS_CYCLE } from '@/lib/cycles';
 import {
-  DEFAULT_SETTINGS,
-  REGISTRATION_PER_NODE,
+  withLinkMode,
   type CrawlSettings,
   type Direction,
   type LinkMode,
 } from '@/lib/graph/types';
+
 
 interface Props {
   settings: CrawlSettings;
@@ -82,27 +82,9 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
   const set = <K extends keyof CrawlSettings>(key: K, value: CrawlSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
-  /**
-   * Switching link mode retunes the per-node cap.
-   *
-   * The cap means different things in each mode. On money it trims a long tail
-   * of small donors and 25 loses nothing that matters. On registration it is
-   * not a tail at all — every hop is a co-registered committee, so 25 would
-   * silently show a quarter of a network and look complete. The new value is
-   * written into the visible field rather than applied behind the scenes, so it
-   * can be seen and overridden.
-   */
-  const setLinkMode = (mode: LinkMode) => {
-    const retuned =
-      mode === 'registration'
-        ? settings.maxPerNode <= DEFAULT_SETTINGS.maxPerNode
-          ? REGISTRATION_PER_NODE
-          : settings.maxPerNode
-        : settings.maxPerNode >= REGISTRATION_PER_NODE
-          ? DEFAULT_SETTINGS.maxPerNode
-          : settings.maxPerNode;
-    onChange({ ...settings, linkMode: mode, maxPerNode: retuned });
-  };
+  // The retuned per-node cap is written into the visible field rather than
+  // applied behind the scenes, so it can be seen and overridden.
+  const setLinkMode = (mode: LinkMode) => onChange(withLinkMode(settings, mode));
 
   return (
     <div className="space-y-4">
@@ -241,30 +223,11 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
         </Field>
       </div>
 
-      <div className="grid grid-cols-2 gap-2">
-        <Field label="From date">
-          <input
-            type="date"
-            value={settings.dateFrom ?? ''}
-            disabled={disabled}
-            onChange={(e) => set('dateFrom', e.target.value || undefined)}
-            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5
-                       text-xs text-slate-100 outline-none focus:border-indigo-500"
-          />
-        </Field>
-        <Field label="To date">
-          <input
-            type="date"
-            value={settings.dateTo ?? ''}
-            disabled={disabled}
-            onChange={(e) => set('dateTo', e.target.value || undefined)}
-            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5
-                       text-xs text-slate-100 outline-none focus:border-indigo-500"
-          />
-        </Field>
-      </div>
+      {/* The date range lives beside the ledger in the inspector, next to the
+          rows it is usually being read against. */}
 
       <Field label={`Node ceiling — ${settings.maxNodes}`}>
+
         <input
           type="range"
           min={50}

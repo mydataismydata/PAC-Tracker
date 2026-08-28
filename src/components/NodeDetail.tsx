@@ -12,14 +12,17 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import {
+  committeeCount,
   formatMoney,
   formatMoneyFull,
   kindLabel,
   isOfficerNode,
+  kindColor,
+  type FocusLink,
   type GraphNode,
 } from '@/lib/graph/types';
 import { useTrace, type TraceResult } from '@/lib/graph/useTrace';
-import { useOfficers, useOfficerSubject } from '@/lib/graph/useOfficers';
+import type { EntityOfficer, OfficerSubject } from '@/lib/graph/useOfficers';
 import {
   isSourceRow,
   useLedger,
@@ -33,8 +36,35 @@ interface Props {
   node: GraphNode | null;
   /** Nodes currently drawn, so the panel can mark which rows are on the canvas. */
   nodes: Map<string, GraphNode>;
-  onFocus: (nodeId: string) => void;
+  onFocus: (nodeId: string, link?: FocusLink) => void;
   onRecenter: (nodeId: string) => void;
+  /**
+   * The person behind an officer hub, resolved by the parent.
+   *
+   * Fetched above rather than here because the bar over the canvas shows the
+   * same totals, and two copies of this hook would mean two requests for one
+   * answer.
+   */
+  subject: OfficerSubject | null;
+  /** Chair and treasurer, fetched by the parent for the bar over the canvas. */
+  officers: EntityOfficer[];
+  /**
+   * Which side of the ledger to show. Owned by the parent, because the tiles
+   * that set it now sit over the canvas rather than in this panel.
+   */
+  direction: LedgerDirection;
+  onDirectionChange: (d: LedgerDirection) => void;
+  /** Looking at something other than the entity searched. Accents the header. */
+  exploring: boolean;
+  /**
+   * The graph's date range.
+   *
+   * A crawl setting rather than a ledger one, shown here because it is read
+   * against these rows — but note that it narrows the map, not the list.
+   */
+  dateFrom?: string;
+  dateTo?: string;
+  onDatesChange: (from: string | undefined, to: string | undefined) => void;
   /** Election cycle the graph is filtered to, or undefined for all. */
   cycle?: string;
 }
@@ -72,10 +102,18 @@ export default function NodeDetail({
   nodes,
   onFocus,
   onRecenter,
+  subject,
+  officers,
+  direction,
+  onDirectionChange,
+  exploring,
+  dateFrom,
+
+  dateTo,
+  onDatesChange,
   cycle,
 }: Props) {
   const [mode, setMode] = useState<PanelMode>('sources');
-  const [direction, setDirection] = useState<LedgerDirection>('in');
   const [sort, setSort] = useState<LedgerSort>('amount');
   const [q, setQ] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -102,10 +140,8 @@ export default function NodeDetail({
     [dateOrdered, cycle],
   );
   const traced = useTrace(subjectId, traceQuery, mode === 'origins');
-  // Who runs a committee belongs beside its name, the same way the office or
-  // the city does. Hubs are already a person, so they have none of their own.
-  const officers = useOfficers(officerHub ? null : subjectId);
-  const subject = useOfficerSubject(subjectId, cycle);
+
+
 
   // A hub holds nothing itself; its headline is the union of its committees.
   const received = subject?.totalReceived ?? node?.totalReceived ?? '0';
@@ -215,22 +251,21 @@ export default function NodeDetail({
       {/* A direct child of the scroller. `sticky` is bounded by its own parent,
           so nested inside the header card below this would scroll away with the
           card rather than pin to the top of the panel. */}
+      {/* Phones only from here to the end of the block: on a wide screen the
+          name, the kind and the two totals live in the bar over the canvas,
+          and repeating them here would cost a third of the panel. */}
       <div
         className="sticky top-0 z-20 shrink-0 border-b border-slate-800 bg-slate-950 px-4 pb-2
-                   pt-3 lg:static lg:z-auto lg:border-b-0 lg:pb-0 lg:pt-4"
+                   pt-3 lg:hidden"
       >
         <h3 className="truncate text-base font-semibold leading-snug text-slate-100 lg:whitespace-normal lg:text-sm">
           {node.name}
         </h3>
-        <p
-          className={`mt-0.5 text-[13px] text-slate-400 lg:block lg:text-xs ${
-            collapsed ? 'hidden' : ''
-          }`}
-        >
+        <p className={`mt-0.5 text-[13px] text-slate-400 ${collapsed ? 'hidden' : ''}`}>
             {officerHub ? (
               <span className="capitalize">
                 {node.office ?? 'officer'}
-                {subject && ` · named on ${subject.committees} committees`}
+                {subject && ` · named on ${committeeCount(subject.committees)}`}
               </span>
             ) : (
               <>
@@ -246,10 +281,10 @@ export default function NodeDetail({
             line under the name: same buttons, same direction filter, a
             fraction of the height. Phones only. */}
         {collapsed && (
-          <div className="mt-1 flex items-baseline gap-4 lg:hidden">
+          <div className="mt-1 flex items-baseline gap-4">
             <button
               type="button"
-              onClick={() => setDirection('in')}
+              onClick={() => onDirectionChange('in')}
               className="flex items-baseline gap-1.5"
             >
               <span className="text-[10px] uppercase tracking-wide text-slate-500">In</span>
@@ -263,7 +298,7 @@ export default function NodeDetail({
             </button>
             <button
               type="button"
-              onClick={() => setDirection('out')}
+              onClick={() => onDirectionChange('out')}
               className="flex items-baseline gap-1.5"
             >
               <span className="text-[10px] uppercase tracking-wide text-slate-500">Out</span>
@@ -279,20 +314,26 @@ export default function NodeDetail({
         )}
       </div>
 
-      {/* ------------------------------------------------------------ header */}
-      <div className="space-y-3 border-b border-slate-800 px-4 pb-4 pt-3 lg:shrink-0">
-        <div>
-          {/* Every spelling the state filed for this person. Worth showing:
-              two of them are misspellings that keyed apart until corrected. */}
-          {officerHub && subject && subject.spellings.length > 1 && (
-            <p className="mt-1 text-[11px] lg:text-[10px] leading-relaxed text-slate-600">
-              Filed as {subject.spellings.join(' · ')}
-            </p>
-          )}
+      {/* Every spelling the state filed for this person. Worth showing: two of
+          them are misspellings that keyed apart until corrected. Its own block
+          because everything else in the old header card moved to the bar over
+          the canvas, and a card holding nothing still draws its border. */}
+      {officerHub && subject && subject.spellings.length > 1 && (
+        <p
+          className="border-b border-slate-800 px-4 pb-3 pt-3 text-[11px] leading-relaxed
+                     text-slate-600 lg:shrink-0 lg:text-[10px]"
+        >
+          Filed as {subject.spellings.join(' · ')}
+        </p>
+      )}
 
-          {/* Who runs it, wherever you are in the panel. Each name is a link to
-              the other committees naming the same person, which is the question
-              it always prompts. */}
+      {/* ------------------------------------------------------------ header */}
+      {/* Phones only. The bar over the canvas carries all of this on a wide
+          screen, where it would otherwise cost a third of the panel. */}
+      <div className="space-y-3 border-b border-slate-800 px-4 pb-4 pt-3 lg:hidden">
+        <div>
+          {/* Who runs it. Each name is a link to the other committees naming
+              the same person, which is the question it always prompts. */}
           {officers.length > 0 && (
             <ul className="mt-1.5 space-y-0.5">
               {officers.map((o) => (
@@ -303,7 +344,8 @@ export default function NodeDetail({
                   <span className="w-14 shrink-0 capitalize text-slate-600">{o.role}</span>
                   <button
                     type="button"
-                    onClick={() => onFocus(o.nodeId)}
+                    onClick={() => onFocus(o.nodeId, { officer: { name: o.fullName, role: o.role } })}
+
                     className="min-w-0 flex-1 truncate text-left text-slate-300 hover:text-violet-300
                                hover:underline"
                     title="Open this person and everything their committees raised"
@@ -314,7 +356,7 @@ export default function NodeDetail({
                     className={`shrink-0 tabular-nums ${
                       o.committees >= 25 ? 'text-slate-600' : 'text-violet-400'
                     }`}
-                    title={`Named on ${o.committees} committees`}
+                    title={`Named on ${committeeCount(o.committees)}`}
                   >
                     ×{o.committees}
                   </span>
@@ -325,9 +367,10 @@ export default function NodeDetail({
         </div>
 
         <div className="grid grid-cols-2 gap-2">
+
           <button
             type="button"
-            onClick={() => setDirection('in')}
+            onClick={() => onDirectionChange('in')}
             className={`rounded border p-2 text-left transition ${
               direction === 'in'
                 ? 'border-emerald-600 bg-emerald-950/40'
@@ -339,12 +382,12 @@ export default function NodeDetail({
               {formatMoneyFull(received)}
             </div>
             <div className="text-[11px] lg:text-[10px] text-slate-500">
-              {officerHub ? `across ${subject?.committees ?? 0} committees` : `${node.inDegree} sources`}
+              {officerHub ? `across ${committeeCount(subject?.committees ?? 0)}` : `${node.inDegree} sources`}
             </div>
           </button>
           <button
             type="button"
-            onClick={() => setDirection('out')}
+            onClick={() => onDirectionChange('out')}
             className={`rounded border p-2 text-left transition ${
               direction === 'out'
                 ? 'border-amber-600 bg-amber-950/40'
@@ -356,21 +399,62 @@ export default function NodeDetail({
               {formatMoneyFull(given)}
             </div>
             <div className="text-[11px] lg:text-[10px] text-slate-500">
-              {officerHub ? `across ${subject?.committees ?? 0} committees` : `${node.outDegree} recipients`}
+              {officerHub ? `across ${committeeCount(subject?.committees ?? 0)}` : `${node.outDegree} recipients`}
             </div>
           </button>
         </div>
 
-        {/* A hub is not a crawlable entity, so re-rooting on one is meaningless. */}
+        {/* A hub is a person, and the crawl seeds on an entity id, so there is
+            nothing to search out from. */}
         {!officerHub && (
           <button
             type="button"
             onClick={() => onRecenter(node.id)}
-            className="w-full rounded bg-indigo-600 px-3 py-2 text-[13px] lg:text-xs font-medium text-white
-                       hover:bg-indigo-500"
+            className="w-full rounded bg-indigo-600 px-3 py-2 text-[13px] font-medium text-white
+                       hover:bg-indigo-500 lg:text-xs"
           >
-            Re-center crawl here
+            Search from here
           </button>
+        )}
+
+      </div>
+
+      {/* --------------------------------------------------- panel identity */}
+      {/* Says whose rows these are, at the top of the column holding them. The
+          accent runs down the left edge so the answer is legible from the
+          canvas without reading: lit means you are looking at something you
+          opened, dark means the entity you searched. */}
+      <div
+        className={`hidden shrink-0 border-b border-l-[3px] border-slate-800 px-3.5 py-[11px]
+                    transition-colors duration-200 lg:block ${
+                      exploring
+                        ? 'border-l-indigo-500 bg-indigo-950/25'
+                        : 'border-l-slate-700 bg-transparent'
+                    }`}
+      >
+        <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+          Details for
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: kindColor(node.kind) }}
+            aria-hidden
+          />
+          <span className="truncate text-[13px] font-semibold text-slate-100" title={node.name}>
+            {node.name}
+          </span>
+        </span>
+        {showLedger && (
+          <span className="block truncate text-[10.5px] text-slate-400">
+            {ledger.total.toLocaleString()}{' '}
+            {view === 'sources'
+              ? direction === 'out'
+                ? 'recipients'
+                : 'counterparties'
+              : 'transactions'}
+            {q && ' matching'} · {formatMoneyFull(ledger.totalAmount)}
+          </span>
         )}
       </div>
 
@@ -381,7 +465,8 @@ export default function NodeDetail({
             <button
               key={d.value}
               type="button"
-              onClick={() => setDirection(d.value)}
+              onClick={() => onDirectionChange(d.value)}
+
               className={`rounded px-2 py-1 text-[13px] lg:text-[11px] font-medium transition ${
                 direction === d.value
                   ? 'bg-slate-700 text-slate-100'
@@ -424,6 +509,38 @@ export default function NodeDetail({
         />
         )}
 
+        {/* Not gated on the tab: this narrows the graph rather than these
+            rows, so hiding it on the origins tab would make a setting that is
+            still in force disappear. Labelled for the same reason — the rows
+            beside it are the whole ledger either way. */}
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-slate-600">
+              Graph from
+            </span>
+            <input
+              type="date"
+              value={dateFrom ?? ''}
+              onChange={(e) => onDatesChange(e.target.value || undefined, dateTo)}
+              className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[13px]
+                         text-slate-100 outline-none focus:border-indigo-500 lg:text-xs"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-slate-600">
+              Graph to
+            </span>
+            <input
+              type="date"
+              value={dateTo ?? ''}
+              onChange={(e) => onDatesChange(dateFrom, e.target.value || undefined)}
+              className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[13px]
+                         text-slate-100 outline-none focus:border-indigo-500 lg:text-xs"
+            />
+          </label>
+        </div>
+
+
         {/* Export stays put across tabs; only the sort is ledger-only. */}
         <div className="flex items-center justify-between gap-2">
           {showLedger && (
@@ -450,9 +567,12 @@ export default function NodeDetail({
           </button>
         </div>
 
-        {/* Reconciles against the tile totals above. */}
+        {/* Reconciles against the tile totals above. Repeated by the panel's
+            own header on a wide screen, which is where the eye goes first;
+            this is the phone's copy. */}
         {showLedger && (
-        <div className="flex items-baseline justify-between text-[13px] lg:text-[11px]">
+        <div className="flex items-baseline justify-between text-[13px] lg:hidden">
+
           <span className="text-slate-400">
             {ledger.total.toLocaleString()}{' '}
             {view === 'sources'
@@ -719,7 +839,7 @@ function OriginsReport({
   state: { result: TraceResult | null; loading: boolean; error: string | null };
   dateOrdered: boolean;
   onToggleDateOrdered: () => void;
-  onFocus: (nodeId: string) => void;
+  onFocus: (nodeId: string, link?: FocusLink) => void;
   nodes: Map<string, GraphNode>;
 }) {
   if (state.error) return <p className="p-3 text-[13px] lg:text-xs text-red-400">{state.error}</p>;
@@ -782,7 +902,7 @@ function OriginsReport({
           <li key={s.id} className="hover:bg-slate-800/50">
             <button
               type="button"
-              onClick={() => onFocus(s.id)}
+              onClick={() => onFocus(s.id, { chain: s.chain, label: 'traced', flow: 'in' })}
               className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
             >
               <span className="min-w-0 flex-1">
@@ -820,7 +940,7 @@ function OriginsReport({
             <div className="mt-1 flex items-baseline justify-between gap-2">
               <button
                 type="button"
-                onClick={() => onFocus(p.id)}
+                onClick={() => onFocus(p.id, { chain: p.chain, label: 'traced', flow: 'in' })}
                 className="min-w-0 flex-1 truncate text-left text-[13px] lg:text-xs text-slate-200 hover:underline"
               >
                 {p.name}
@@ -842,7 +962,11 @@ function OriginsReport({
               <li key={f.id} className="hover:bg-slate-800/50">
                 <button
                   type="button"
-                  onClick={() => onFocus(f.id)}
+                  // The pool's own funder, so the route runs through the pool:
+                  // one hop further out than the pool's own.
+                  onClick={() =>
+                    onFocus(f.id, { chain: [...p.chain, f.id], label: 'traced', flow: 'in' })
+                  }
                   className="flex w-full items-baseline justify-between gap-2 px-3 py-1 text-left"
                 >
                   <span className="min-w-0 flex-1 truncate text-[13px] lg:text-[11px] text-slate-300">
@@ -871,7 +995,7 @@ function OriginsReport({
               <li key={s.id} className="hover:bg-slate-800/50">
                 <button
                   type="button"
-                  onClick={() => onFocus(s.id)}
+                  onClick={() => onFocus(s.id, { chain: s.chain, label: 'traced', flow: 'in' })}
                   className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
                 >
                   <span className="min-w-0 flex-1">
@@ -931,7 +1055,7 @@ function LedgerRowItem({
   inGraph,
 }: {
   row: LedgerRow;
-  onFocus: (nodeId: string) => void;
+  onFocus: (nodeId: string, link?: FocusLink) => void;
   inGraph: boolean;
 }) {
   const source = isSourceRow(row);
@@ -987,7 +1111,16 @@ function LedgerRowItem({
   return (
     <li className={target ? 'hover:bg-slate-800/50' : ''}>
       {target ? (
-        <button type="button" onClick={() => onFocus(target)} className="w-full text-left">
+        <button
+          type="button"
+          // No chain: the row is a hop off the entity on screen, and the parent
+          // knows which one that is. The amount labels the hop where it has to
+          // be drawn in.
+          onClick={() => onFocus(target, { label: formatMoney(row.amount), flow: row.flow })}
+
+          className="w-full text-left"
+        >
+
           {body}
         </button>
       ) : (
