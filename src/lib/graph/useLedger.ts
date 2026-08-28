@@ -63,6 +63,9 @@ export interface LedgerQuery {
   sort: LedgerSort;
   /** Undefined means every cycle. */
   cycle?: string;
+  /** Inclusive bounds on the transaction date; the same ones the graph uses. */
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export function useLedger(entityId: string | null, query: LedgerQuery) {
@@ -86,10 +89,21 @@ export function useLedger(entityId: string | null, query: LedgerQuery) {
       });
       if (query.q.trim()) p.set('q', query.q.trim());
       if (query.cycle) p.set('cycle', query.cycle);
+      if (query.dateFrom) p.set('dateFrom', query.dateFrom);
+      if (query.dateTo) p.set('dateTo', query.dateTo);
       return p;
     },
-    [query.view, query.direction, query.sort, query.q, query.cycle],
+    [
+      query.view,
+      query.direction,
+      query.sort,
+      query.q,
+      query.cycle,
+      query.dateFrom,
+      query.dateTo,
+    ],
   );
+
 
   /**
    * Fetch the first page whenever a query option changes.

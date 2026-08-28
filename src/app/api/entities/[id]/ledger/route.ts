@@ -25,7 +25,11 @@ export const ledgerQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).default(0),
   minAmount: z.coerce.number().min(0).optional(),
   cycle: z.string().max(32).optional(),
+  /** Inclusive bounds on the transaction date, as the graph filters on. */
+  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
+
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;

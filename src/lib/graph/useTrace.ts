@@ -11,6 +11,9 @@ export interface TraceQuery {
   min: number;
   dateOrdered: boolean;
   cycle?: string;
+  /** Inclusive bounds on the transaction date; the same ones the graph uses. */
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 /**
@@ -43,6 +46,8 @@ export function useTrace(entityId: string | null, query: TraceQuery, enabled: bo
           dateOrdered: String(query.dateOrdered),
         });
         if (query.cycle) p.set('cycle', query.cycle);
+        if (query.dateFrom) p.set('dateFrom', query.dateFrom);
+        if (query.dateTo) p.set('dateTo', query.dateTo);
         const res = await fetch(`${subjectApiBase(entityId)}/trace?${p}`, {
           signal: controller.signal,
         });
@@ -56,7 +61,16 @@ export function useTrace(entityId: string | null, query: TraceQuery, enabled: bo
     })();
 
     return () => controller.abort();
-  }, [entityId, enabled, query.depth, query.min, query.dateOrdered, query.cycle]);
+  }, [
+    entityId,
+    enabled,
+    query.depth,
+    query.min,
+    query.dateOrdered,
+    query.cycle,
+    query.dateFrom,
+    query.dateTo,
+  ]);
 
   return { result, loading, error };
 }

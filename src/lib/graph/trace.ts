@@ -58,6 +58,16 @@ export interface TraceOptions {
    * wrong one: money raised for 2024 did not fund a 2026 transfer.
    */
   cycle?: string;
+  /**
+   * Inclusive bounds on the transaction date.
+   *
+   * Narrows every hop, and the seed's own total with them. The total has to
+   * move too: it is the denominator every share is expressed against, and
+   * leaving it at the unfiltered figure would report the money the window
+   * excluded as a trail that went cold.
+   */
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 export interface TracedSource {
@@ -144,9 +154,34 @@ export async function trace(
   const minDollars = opts.minDollars ?? 100;
   const dateOrdered = opts.dateOrdered ?? true;
   const cycle = opts.cycle;
+  const { dateFrom, dateTo } = opts;
+  const windowed = dateFrom != null || dateTo != null;
+
 
   const ids = Array.isArray(seedIds) ? seedIds : [seedIds];
   if (ids.length === 0) throw new Error('trace needs at least one seed');
+
+  /**
+   * What the seed received inside the window.
+   *
+   * The stored totals cover a whole cycle, so a date filter has to be counted
+   * from the transactions instead. This is the denominator every share in the
+   * report is expressed against: left at the cycle figure, the money the
+   * window excluded would be reported as a trail that went cold rather than as
+   * money that was never in scope.
+   */
+  const receivedInWindow = sql`
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(SUM(t.amount), 0) AS amount,
+             COUNT(DISTINCT t.from_entity_id)::int AS sources
+        FROM transactions t
+       WHERE t.to_entity_id = e.id
+         AND t.from_entity_id IS NOT NULL
+         ${cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``}
+         ${dateFrom ? sql`AND t.txn_date >= ${dateFrom}` : sql``}
+         ${dateTo ? sql`AND t.txn_date <= ${dateTo}` : sql``}
+    ) w ON true
+  `;
 
   const seeds = await db.execute<{
     id: string;
@@ -156,17 +191,22 @@ export async function trace(
     in_degree: number;
   }>(sql`
     SELECT e.id, e.name, e.kind::text AS kind,
-           ${cycle
-             ? sql`COALESCE(ct.total_received, 0)::text AS received,
-                   COALESCE(ct.in_degree, 0) AS in_degree`
-             : sql`e.total_received::text AS received, e.in_degree`}
+           ${windowed
+             ? sql`w.amount::text AS received, w.sources AS in_degree`
+             : cycle
+               ? sql`COALESCE(ct.total_received, 0)::text AS received,
+                     COALESCE(ct.in_degree, 0) AS in_degree`
+               : sql`e.total_received::text AS received, e.in_degree`}
     FROM entities e
-    ${cycle
-      ? sql`LEFT JOIN entity_cycle_totals ct
-              ON ct.entity_id = e.id AND ct.election_cycle = ${cycle}`
-      : sql``}
+    ${windowed
+      ? receivedInWindow
+      : cycle
+        ? sql`LEFT JOIN entity_cycle_totals ct
+                ON ct.entity_id = e.id AND ct.election_cycle = ${cycle}`
+        : sql``}
     WHERE e.id = ANY(${sql.param(ids)}::uuid[])
   `);
+
   if (seeds.length === 0) throw new Error(`no entity ${ids.join(', ')}`);
 
   const seedTotal = seeds.reduce((a, s) => a + Number(s.received), 0);
@@ -191,6 +231,8 @@ export async function trace(
       db,
       [...new Set(parcels.map((p) => p.entityId))],
       cycle,
+      dateFrom,
+      dateTo,
     );
     const next = new Map<string, Parcel>();
 
@@ -310,8 +352,18 @@ async function inboundByRecipient(
   db: Db,
   ids: string[],
   cycle?: string,
+  dateFrom?: string,
+  dateTo?: string,
 ): Promise<Map<string, InboundRow[]>> {
-  const cyc = cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``;
+  const cyc = sql.join(
+    [
+      cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``,
+      dateFrom ? sql`AND t.txn_date >= ${dateFrom}` : sql``,
+      dateTo ? sql`AND t.txn_date <= ${dateTo}` : sql``,
+    ],
+    sql` `,
+  );
+
   const rows = await db.execute<InboundRow>(sql`
     SELECT t.to_entity_id AS to_id,
            t.from_entity_id AS from_id,
