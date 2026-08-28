@@ -16,7 +16,13 @@ services:
     # transaction table blows straight past that and the query dies with
     # "could not resize shared memory segment … No space left on device"
     # (SQLSTATE 53100) — a confusing error, since the disk is fine.
-    shm_size: 1gb
+    #
+    # 256 MB rather than a gigabyte, because the deployment box does not have a
+    # gigabyte to spare. Capping the gather at one worker is what makes that
+    # safe: the shared tuple store is per parallel worker, so one worker cannot
+    # demand what four could. Queries are slower and they finish.
+    shm_size: 256mb
+    command: postgres -c shared_buffers=384MB -c work_mem=12MB -c maintenance_work_mem=96MB -c effective_cache_size=800MB -c max_parallel_workers_per_gather=1 -c max_worker_processes=4
     environment:
       POSTGRES_USER: pactracker
       POSTGRES_PASSWORD: pactracker
@@ -68,9 +74,9 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-}
       ACCESS_REQUEST_TO: ${ACCESS_REQUEST_TO:-}
+    # nginx terminates TLS and proxies to this; nothing else should reach it.
     ports:
-      - '3000:3000'
-
+      - '3100:3000'
     depends_on:
       db:
         condition: service_healthy
