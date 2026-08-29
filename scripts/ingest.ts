@@ -23,8 +23,17 @@
  *   pnpm ingest backfill-industry --force         # reclassify every entity (taxonomy changed)
  *   pnpm ingest backfill-committee-kind           # fix PACs stuck as "organization" from before classifyContributor knew better
  *
+ * Repairing resolution, once a human has confirmed what is what:
+ *   pnpm ingest merge <keepId> <loserId> [...]   # fold duplicates into one entity
+ *   pnpm ingest split <entityId> --city="GOLDEN BEACH" --name="Sean Carpenter"
+ *       [--kind=individual] [--occupation="REAL ESTATE AGENT"] [--apply]
+ *                                                 # two people sharing a name, pulled apart
+ *   pnpm ingest set-kind <entityId> individual   # correct a misclassified entity
+ * Both rewrite attribution, so follow them with `pnpm ingest rebuild`.
+ *
  * Options: --election=20241105-GEN --limit=2000 --min=1000
  */
+
 
 import { db } from '@/db';
 import { entities } from '@/db/schema';
@@ -44,7 +53,10 @@ import {
   purgeSource,
   backfillIndustry,
   backfillCommitteeKind,
+  mergeEntities,
+  splitEntity,
 } from '@/lib/ingest/pipeline';
+
 import { Irs8872Adapter, TRACKED_ORGS, findOrg } from '@/lib/ingest/irs-8872/adapter';
 import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
 import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
@@ -223,7 +235,13 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'merge' || mode === 'split' || mode === 'set-kind') {
+    await repairEntities(mode);
+    process.exit(0);
+  }
+
   if (mode === 'backfill-committee-kind') {
+
     console.log('Reclassifying PAC-shaped contributors stuck as organization…');
     const result = await backfillCommitteeKind(db, (scanned) => {
       if (scanned % 50_000 === 0) console.log(`  ${scanned} scanned…`);
@@ -818,7 +836,109 @@ async function summarize() {
   }
 }
 
+/**
+ * Repair a resolution mistake a human has confirmed.
+ *
+ * Kept apart from the ingest commands above because these are the only ones
+ * that overwrite a judgement the pipeline already made. `split` prints what it
+ * would move and does nothing without `--apply`, because two people wrongly
+ * pulled apart is not repaired by pulling them apart again.
+ */
+async function repairEntities(mode: 'merge' | 'split' | 'set-kind') {
+  const describe = async (id: string) => {
+    const [e] = await db.execute<{
+      name: string;
+      kind: string;
+      city: string | null;
+      given: string;
+    }>(sql`
+      SELECT name, kind::text AS kind, city, total_given::text AS given
+        FROM entities WHERE id = ${id}
+    `);
+    if (!e) throw new Error(`no entity ${id}`);
+    return `${e.name} (${e.kind}${e.city ? `, ${e.city}` : ''}, out ${fmt(e.given)})`;
+  };
+
+  if (mode === 'set-kind') {
+    const [, id, kind] = positional;
+    if (!id || !kind) return console.error('usage: pnpm ingest set-kind <entityId> <kind>');
+    console.log(`  ${await describe(id)}`);
+    await db.execute(sql`UPDATE entities SET kind = ${kind}::entity_kind WHERE id = ${id}`);
+    console.log(`  → kind is now ${kind}`);
+    return;
+  }
+
+  if (mode === 'merge') {
+    const [, keepId, ...losers] = positional;
+    if (!keepId || losers.length === 0) {
+      return console.error('usage: pnpm ingest merge <keepId> <loserId> [loserId...]');
+    }
+    console.log(`  keeping ${await describe(keepId)}`);
+    for (const l of losers) console.log(`  folding in ${await describe(l)}`);
+    const { merged } = await mergeEntities(db, keepId, losers);
+    console.log(`  merged ${merged}. Run \`pnpm ingest rebuild\` to re-derive totals.`);
+    return;
+  }
+
+  const [, fromId] = positional;
+  const city = flags.city as string | undefined;
+  const name = flags.name as string | undefined;
+  if (!fromId || !city || !name) {
+    return console.error(
+      'usage: pnpm ingest split <entityId> --city="CITY" --name="New Name" [--kind=individual] [--occupation="..."] [--apply]',
+    );
+  }
+
+  // The filed address is the discriminator, because it is the only field that
+  // reliably differs between two people who share a name.
+  const rows = await db.execute<{
+    id: string;
+    txn_date: string | null;
+    amount: string;
+    counterparty: string;
+    occupation: string | null;
+    state_code: string | null;
+    zip: string | null;
+  }>(sql`
+    SELECT t.id, t.txn_date::text, t.amount::text,
+           COALESCE(e.name, t.raw_to_name) AS counterparty,
+           t.from_occupation AS occupation, t.from_state AS state_code, t.from_zip AS zip
+      FROM transactions t
+      LEFT JOIN entities e ON e.id = t.to_entity_id
+     WHERE t.from_entity_id = ${fromId}
+       AND upper(t.from_city) = upper(${city})
+     ORDER BY t.txn_date
+  `);
+
+  console.log(`  from ${await describe(fromId)}`);
+  console.log(`  ${rows.length} transaction(s) filed from ${city}:`);
+  for (const r of rows) {
+    console.log(
+      `    ${r.txn_date ?? '(no date)'}  ${fmt(r.amount).padStart(11)}  ` +
+        `${r.counterparty.slice(0, 40).padEnd(42)} ${r.occupation ?? ''}`,
+    );
+  }
+  if (rows.length === 0) return;
+
+  if (!flags.apply) {
+    console.log('\n  Nothing written. Re-run with --apply once the list above is right.');
+    return;
+  }
+
+  const result = await splitEntity(db, fromId, rows.map((r) => r.id), {
+    name,
+    kind: (flags.kind as 'individual') ?? 'individual',
+    city,
+    stateCode: rows[0].state_code,
+    zip: rows[0].zip,
+    occupation: (flags.occupation as string) ?? rows.find((r) => r.occupation)?.occupation ?? null,
+  });
+  console.log(`\n  moved ${result.moved} onto new entity ${result.id}`);
+  console.log('  Run `pnpm ingest rebuild` to re-derive totals.');
+}
+
 main().catch((e) => {
   console.error('\nFAILED:', e);
   process.exit(1);
 });
+
