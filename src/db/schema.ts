@@ -287,6 +287,23 @@ export const transactions = pgTable(
     toConfidence: real('to_confidence').notNull().default(0),
 
     ingestedAt: timestamp('ingested_at', { withTimezone: true }).notNull().defaultNow(),
+
+    /**
+     * When this row was last changed after loading. Null means never.
+     *
+     * Maintained by a trigger, not by application code, because the changes
+     * that matter most here are hand-written SQL: a human reattributing money
+     * from the wrong person to the right one. `ingested_at` cannot see that —
+     * the row was loaded weeks ago and its attribution changed today — so a
+     * delta keyed on load time ships corrections nowhere.
+     *
+     * Deliberately nullable with no default. A `DEFAULT now() NOT NULL` column
+     * rewrites three million rows on the way in and then claims every one of
+     * them changed, which would make the first sync after this ship the entire
+     * table.
+     */
+    updatedAt: timestamp('updated_at', { withTimezone: true }),
+
   },
   (t) => [
     uniqueIndex('transactions_row_hash_key').on(t.sourceRowHash),
@@ -618,7 +635,28 @@ export const ingestRunStatus = pgEnum('ingest_run_status', [
 ]);
 
 /** One execution of one source adapter, for observability and safe resume. */
+/**
+ * Entities that were deleted, and what they were folded into.
+ *
+ * `mergeEntities` reassigns a duplicate's rows and then deletes it. On this
+ * machine that is the end of it, but the deployment box is a copy that is
+ * brought forward by shipping changed rows — and a row that no longer exists
+ * cannot be shipped. Without a record of the deletion, the far side keeps the
+ * duplicate forever and slowly diverges from what anyone here is looking at.
+ *
+ * `merged_into` is kept for the trail rather than for lookups: it says which
+ * entity now holds that money, which is the question anyone reading a stale
+ * link or an old CSV will have.
+ */
+export const entityTombstones = pgTable('entity_tombstones', {
+  /** The id that was deleted. Not a reference — the row it named is gone. */
+  id: uuid('id').primaryKey(),
+  mergedInto: uuid('merged_into'),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const ingestRuns = pgTable(
+
   'ingest_runs',
   {
     id: uuid('id').primaryKey().defaultRandom(),
