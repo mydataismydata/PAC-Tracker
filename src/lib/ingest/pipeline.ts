@@ -834,7 +834,7 @@ export async function collapseMirrors(
   type Expend = { id: string; amount: number; date: number | null };
   const groups = new Map<string, { contribs: Contrib[]; expends: Expend[] }>();
   for (const r of rows) {
-    const key = `${r.from_entity_id} ${r.to_entity_id}`;
+    const key = `${r.from_entity_id}\0${r.to_entity_id}`;
     let g = groups.get(key);
     if (!g) {
       g = { contribs: [], expends: [] };
@@ -1359,7 +1359,17 @@ export async function mergeEntities(
       // Whatever's left either collides, or belongs to edge_rollups /
       // entity_cycle_totals, which are stale the moment transactions moved —
       // both are recomputed by the caller's rebuildAll, not preserved here.
+
+      // Record the deletion before making it. The deployment box is brought
+      // forward by shipping rows that changed, and a deleted row cannot be
+      // shipped — without this the duplicate lives on over there forever.
+      await tx.execute(sql`
+        INSERT INTO entity_tombstones (id, merged_into)
+        VALUES (${loserId}, ${keepId})
+        ON CONFLICT (id) DO UPDATE SET merged_into = EXCLUDED.merged_into
+      `);
       await tx.execute(sql`DELETE FROM entities WHERE id = ${loserId}`);
+
     }
   });
 

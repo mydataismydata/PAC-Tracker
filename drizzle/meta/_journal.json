@@ -57,6 +57,13 @@
       "when": 1787775163045,
       "tag": "0007_left_lilandra",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1787963490825,
+      "tag": "0008_curvy_johnny_storm",
+      "breakpoints": true
     }
   ]
 }
