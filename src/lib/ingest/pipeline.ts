@@ -1273,7 +1273,73 @@ export async function backfillCommitteeKind(
 }
 
 /**
+ * Pull a set of transactions off an entity and onto a new one.
+ *
+ * The opposite failure to the one `mergeEntities` repairs, and the more
+ * damaging of the two. Two people who share a name arrive as one node, and
+ * every total, every edge and every trace then describes a person who does not
+ * exist. A merge can be undone by merging again; this cannot be undone by
+ * anything except knowing which filings belonged to whom.
+ *
+ * The caller decides that, and passes the transaction ids explicitly — there
+ * is no predicate here on purpose. Splitting on a guess is how the two got
+ * conflated to begin with.
+ *
+ * Only transactions move. Registrations and officers describe a committee, and
+ * a committee that needs splitting is a different problem from a donor who
+ * does. `edge_rollups` and `entity_cycle_totals` are left stale for the
+ * caller's `rebuildAll`, exactly as with a merge.
+ */
+export async function splitEntity(
+  db: Db,
+  fromId: string,
+  txnIds: string[],
+  fields: {
+    name: string;
+    kind: 'individual' | 'organization' | 'committee' | 'candidate';
+    city?: string | null;
+    stateCode?: string | null;
+    zip?: string | null;
+    occupation?: string | null;
+  },
+): Promise<{ id: string; moved: number }> {
+  if (txnIds.length === 0) throw new Error('splitEntity needs at least one transaction');
+
+  return db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(entities)
+      .values({
+        kind: fields.kind,
+        name: fields.name,
+        normalizedName: normalizeName(fields.name),
+        city: fields.city ?? null,
+        stateCode: fields.stateCode ?? null,
+        zip: fields.zip ?? null,
+        occupation: fields.occupation ?? null,
+        industry: classifyIndustry(fields.occupation ?? null, fields.name, fields.kind),
+        // A contributor starts terminal; refreshTraversability promotes it if
+        // it turns out to receive money too.
+        isTraversable: false,
+      })
+      .returning({ id: entities.id });
+
+    const moved = await tx.execute(sql`
+      UPDATE transactions
+         SET from_entity_id = CASE WHEN from_entity_id = ${fromId} THEN ${created.id}
+                                   ELSE from_entity_id END,
+             to_entity_id   = CASE WHEN to_entity_id   = ${fromId} THEN ${created.id}
+                                   ELSE to_entity_id END
+       WHERE id = ANY(${sql.param(txnIds)}::uuid[])
+         AND (from_entity_id = ${fromId} OR to_entity_id = ${fromId})
+    `);
+
+    return { id: created.id, moved: (moved as unknown as { count?: number }).count ?? txnIds.length };
+  });
+}
+
+/**
  * Merge one or more duplicate entities into a survivor.
+
  *
  * For a genuine near-duplicate — a typo, an abbreviation, a truncated column,
  * a singular/plural variant — normalization and the fuzzy-match safety net
