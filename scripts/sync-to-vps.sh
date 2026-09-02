@@ -33,11 +33,34 @@ copy() { docker exec -i pactracker-db psql -U pactracker -d "$DB" -c "\copy ($1)
 # new. `updated_at` on entities is noisy — the rollup refresh bumps every row
 # it touches — but the rows are small and the write is idempotent, so shipping
 # a few thousand unchanged ones costs far less than missing one real edit.
-ENTITIES="SELECT * FROM entities WHERE created_at > '$SINCE' OR updated_at > '$SINCE'"
+# The changed entities, plus every entity a tombstone resolves to. A merge's
+# survivor may predate the watermark and so miss the delta, yet the far side
+# needs it present to repoint a straggler onto it before the tombstone delete
+# below. Resolve merge chains to the terminal, non-tombstoned id.
+ENTITIES="
+WITH RECURSIVE chain AS (
+  SELECT id AS tomb_id, merged_into AS cur, 1 AS depth FROM entity_tombstones
+  UNION ALL
+  SELECT c.tomb_id, t.merged_into, c.depth + 1
+    FROM chain c JOIN entity_tombstones t ON t.id = c.cur
+   WHERE c.depth < 50
+),
+survivors AS (
+  SELECT DISTINCT cur AS id FROM chain c
+   WHERE cur IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM entity_tombstones t2 WHERE t2.id = c.cur)
+)
+SELECT e.* FROM entities e
+ WHERE e.created_at > '$SINCE' OR e.updated_at > '$SINCE'
+    OR e.id IN (SELECT id FROM survivors)"
 # On transactions the same column is precise: nothing but a real change to the
 # row sets it, because the rollup refresh writes to entities and never here.
 TXNS="SELECT * FROM transactions WHERE ingested_at > '$SINCE' OR updated_at > '$SINCE'"
-TOMBS="SELECT * FROM entity_tombstones WHERE deleted_at > '$SINCE'"
+# Every tombstone, not only the recent ones. They are tiny (a few hundred
+# rows), the far-side apply is idempotent, and shipping the whole set lets the
+# repoint below resolve a merge chain that reaches back past the watermark, and
+# clears any entity a missed delta left un-deleted over there.
+TOMBS="SELECT * FROM entity_tombstones"
 
 echo "since $SINCE"
 echo "  entities:     $(q "SELECT count(*) FROM ($ENTITIES) x")"
@@ -107,7 +130,31 @@ TXN_SET=$(setclause transactions)
   # for a stale link instead of 404ing on one.
   stage entity_tombstones "$TOMBS"
   echo "INSERT INTO entity_tombstones SELECT * FROM _sync_entity_tombstones"
-  echo "  ON CONFLICT (id) DO NOTHING;"
+  echo "  ON CONFLICT (id) DO UPDATE SET merged_into = EXCLUDED.merged_into;"
+
+  # Repoint any transaction that still references a tombstoned id onto the
+  # entity it was merged into, before deleting the id. Locally these rows moved
+  # long ago, but a transaction the far side deleted on its own (mirror-collapse
+  # runs in its rebuild, not this load) or one from a delta it never received
+  # still points at the doomed id over there, and the foreign key would block
+  # the delete. Resolve merge chains to the terminal, non-tombstoned survivor.
+  cat <<'SQL'
+CREATE TEMP TABLE _sync_tomb_survivor ON COMMIT DROP AS
+WITH RECURSIVE chain AS (
+  SELECT id AS tomb_id, merged_into AS cur, 1 AS depth FROM _sync_entity_tombstones
+  UNION ALL
+  SELECT c.tomb_id, t.merged_into, c.depth + 1
+    FROM chain c JOIN _sync_entity_tombstones t ON t.id = c.cur
+   WHERE c.depth < 50
+)
+SELECT tomb_id, cur AS survivor FROM chain c
+ WHERE cur IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM _sync_entity_tombstones t2 WHERE t2.id = c.cur);
+UPDATE transactions x SET from_entity_id = s.survivor
+  FROM _sync_tomb_survivor s WHERE x.from_entity_id = s.tomb_id;
+UPDATE transactions x SET to_entity_id = s.survivor
+  FROM _sync_tomb_survivor s WHERE x.to_entity_id = s.tomb_id;
+SQL
   echo "DELETE FROM entities e USING _sync_entity_tombstones t WHERE e.id = t.id;"
   echo "DROP TABLE _sync_entity_tombstones;"
 
