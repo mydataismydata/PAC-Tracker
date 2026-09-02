@@ -27,6 +27,9 @@
  *                                                 (write it; review file; name-change file; review floor in dollars)
  *   pnpm ingest backfill-quotes                   # count stored names carrying the export's backslash ("Bono\'s")
  *   pnpm ingest backfill-quotes --apply           # strip it from entity names, aliases, and raw transaction names
+ *   pnpm ingest collapse-mirrors                  # dry run of the mirror rule: committee-to-committee transfers filed by both sides
+ *     --recipient-lag=60 --payer-lag=14 --scope=keepers --apply
+ *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
  *
  * Repairing resolution, once a human has confirmed what is what:
  *   pnpm ingest merge <keepId> <loserId> [...]   # fold duplicates into one entity
@@ -60,6 +63,8 @@ import {
   backfillCommitteeKind,
   backfillContributorKind,
   backfillQuotes,
+  collapseMirrors,
+  MIRROR_WINDOW,
   mergeEntities,
   splitEntity,
 } from '@/lib/ingest/pipeline';
@@ -303,6 +308,32 @@ async function main() {
     }
     if (apply) console.log(`  ${report.applied} rows updated. Run \`pnpm ingest rebuild\`, then sync.`);
     else console.log(`  ${report.review} rows written to ${reviewPath}; name changes to ${namesPath}`);
+    process.exit(0);
+  }
+
+  if (mode === 'collapse-mirrors') {
+    const apply = flags.apply === 'true';
+    const window = {
+      recipientLag: Number(flags['recipient-lag'] ?? MIRROR_WINDOW.recipientLag),
+      payerLag: Number(flags['payer-lag'] ?? MIRROR_WINDOW.payerLag),
+    };
+    let scope: string[] | undefined;
+    if (flags.scope === 'keepers') {
+      const rows = await db.execute<{ id: string }>(
+        sql`SELECT DISTINCT merged_into AS id FROM entity_tombstones WHERE merged_into IS NOT NULL`,
+      );
+      scope = rows.map((r) => r.id);
+    }
+    console.log(
+      `${apply ? 'Collapsing' : 'Dry run:'} mirrors, recipient up to ${window.recipientLag} days after the payer, ` +
+        `payer up to ${window.payerLag} days after the recipient` +
+        (scope ? `, ${scope.length} merge survivors only` : ', whole graph'),
+    );
+    const r = await collapseMirrors(db, scope, { dryRun: !apply, window });
+    console.log(
+      `  ${r.deleted} expenditure${r.deleted === 1 ? '' : 's'} ${apply ? 'deleted' : 'would go'} across ${r.pairs} committee pairs, ${fmt(r.dollars)}`,
+    );
+    if (apply && r.deleted > 0) console.log('  Run `pnpm ingest rebuild`, then sync.');
     process.exit(0);
   }
 

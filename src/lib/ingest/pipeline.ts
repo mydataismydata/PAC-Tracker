@@ -771,8 +771,20 @@ export async function ingestCommitteeRegistrations(
  * the same money. Filers routinely disagree by a day or two — the payer books the
  * cheque, the recipient books the deposit — but a same-amount transfer between the
  * same two committees weeks apart is more likely a second, genuine gift.
+ *
+ * The 2026-09-02 merge review measured this: across the whole graph, same-amount
+ * committee→committee pairs dated 15–60 days apart run 3,483 with the payer dated
+ * first against 90 the other way round. A second gift has no reason to prefer an
+ * order; a recipient booking the payer's cheque on its report date does. So the
+ * window is asymmetric — the recipient may be dated well after the payer, the
+ * payer only a little after the recipient. Both are overridable per run.
  */
-const MIRROR_WINDOW_DAYS = 14;
+export const MIRROR_WINDOW = {
+  /** Days the recipient's date may trail the payer's. */
+  recipientLag: 60,
+  /** Days the payer's date may trail the recipient's. */
+  payerLag: 14,
+};
 
 /**
  * Collapse mirror pairs: one committee→committee transfer that both filers
@@ -790,7 +802,7 @@ const MIRROR_WINDOW_DAYS = 14;
  * contribution sweep, slips a mirror through. This pass is order-independent and
  * date-tolerant: inside each committee→committee pair that carries both
  * directions, it matches every expenditure to one unused contribution of the
- * same amount within `MIRROR_WINDOW_DAYS`, nearest date first, and deletes those
+ * same amount inside `MIRROR_WINDOW`, nearest date first, and deletes those
  * expenditures. The pairing is 1:1, so a genuine second transfer of the same
  * amount keeps its own record, and only same-amount rows between the same two
  * traversable nodes are ever touched.
@@ -802,8 +814,9 @@ const MIRROR_WINDOW_DAYS = 14;
 export async function collapseMirrors(
   db: Db,
   entityIds?: string[],
-  opts: { dryRun?: boolean } = {},
-): Promise<{ deleted: number; pairs: number }> {
+  opts: { dryRun?: boolean; window?: typeof MIRROR_WINDOW } = {},
+): Promise<{ deleted: number; pairs: number; dollars: number }> {
+  const window = opts.window ?? MIRROR_WINDOW;
   const scoped = entityIds != null && entityIds.length > 0;
   const outerScope = scoped
     ? sql`AND (t.from_entity_id = ANY(${sql.param(entityIds)}::uuid[])
@@ -860,9 +873,11 @@ export async function collapseMirrors(
     }
   }
 
-  const window = MIRROR_WINDOW_DAYS * 86_400_000;
+  const recipientLag = window.recipientLag * 86_400_000;
+  const payerLag = window.payerLag * 86_400_000;
   const toDelete: string[] = [];
   let pairsHit = 0;
+  let dollars = 0;
   for (const g of groups.values()) {
     let hit = false;
     for (const e of g.expends) {
@@ -873,8 +888,9 @@ export async function collapseMirrors(
         // Same amount, both dated, within the window; when unsure, leave it be.
         if (c.used || c.amount !== e.amount) continue;
         if (c.date === null || e.date === null) continue;
-        const diff = Math.abs(c.date - e.date);
-        if (diff > window) continue;
+        const lag = c.date - e.date; // positive: the recipient booked it after the payer
+        if (lag > recipientLag || -lag > payerLag) continue;
+        const diff = Math.abs(lag);
         if (diff < bestDiff) {
           bestDiff = diff;
           best = i;
@@ -883,6 +899,7 @@ export async function collapseMirrors(
       if (best >= 0) {
         g.contribs[best].used = true;
         toDelete.push(e.id);
+        dollars += e.amount;
         hit = true;
       }
     }
@@ -894,7 +911,7 @@ export async function collapseMirrors(
       sql`DELETE FROM transactions WHERE id = ANY(${sql.param(toDelete)}::uuid[])`,
     );
   }
-  return { deleted: toDelete.length, pairs: pairsHit };
+  return { deleted: toDelete.length, pairs: pairsHit, dollars };
 }
 
 export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<void> {
