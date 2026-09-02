@@ -29,9 +29,9 @@ import {
   normalizeName,
   scoreMatch,
   looksTruncated,
-  looksLikeCommittee,
-  looksLikePerson,
+  classifyName,
   personDisplayName,
+  plainNameTokens,
   AUTO_LINK_THRESHOLD,
   isGenericLocalOffice,
   scopedName,
@@ -53,6 +53,12 @@ export interface ResolveInput {
    * offers nothing equivalent, which is why `classifyContributor` exists.
    */
   kindHint?: CounterpartyKind;
+  /**
+   * The other side of an expenditure: a vendor, not a donor. Money paid out
+   * goes to businesses far more often than to people, so a payee the name
+   * cannot place is an organization where a donor would be a person.
+   */
+  payee?: boolean;
   /** Office sought, when the source reports it. */
   office?: string | null;
   party?: string | null;
@@ -113,26 +119,115 @@ function kindFromHint(
   }
 }
 
+/** Which check settled a contributor's kind. */
+export type KindRule =
+  | 'committee-name'
+  | 'committee-occupation'
+  | 'org-word'
+  | 'person-name'
+  | 'person-comma'
+  | 'person-occupation'
+  | 'org-occupation'
+  | 'plain-name'
+  | 'payee-default'
+  | 'default-org';
+
+/** Rules that rest on the name itself. The others lean on weaker evidence. */
+export const STRONG_KIND_RULES: ReadonlySet<KindRule> = new Set<KindRule>([
+  'committee-name',
+  'org-word',
+  'person-name',
+]);
+
+const BLANK_OCCUPATION = /^(N\/?A|NONE|UNK|UNKNOWN|NOT PROVIDED|INFO(RMATION)? REQUESTED|REQUESTED)$/;
+
+const COMMITTEE_OCCUPATION = /^(.*\b)?(PAC|PC|CCE|ECO|POLITICAL (ACTION )?COMMITTEE|ACTION COMMITTEE)$/;
+
 /**
- * Classify a contributor string when the source offers no type code.
- *
- * Committee-shaped names are checked first: a PAC is a conduit, not a
- * terminal donor, and a trace needs `kind` to say so or it stops there and
- * credits the PAC itself as an original source instead of walking back
- * through it. Occupation is the next-strongest signal — Florida requires it
- * for individuals, and organizations put a sector description there instead
- * ("SOCIAL WELFARE ORGANIZATION", "AGRICULTURE", "ENERGY COMPANY").
+ * A registered form or a "<sector> FIRM" describes the organization itself,
+ * and outranks a job word in the same string: "CPA FIRM" is a firm.
  */
+const REGISTERED_ORG_OCCUPATION =
+  /\b(INC|LLC|CORP|CORPORATION|INCORPORATED|LLP|PLLC|NON[- ]?PROFIT|NOT[- ]FOR[- ]PROFIT|501|ORGANIZATION|ASSOCIATION|ASSN|FOUNDATION|COALITION|ALLIANCE|COOPERATIVE|CO-OP|TRIBE|TRIBAL)\b|^(CPA|LAW|ACCOUNTING|CONSULTING|ENGINEERING|ARCHITECTURE|ARCHITECTURAL|LOBBYING|PR|MARKETING|ADVERTISING|INVESTMENT|REAL ESTATE|INSURANCE|TITLE|DESIGN) FIRM$/;
+
+/** Job titles. OWNER or ATTORNEY describes a person, whatever the sector. */
+const PERSON_OCCUPATION =
+  /\b(RETIRED|HOMEMAKER|HOUSEWIFE|NOT EMPLOYED|UNEMPLOYED|STUDENT|INDIVIDUAL|SELF[- ]?EMPLOYED|ATTORNEY|LAWYER|PHYSICIAN|DOCTOR|DENTIST|NURSE|TEACHER|PROFESSOR|ENGINEER|ARCHITECT|ACCOUNTANT|CPA|CONSULTANT|EXECUTIVE|OFFICER|PRESIDENT|DIRECTOR|MANAGER|OWNER|BROKER|AGENT|REALTOR|SALES|SALESMAN|SALESPERSON|DEVELOPER|INVESTOR|BANKER|PILOT|FIREFIGHTER|POLICE|DEPUTY|SHERIFF|ELECTRICIAN|PLUMBER|IRONWORKER|CARPENTER|MECHANIC|DRIVER|FARMER|RANCHER|GROWER|CHEF|SERVER|ARTIST|WRITER|AUTHOR|EDITOR|JOURNALIST|PASTOR|MINISTER|RABBI|COMMISSIONER|MAYOR|SENATOR|REPRESENTATIVE|LEGISLATOR|JUDGE|CANDIDATE|ANALYST|PROGRAMMER|SCIENTIST|PHARMACIST|THERAPIST|COUNSELOR|VETERINARIAN|CHIROPRACTOR|OPTOMETRIST|OPTICIAN|ANESTHESIOLOGIST|SURGEON|RADIOLOGIST|PHILANTHROPIST|ENTREPRENEUR|ADVISOR|ADVISER|SPECIALIST|COORDINATOR|ASSISTANT|TECHNICIAN|CLERK|SECRETARY|PARALEGAL|PRINCIPAL|SUPERINTENDENT|ADMINISTRATOR|SUPERVISOR|FOREMAN|LABORER|WORKER|EMPLOYEE|MEMBER|PARTNER|FOUNDER|CEO|CFO|COO|CHAIRMAN|CHAIRWOMAN|TRUSTEE|DESIGNER|STYLIST|BARBER|MUSICIAN|ACTOR|COACH|TRAINER|ATHLETE|VOLUNTEER|VETERAN|INVESTIGATOR|INSPECTOR|PLANNER|CONTRACTOR|DISABLED|LOBBYIST|BUSINESSMAN|BUSINESSWOMAN|DIR|MGR|VP|EVP|SVP|EXEC|ATTY|PRES|ASST|REP|SUPV|DEAN|PROF|BOOKKEEPER|RECEPTIONIST)\b/;
+
+/**
+ * Words that describe an organization rather than a job. Checked after the
+ * job titles, so "BUSINESS OWNER" and "BANK PRESIDENT" stay people.
+ */
+const ORG_OCCUPATION =
+  /\b(COMPANY|CO\.|SOCIAL WELFARE|TRUST|FUND|PARTNERSHIP|BUSINESS|DISTRIBUTOR|MANUFACTURER|DEALERSHIP|FIRM|INDUSTRY|GOVERNMENT|UNION|CHAMBER|CLUB|CHURCH|HOSPITAL|UNIVERSITY|SCHOOL|BANK|COMPANIES|SUPPLIER|VENDOR|RETAILER|ENTERPRISE|ENTERPRISES|FACILITY|CENTER|AGENCY|STORE|SHOP|PRACTICE|CLINIC|OFFICES|ATTORNEYS|AT LAW|STADIUM|THERAPEUTICS)\b/;
+
+/**
+ * What the occupation column says about a contributor when the name alone
+ * does not settle it. Florida requires an occupation for individuals, and
+ * organizations tend to put a sector or a corporate form there instead.
+ * Sector words on their own — REAL ESTATE, INSURANCE, HEALTHCARE — are used
+ * by both and decide nothing.
+ */
+export function classifyOccupation(
+  occupation?: string | null,
+): 'committee' | 'person' | 'organization' | null {
+  const occ = (occupation ?? '').trim().toUpperCase();
+  if (!occ || BLANK_OCCUPATION.test(occ)) return null;
+  if (COMMITTEE_OCCUPATION.test(occ) || classifyIndustry(occ, '') === 'Political committee') {
+    return 'committee';
+  }
+  if (REGISTERED_ORG_OCCUPATION.test(occ)) return 'organization';
+  if (PERSON_OCCUPATION.test(occ)) return 'person';
+  if (ORG_OCCUPATION.test(occ)) return 'organization';
+  return null;
+}
+
+/**
+ * Classify a contributor string when the source offers no type code, and say
+ * which check decided.
+ *
+ * The order matters. A committee-shaped name wins outright: a PAC is a
+ * conduit, not a terminal donor, and a trace needs `kind` to say so or it
+ * stops there and credits the PAC itself as an original source. An
+ * organization word in the name comes next and beats every person signal, so
+ * a law firm filed as "RONALD BOOK, PA" with occupation ATTORNEY stays a
+ * firm. Then the person shapes, then occupation, and last the shape of the
+ * name alone: a name that could be a person's and carries nothing else is
+ * far more often a person with an uncommon given name than a company with
+ * none of the usual words in it. A vendor is the exception — see
+ * `ResolveInput.payee`.
+ */
+export function classifyContributorDetailed(
+  rawName: string,
+  occupation?: string | null,
+  opts: { payee?: boolean } = {},
+): { kind: 'individual' | 'organization' | 'committee'; rule: KindRule } {
+  const shape = classifyName(rawName);
+  if (shape === 'committee') return { kind: 'committee', rule: 'committee-name' };
+  const occ = classifyOccupation(occupation);
+  if (occ === 'committee' && shape !== 'person' && shape !== 'person-comma') {
+    return { kind: 'committee', rule: 'committee-occupation' };
+  }
+  if (shape === 'organization') return { kind: 'organization', rule: 'org-word' };
+  if (shape === 'person') return { kind: 'individual', rule: 'person-name' };
+  if (shape === 'person-comma') return { kind: 'individual', rule: 'person-comma' };
+  if (occ === 'person') return { kind: 'individual', rule: 'person-occupation' };
+  if (occ === 'organization') return { kind: 'organization', rule: 'org-occupation' };
+  if (plainNameTokens(rawName)) {
+    return opts.payee
+      ? { kind: 'organization', rule: 'payee-default' }
+      : { kind: 'individual', rule: 'plain-name' };
+  }
+  return { kind: 'organization', rule: 'default-org' };
+}
+
+/** `classifyContributorDetailed` without the reason. */
 export function classifyContributor(
   rawName: string,
   occupation?: string | null,
+  opts: { payee?: boolean } = {},
 ): 'individual' | 'organization' | 'committee' {
-  if (looksLikeCommittee(rawName)) return 'committee';
-  if (looksLikePerson(rawName)) return 'individual';
-  if (occupation && /\b(RETIRED|HOMEMAKER|ATTORNEY|PHYSICIAN|SELF[- ]EMPLOYED)\b/i.test(occupation)) {
-    return 'individual';
-  }
-  return 'organization';
+  return classifyContributorDetailed(rawName, occupation, opts).kind;
 }
 
 export class EntityResolver {
@@ -344,7 +439,7 @@ export class EntityResolver {
         ? ('committee' as const)
         : ('candidate' as const)
       : (kindFromHint(input.kindHint) ??
-        classifyContributor(input.rawName, input.occupation));
+        classifyContributor(input.rawName, input.occupation, { payee: input.payee }));
 
     const displayName =
       kind === 'individual' ? personDisplayName(input.rawName) : input.rawName.trim();

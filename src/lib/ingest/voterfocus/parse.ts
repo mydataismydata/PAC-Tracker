@@ -8,6 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { unescapeQuotes } from '@/lib/normalize';
 import type { CounterpartyKind, RawTransactionRow } from '../types';
 
 /* -------------------------------------------------------------------------- */
@@ -311,14 +312,14 @@ export function parseTransactionExport(
     const amend = amendCode(get(iAmend));
 
     const row: RawTransactionRow = {
-      filerRaw: opts.filerName,
+      filerRaw: unescapeQuotes(opts.filerName),
       filerTruncated: false,
       filerTypeTag: null,
       filerOffice: opts.filerOffice,
       filerParty: opts.filerParty,
       filerIsCommittee: opts.filerIsCommittee,
 
-      counterpartyRaw,
+      counterpartyRaw: unescapeQuotes(counterpartyRaw),
       counterpartyKind: CONTRIBUTOR_TYPES[contType] ?? 'unknown',
 
       direction: dirCode === 'E' ? 'expenditure' : 'contribution',
@@ -334,6 +335,8 @@ export function parseTransactionExport(
       zip: get(iZip) || null,
       occupation: get(iOcc) || null,
 
+      // Hashed as exported, backslash escapes and all, so a row loaded before
+      // `unescapeQuotes` existed still collapses onto its hash on re-ingest.
       rowHash: hashRow([
         'voterfocus',
         opts.countySlug,
