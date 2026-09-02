@@ -1034,6 +1034,90 @@ export async function purgeSource(
  * crashed or partial run can leave rollups behind. This is the repair path, and
  * the thing to run after changing resolution rules.
  */
+/** One integrity check: a name, the count of rows that violate it, a few example ids. */
+export interface IntegrityCheck {
+  name: string;
+  detail: string;
+  count: number;
+  examples: string[];
+}
+
+export interface IntegrityReport {
+  ok: boolean;
+  checks: IntegrityCheck[];
+}
+
+/**
+ * Confirm the graph holds no merged-away reference — the failure the VPS hit
+ * when a tombstone delete was blocked by a transaction still pointing at the
+ * Driskell account.
+ *
+ * Runs on either database. Locally the foreign key already forbids a dangling
+ * reference, so those checks read zero; the checks that matter are the ones the
+ * key does not enforce — a tombstoned id still present as an entity, or a live
+ * transaction still pointing at one. On the deployment box, where a delta may
+ * arrive without every repoint, these are the ones that catch a stranded row
+ * before it becomes a blocked delete. The last check is a pre-ship guard: a
+ * tombstone whose merge chain does not end at a live entity would strand the
+ * sync's repoint.
+ */
+export async function verifyReferentialIntegrity(db: Db): Promise<IntegrityReport> {
+  const check = async (
+    name: string,
+    detail: string,
+    query: ReturnType<typeof sql>,
+  ): Promise<IntegrityCheck> => {
+    const rows = await db.execute<{ id: string }>(query);
+    return { name, detail, count: rows.length, examples: rows.slice(0, 5).map((r) => r.id) };
+  };
+
+  const checks = await Promise.all([
+    check(
+      'tombstoned_still_present',
+      'entities that carry a tombstone but were never deleted',
+      sql`SELECT e.id::text AS id FROM entities e JOIN entity_tombstones t ON t.id = e.id LIMIT 20`,
+    ),
+    check(
+      'txn_refs_tombstone',
+      'transactions still pointing at a merged-away entity (this is what blocks a tombstone delete)',
+      sql`SELECT x.id::text AS id FROM transactions x
+           WHERE EXISTS (SELECT 1 FROM entity_tombstones t WHERE t.id = x.from_entity_id)
+              OR EXISTS (SELECT 1 FROM entity_tombstones t WHERE t.id = x.to_entity_id)
+           LIMIT 20`,
+    ),
+    check(
+      'txn_dangling_ref',
+      'transactions pointing at an entity id that does not exist',
+      sql`SELECT x.id::text AS id FROM transactions x
+           WHERE (x.from_entity_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = x.from_entity_id))
+              OR (x.to_entity_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = x.to_entity_id))
+           LIMIT 20`,
+    ),
+    check(
+      'tombstone_survivor_unresolved',
+      'tombstones whose merge chain does not end at a live entity (would strand the sync repoint)',
+      sql`WITH RECURSIVE chain AS (
+             SELECT id AS tomb_id, merged_into AS cur, 1 AS depth FROM entity_tombstones
+             UNION ALL
+             SELECT c.tomb_id, t.merged_into, c.depth + 1
+               FROM chain c JOIN entity_tombstones t ON t.id = c.cur
+              WHERE c.depth < 50
+           ),
+           term AS (
+             SELECT tomb_id, cur AS survivor FROM chain c
+              WHERE NOT EXISTS (SELECT 1 FROM entity_tombstones t2 WHERE t2.id = c.cur)
+           )
+           SELECT tb.id::text AS id FROM entity_tombstones tb
+             LEFT JOIN term ON term.tomb_id = tb.id
+            WHERE term.survivor IS NULL
+               OR NOT EXISTS (SELECT 1 FROM entities e WHERE e.id = term.survivor)
+            LIMIT 20`,
+    ),
+  ]);
+
+  return { ok: checks.every((c) => c.count === 0), checks };
+}
+
 export async function rebuildAll(db: Db): Promise<{ edges: number; entities: number }> {
   await refreshTraversability(db);
 
