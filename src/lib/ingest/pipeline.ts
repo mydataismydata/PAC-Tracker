@@ -42,6 +42,7 @@ import {
   unescapeQuotes,
 } from '@/lib/normalize';
 import { manualKindEntityIds } from '@/lib/corrections';
+import { CandidateIndex, type CandidateNode } from './candidates';
 import { classifyIndustry } from './industry';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
@@ -305,6 +306,18 @@ export async function ingestContributionRows(
  * committee and therefore always traversable, so it is resolved as a recipient
  * regardless of which way the money went.
  */
+/**
+ * Whether a source calls an expenditure row a contribution to a candidate:
+ * Florida's type code `CAN`, or a purpose that says so. `CAN` rows carried a
+ * purpose like "CAMPAIGN CONTRIBUTION" or the race itself ("SENATE DISTRICT
+ * 10") on every one examined; MON and RMB rows to the same names were
+ * mileage and reimbursements.
+ */
+export function isCandidateContribution(typeCode: string | null, description: string | null): boolean {
+  if (typeCode?.toUpperCase() === 'CAN') return true;
+  return /\b(CONTRIBUTION|DONATION)\b/i.test(description ?? '');
+}
+
 export async function ingestTransactionRows(
   db: Db,
   rows: RawTransactionRow[],
@@ -343,6 +356,9 @@ export async function ingestTransactionRows(
         role: 'contributor',
         kindHint: row.counterpartyKind,
         payee: row.direction === 'expenditure',
+        payerIsCommittee: !!row.filerIsCommittee || !!row.filerTypeTag,
+        candidateContribution: isCandidateContribution(row.typeCode, row.description),
+        txnDate: row.date,
         city: row.city,
         state: row.state,
         zip: row.zip,
@@ -1680,6 +1696,241 @@ export async function backfillQuotes(db: Db, apply: boolean): Promise<QuoteRepor
            raw_to_name = ${fixed('raw_to_name')}
      WHERE ${hit('raw_from_name')} OR ${hit('raw_to_name')}
   `);
+  return report;
+}
+
+export interface CandidateAccountOptions {
+  apply: boolean;
+  /** Where a dry run writes the entities and rows it could not place. */
+  reviewPath?: string;
+  /** Where a dry run lists every entity it would fold or move rows off, and onto which node. */
+  movesPath?: string;
+}
+
+export interface CandidateAccountReport {
+  /** Entities named as a campaign ("X CAMPAIGN FUND", "X FOR STATE HOUSE") folded whole into their candidate. */
+  namedMerged: number;
+  namedDollars: number;
+  /** Bare-name twins whose committee-paid rows moved to the candidate. */
+  twinsTouched: number;
+  rowsMoved: number;
+  rowsDollars: number;
+  /** Twins left with no rows at all after the move, folded away. */
+  absorbed: number;
+  /** Entities or rows written to the review file. */
+  review: number;
+  /** Entities named for a federal race, which no Florida candidate node can hold. */
+  federal: number;
+}
+
+type TwinRow = {
+  id: string;
+  name: string;
+  kind: string;
+  given: string;
+  received: string;
+  first_seen: string | null;
+  last_seen: string | null;
+};
+
+/**
+ * Put committee money paid to a candidate onto the candidate.
+ *
+ * The resolver now sends a committee's or party's payee that names a
+ * candidate straight to the candidate node (`CandidateIndex`). This repairs
+ * what was loaded before it did, in two shapes:
+ *
+ * - An entity named as a campaign — "TOM LEEK CAMPAIGN", "ALLISON TANT
+ *   CAMPAIGN FUND", "SUSAN VALDES FOR STATE REP - DISTRICT 62" — is the
+ *   campaign account and nothing else. It folds into the candidate whole,
+ *   rows and spellings alike, when the office words and its dates pick one
+ *   node.
+ * - An entity carrying the bare person name is mixed. Rows paid to it by
+ *   committees and parties as candidate contributions (`CAN`, or a purpose
+ *   saying so) are the campaign's; rows paid by its own candidate node are
+ *   loan repayments to the person, rows it paid into that node are the
+ *   person's loans, and a committee's mileage or reimbursement line under the
+ *   name is a staffer who shares it. Only the contribution rows move, one by
+ *   one, each dated row picking the campaign it belongs to. A twin left
+ *   with no rows at all folds away too — without leaving its bare name as an
+ *   alias of the candidate, so the person's own giving under that name still
+ *   opens a person node.
+ *
+ * Anything the office words and dates cannot settle is written to the
+ * review file with every node it might be, and left alone. Registered
+ * committees and the candidates themselves are never candidates for this.
+ * Follow an apply with `pnpm ingest rebuild`: the moved rows meet the
+ * candidate's own filing of the same money, and the mirror pass collapses
+ * the pair.
+ */
+export async function backfillCandidateAccounts(
+  db: Db,
+  opts: CandidateAccountOptions,
+): Promise<CandidateAccountReport> {
+  const index = await CandidateIndex.load(db);
+  const report: CandidateAccountReport = {
+    namedMerged: 0,
+    namedDollars: 0,
+    twinsTouched: 0,
+    rowsMoved: 0,
+    rowsDollars: 0,
+    absorbed: 0,
+    review: 0,
+    federal: 0,
+  };
+  const review: string[] = [];
+  const moves: string[] = [];
+  const csv = (v: unknown) => {
+    const t = v == null ? '' : String(v);
+    return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const optionsText = (nodes: CandidateNode[]) =>
+    nodes.map((n) => `${n.id} ${n.name}${n.office ? ` [${n.office}]` : ''}`).join(' | ');
+
+  // Every unregistered non-candidate whose name could be a person's, with or
+  // without a campaign phrase around it. The index's own keys prefilter the
+  // bare names; the phrase-shaped set is wide (any "X FOR Y") and the index
+  // decides which of them name a candidate.
+  const twins = await db.execute<TwinRow>(sql`
+    SELECT e.id, e.name, e.kind::text AS kind, e.total_given::text AS given,
+           e.total_received::text AS received, e.first_seen::text AS first_seen, e.last_seen::text AS last_seen
+      FROM entities e
+     WHERE e.kind <> 'candidate'
+       AND NOT EXISTS (SELECT 1 FROM committee_registrations r WHERE r.entity_id = e.id)
+       AND (e.normalized_name = ANY(${sql.param(index.keys())}::text[])
+            OR e.normalized_name LIKE '%CAMPAIGN%' OR e.normalized_name LIKE '% FOR %'
+            OR e.normalized_name LIKE 'ELECT %' OR e.normalized_name LIKE 'RE ELECT %' OR e.normalized_name LIKE 'REELECT %'
+            OR e.normalized_name LIKE 'COMMITTEE TO %')
+  `);
+
+  let federal = 0;
+  for (const twin of twins) {
+    const hit = index.match(twin.name, null, { from: twin.first_seen, to: twin.last_seen });
+    if (hit.options.length === 0) continue;
+    if (hit.federal) {
+      // A congressional or presidential committee: Florida files no candidate
+      // node for it, so there is nothing to place it on and nothing to review.
+      federal++;
+      continue;
+    }
+
+    if (hit.parsed.named) {
+      const money = Number(twin.given) + Number(twin.received);
+      if (hit.node) {
+        report.namedMerged++;
+        report.namedDollars += money;
+        moves.push(
+          [twin.id, twin.name, twin.kind, 'fold whole', twin.given, twin.received, '', '', hit.node.id, hit.node.name, hit.node.office ?? '']
+            .map(csv)
+            .join(','),
+        );
+        if (opts.apply) await mergeEntities(db, hit.node.id, [twin.id]);
+      } else {
+        review.push(
+          [twin.id, twin.name, twin.kind, 'named campaign', twin.given, twin.received, '', '', twin.first_seen, twin.last_seen, optionsText(hit.options), '']
+            .map(csv)
+            .join(','),
+        );
+      }
+      continue;
+    }
+
+    // Bare person name: move the committee-paid rows only.
+    const rows = await db.execute<{ id: string; txn_date: string | null; amount: string }>(sql`
+      SELECT t.id, t.txn_date::text AS txn_date, t.amount::text AS amount
+        FROM transactions t JOIN entities f ON f.id = t.from_entity_id
+       WHERE t.to_entity_id = ${twin.id} AND t.direction = 'expenditure' AND f.kind IN ('committee', 'party')
+         AND (upper(t.txn_type_code) = 'CAN' OR t.inkind_description ~* '\\m(CONTRIBUTION|DONATION)\\M')
+    `);
+    if (rows.length === 0) continue;
+    const byNode = new Map<string, string[]>();
+    let ambiguous = 0;
+    let ambiguousDollars = 0;
+    let dollars = 0;
+    for (const r of rows) {
+      const m = index.match(twin.name, r.txn_date);
+      if (m.node) {
+        const list = byNode.get(m.node.id) ?? [];
+        list.push(r.id);
+        byNode.set(m.node.id, list);
+        dollars += Number(r.amount);
+      } else {
+        ambiguous++;
+        ambiguousDollars += Number(r.amount);
+      }
+    }
+    const moved = [...byNode.values()].reduce((n, l) => n + l.length, 0);
+    if (moved > 0) {
+      report.twinsTouched++;
+      report.rowsMoved += moved;
+      report.rowsDollars += dollars;
+      for (const [nodeId, ids] of byNode) {
+        const node = hit.options.find((n) => n.id === nodeId);
+        moves.push(
+          [twin.id, twin.name, twin.kind, 'move committee-paid rows', twin.given, twin.received, ids.length, dollars.toFixed(2), nodeId, node?.name ?? '', node?.office ?? '']
+            .map(csv)
+            .join(','),
+        );
+      }
+    }
+    if (ambiguous > 0) {
+      review.push(
+        [twin.id, twin.name, twin.kind, 'bare name', twin.given, twin.received, ambiguous, ambiguousDollars.toFixed(2), twin.first_seen, twin.last_seen, optionsText(hit.options), '']
+          .map(csv)
+          .join(','),
+      );
+    }
+    if (!opts.apply) {
+      // Nothing left means the twin would fold away; count it the same way.
+      const [left] = await db.execute<{ n: string }>(sql`
+        SELECT count(*)::text AS n FROM transactions WHERE from_entity_id = ${twin.id} OR to_entity_id = ${twin.id}
+      `);
+      if (moved > 0 && Number(left.n) === moved && byNode.size === 1) report.absorbed++;
+      continue;
+    }
+    for (const [nodeId, ids] of byNode) {
+      await db.execute(sql`
+        UPDATE transactions SET to_entity_id = ${nodeId} WHERE id = ANY(${sql.param(ids)}::uuid[])
+      `);
+    }
+    const [left] = await db.execute<{ n: string }>(sql`
+      SELECT count(*)::text AS n FROM transactions WHERE from_entity_id = ${twin.id} OR to_entity_id = ${twin.id}
+    `);
+    if (moved > 0 && Number(left.n) === 0 && byNode.size === 1) {
+      const [nodeId] = byNode.keys();
+      const [norm] = await db.execute<{ normalized_name: string }>(
+        sql`SELECT normalized_name FROM entities WHERE id = ${twin.id}`,
+      );
+      await mergeEntities(db, nodeId, [twin.id]);
+      // The merge pins the bare name onto the candidate; take that back, so
+      // the person's own giving under this name still opens a person node.
+      if (norm) {
+        await db.execute(sql`
+          DELETE FROM entity_aliases WHERE entity_id = ${nodeId} AND normalized_alias = ${norm.normalized_name} AND origin = 'resolved'
+        `);
+      }
+      report.absorbed++;
+    }
+  }
+
+  report.review = review.length;
+  report.federal = federal;
+  if (opts.reviewPath) {
+    const header = [
+      'entity_id', 'name', 'kind', 'shape', 'total_given', 'total_received', 'rows_unplaced', 'dollars_unplaced',
+      'first_seen', 'last_seen', 'candidate_options', 'decision',
+    ].join(',');
+    mkdirSync(dirname(opts.reviewPath), { recursive: true });
+    writeFileSync(opts.reviewPath, [header, ...review].join('\n') + '\n');
+  }
+  if (opts.movesPath) {
+    const header = [
+      'entity_id', 'name', 'kind', 'action', 'total_given', 'total_received', 'rows', 'dollars',
+      'candidate_id', 'candidate', 'candidate_office',
+    ].join(',');
+    mkdirSync(dirname(opts.movesPath), { recursive: true });
+    writeFileSync(opts.movesPath, [header, ...moves].join('\n') + '\n');
+  }
   return report;
 }
 

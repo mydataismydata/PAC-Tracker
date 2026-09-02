@@ -46,9 +46,54 @@ export type CorrectionEntry =
       date?: string;
       note: string;
     }
+  | {
+      /**
+       * Move a subset of one entity's rows onto another, picked by the feed
+       * they came from, the raw name on the row, and/or the payer's city.
+       * `to` is an existing entity ({id,name}) or one to converge on or
+       * create by name ({name,kind}). Aliases follow the rows unless
+       * `alias` is false.
+       */
+      op: 'split-rows';
+      from: Selector;
+      where: { source?: string; raw?: string; city?: string };
+      to: Selector & { kind?: EntityKind };
+      alias?: boolean;
+      date?: string;
+      note: string;
+    }
   | { op: 'set-kind'; entity: Selector; kind: EntityKind; date?: string; note: string }
-  | { op: 'rename'; entity: Selector; name: string; date?: string; note: string }
-  | { op: 'alias'; entity: Selector; alias: string; date?: string; note: string }
+  | {
+      /**
+       * `detach` also moves the matching identity: the normalized name
+       * follows the new spelling and the old one stops resolving here. For a
+       * bare name that belongs to no county in particular.
+       */
+      op: 'rename';
+      entity: Selector;
+      name: string;
+      detach?: boolean;
+      date?: string;
+      note: string;
+    }
+  | {
+      /** `jurisdiction` keys the alias the way a single-county feed does (`NAME @FL-DUVAL`). */
+      op: 'alias';
+      entity: Selector;
+      alias: string;
+      jurisdiction?: string;
+      date?: string;
+      note: string;
+    }
+  | {
+      /** Stop a spelling resolving to this entity; `jurisdiction` keys it like `alias` does. */
+      op: 'drop-alias';
+      entity: Selector;
+      alias: string;
+      jurisdiction?: string;
+      date?: string;
+      note: string;
+    }
   | { op: 'officer-alias'; alias: string; canonical: string; date?: string; note: string }
   | { op: 'manual-sql'; file: string; applied?: string; date?: string; note: string };
 

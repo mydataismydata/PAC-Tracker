@@ -27,6 +27,8 @@
  *                                                 (write it; review file; name-change file; review floor in dollars)
  *   pnpm ingest backfill-quotes                   # count stored names carrying the export's backslash ("Bono\'s")
  *   pnpm ingest backfill-quotes --apply           # strip it from entity names, aliases, and raw transaction names
+ *   pnpm ingest backfill-candidate-accounts       # dry run: committee money paid to a candidate's look-alike node, onto the candidate
+ *     --apply --review=.working/candidate-accounts-review.csv --moves=.working/candidate-accounts-moves.csv
  *   pnpm ingest collapse-mirrors                  # dry run of the mirror rule: committee-to-committee transfers filed by both sides
  *     --recipient-lag=60 --payer-lag=14 --scope=keepers --apply
  *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
@@ -63,6 +65,7 @@ import {
   backfillCommitteeKind,
   backfillContributorKind,
   backfillQuotes,
+  backfillCandidateAccounts,
   collapseMirrors,
   MIRROR_WINDOW,
   mergeEntities,
@@ -308,6 +311,22 @@ async function main() {
     }
     if (apply) console.log(`  ${report.applied} rows updated. Run \`pnpm ingest rebuild\`, then sync.`);
     else console.log(`  ${report.review} rows written to ${reviewPath}; name changes to ${namesPath}`);
+    process.exit(0);
+  }
+
+  if (mode === 'backfill-candidate-accounts') {
+    const apply = flags.apply === 'true';
+    const reviewPath = flags.review ?? '.working/candidate-accounts-review.csv';
+    const movesPath = apply ? undefined : (flags.moves ?? '.working/candidate-accounts-moves.csv');
+    console.log(apply ? 'Moving committee money onto candidates…' : 'Dry run: committee money that belongs on candidates');
+    const r = await backfillCandidateAccounts(db, { apply, reviewPath, movesPath });
+    console.log(`  ${r.namedMerged} entities named as a campaign ${apply ? 'folded' : 'would fold'} into their candidate, ${fmt(r.namedDollars)}`);
+    console.log(`  ${r.rowsMoved} committee-paid rows on ${r.twinsTouched} bare-name twins ${apply ? 'moved' : 'would move'}, ${fmt(r.rowsDollars)}`);
+    console.log(`  ${r.absorbed} of those twins ${apply ? 'had' : 'would have'} nothing left and ${apply ? 'folded' : 'would fold'} away`);
+    console.log(`  ${r.review} entities could not be placed; written to ${reviewPath}`);
+    if (r.federal > 0) console.log(`  ${r.federal} named for a federal race, left alone: Florida files no node for those`);
+    if (movesPath) console.log(`  every fold and move listed in ${movesPath}`);
+    if (apply) console.log('  Run `pnpm ingest rebuild`, then sync.');
     process.exit(0);
   }
 

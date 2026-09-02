@@ -38,6 +38,7 @@ import {
   REVIEW_FLOOR,
 } from '@/lib/normalize';
 import { classifyIndustry } from './industry';
+import { CandidateIndex, officeCodeFromName } from './candidates';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -59,6 +60,21 @@ export interface ResolveInput {
    * cannot place is an organization where a donor would be a person.
    */
   payee?: boolean;
+  /**
+   * The payer is a committee or party, so this payee is where a conduit's
+   * money went. A candidate's name here is the campaign account, and it
+   * resolves to the candidate node before any other lookup runs.
+   */
+  payerIsCommittee?: boolean;
+  /**
+   * The source calls this row a contribution to a candidate — Florida's
+   * expenditure type `CAN`, or a purpose reading CONTRIBUTION. A bare person
+   * name on a committee's payee line is the campaign only then; the same name
+   * on a mileage or reimbursement line is a staffer who shares it.
+   */
+  candidateContribution?: boolean;
+  /** Date of the row, for telling one person's campaigns apart. */
+  txnDate?: string | null;
   /** Office sought, when the source reports it. */
   office?: string | null;
   party?: string | null;
@@ -81,7 +97,7 @@ export interface ResolveResult {
   entityId: string;
   confidence: number;
   created: boolean;
-  method: 'cache' | 'exact' | 'alias' | 'prefix' | 'fuzzy' | 'created';
+  method: 'cache' | 'exact' | 'alias' | 'prefix' | 'fuzzy' | 'created' | 'candidate';
 }
 
 /** Rows the shortlist query returns. */
@@ -233,9 +249,16 @@ export function classifyContributor(
 export class EntityResolver {
   /** normalizedName -> entityId, scoped to one ingest run. */
   private cache = new Map<string, string>();
-  private stats = { cache: 0, exact: 0, alias: 0, prefix: 0, fuzzy: 0, created: 0 };
+  private stats = { cache: 0, exact: 0, alias: 0, prefix: 0, fuzzy: 0, created: 0, candidate: 0 };
+  /** Candidate nodes by person name, loaded the first time a committee's payee needs it. */
+  private candidates: CandidateIndex | null = null;
 
   constructor(private readonly db: Db) {}
+
+  private async candidateIndex(): Promise<CandidateIndex> {
+    if (!this.candidates) this.candidates = await CandidateIndex.load(this.db);
+    return this.candidates;
+  }
 
   getStats() {
     return { ...this.stats };
@@ -260,6 +283,21 @@ export class EntityResolver {
       input.jurisdictionCode && isGenericLocalOffice(bare)
         ? scopedName(bare, input.jurisdictionCode)
         : bare;
+
+    // 1. A committee's or party's payee that names a candidate is that
+    //    candidate's campaign account, whatever spelling the payer used. This
+    //    runs before the cache because the cache is keyed on the name alone,
+    //    and the same name on the contributor side is the person, not the
+    //    campaign: those rows keep resolving as they always did.
+    if (input.payee && input.payerIsCommittee) {
+      const hit = (await this.candidateIndex()).match(input.rawName, input.txnDate ?? null);
+      // A name written as a campaign is the campaign on any line; a bare
+      // person name is only when the row itself says it is a contribution.
+      if (hit.node && (hit.parsed.named || input.candidateContribution)) {
+        this.stats.candidate++;
+        return { entityId: hit.node.id, confidence: 1, created: false, method: 'candidate' };
+      }
+    }
 
     const cached = this.cache.get(normalized);
     if (cached) {
@@ -469,6 +507,17 @@ export class EntityResolver {
         sourceId: input.sourceId ?? null,
       })
       .returning({ id: entities.id });
+
+    if (kind === 'candidate') {
+      this.candidates?.add({
+        id: row.id,
+        name: displayName,
+        officeCode: officeCodeFromName(displayName),
+        office: input.office ?? null,
+        firstSeen: null,
+        lastSeen: null,
+      });
+    }
 
     await this.db
       .insert(entityAliases)

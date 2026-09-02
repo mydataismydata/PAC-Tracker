@@ -22,9 +22,15 @@
  *   {"op":"merge","keep":SEL,"lose":[SEL,...],"date":"...","note":"..."}
  *   {"op":"split","from":SEL,"city":"GOLDEN BEACH","name":"New Name",
  *    "kind":"individual","occupation":"...","date":"...","note":"..."}
+ *   {"op":"split-rows","from":SEL,"where":{"source":"voterfocus-duval",
+ *    "raw":"Republican Executive Committee","city":"..."},"to":SEL|{"name":"...","kind":"party"},
+ *    "alias":false,"date":"...","note":"..."}
  *   {"op":"set-kind","entity":SEL,"kind":"committee","date":"...","note":"..."}
- *   {"op":"alias","entity":SEL,"alias":"Spelling As Filed","date":"...","note":"..."}
- *   {"op":"rename","entity":SEL,"name":"Corrected Spelling","date":"...","note":"..."}
+ *   {"op":"alias","entity":SEL,"alias":"Spelling As Filed","jurisdiction":"FL-DUVAL",
+ *    "date":"...","note":"..."}
+ *   {"op":"drop-alias","entity":SEL,"alias":"Libertarian Party","date":"...","note":"..."}
+ *   {"op":"rename","entity":SEL,"name":"Corrected Spelling","detach":true,
+ *    "date":"...","note":"..."}
  *   {"op":"officer-alias","alias":"JONES WILLIAMS","canonical":"JONES WILLIAM",
  *    "date":"...","note":"..."}
  *   {"op":"manual-sql","file":"migrations/manual/x.sql","applied":"...","note":"..."}
@@ -32,21 +38,38 @@
  * A selector (SEL) names one entity: {"id":"<uuid>","name":"<expected name>"}.
  * The id is authoritative and the name is a safety assertion — if both are
  * given and the row's name does not match, the entry errors instead of
- * touching the wrong entity. Either may stand alone: a bare name must match
+ * touching the wrong entity. The assertion is met by the display name, any
+ * alias the entity carries, or a spelling a `rename` entry in this file gave
+ * or took from that id. Either may stand alone: a bare name must match
  * exactly one entity by normalized name; {"acct":"60724"} addresses a
  * committee by its state account number. On a database rebuilt from scratch
  * the ids differ, which is why every selector should carry the name too.
  *
+ * `split-rows` reattributes a subset of one entity's rows: those from one
+ * feed (`source` is a sources.key), carrying one raw spelling, and/or filed
+ * from one city. The target is an existing entity, or a name to converge on
+ * or create. The raw spellings of the moved rows become aliases of the
+ * target — keyed to the feed's county when the name is a bare local office —
+ * and leave the source entity once no row there carries them; `"alias":false`
+ * skips that when the spelling is too generic to pin anywhere.
+ *
+ * `rename` with `"detach":true` also moves the entity's matching identity to
+ * the new spelling and drops the old one, so a bare name ("Democratic
+ * Executive Committee") stops being a statewide answer. `alias` with a
+ * `jurisdiction` code pins the spelling the way a single-county feed keys it;
+ * `drop-alias` takes a spelling away again, which a merge can make necessary
+ * when the loser carried a bare name ("Libertarian Party") that must not
+ * become the survivor's.
+ *
  * `manual-sql` entries are the escape hatch for surgery the typed ops cannot
- * express (reattributing a subset of rows by raw name and source). They are
- * listed, never executed — run them through psql by hand.
+ * express. They are listed, never executed — run them through psql by hand.
  */
 
 import { existsSync } from 'node:fs';
 import { db } from '@/db';
 import { sql } from 'drizzle-orm';
 import { mergeEntities, splitEntity } from '@/lib/ingest/pipeline';
-import { normalizeName, unescapeQuotes } from '@/lib/normalize';
+import { isGenericLocalOffice, normalizeName, scopedName, unescapeQuotes } from '@/lib/normalize';
 import {
   CORRECTIONS_FILE,
   readCorrections,
@@ -72,6 +95,25 @@ type EntityRow = {
   kind: string;
 };
 
+/**
+ * Every spelling the log itself has given an id, through `rename` entries:
+ * the name asserted on the way in and the name given. An entry written before
+ * a rename still asserts the old spelling, and a detaching rename removes
+ * that spelling from the entity on purpose, so the assertion is satisfied by
+ * the log's own record of the rename as well as by the row.
+ */
+const RENAMED = new Map<string, Set<string>>();
+function recordRenames(entries: ReturnType<typeof readCorrections>): void {
+  for (const { entry } of entries) {
+    if (entry.op !== 'rename' || !entry.entity.id) continue;
+    const names = RENAMED.get(entry.entity.id) ?? new Set<string>();
+    for (const n of [entry.entity.name, entry.name]) {
+      if (n) names.add(normalizeName(unescapeQuotes(n)));
+    }
+    RENAMED.set(entry.entity.id, names);
+  }
+}
+
 /** Resolve a selector to a live entity, 'tombstoned', or null (absent). */
 async function resolve(
   sel: Selector,
@@ -91,6 +133,9 @@ async function resolve(
       const have = key(row.name);
       let asserted =
         !sel.name || key(sel.name) === have || (alsoAccept !== undefined && key(alsoAccept) === have);
+      if (!asserted && sel.name && RENAMED.get(sel.id)?.has(key(sel.name))) {
+        asserted = true;
+      }
       if (!asserted && sel.name) {
         const [alias] = await db.execute<{ id: string }>(sql`
           SELECT id FROM entity_aliases
@@ -219,6 +264,146 @@ async function runSplit(e: Extract<Entry, { op: 'split' }>): Promise<Outcome> {
   };
 }
 
+async function runSplitRows(e: Extract<Entry, { op: 'split-rows' }>): Promise<Outcome> {
+  const from = await resolve(e.from);
+  if (from === 'tombstoned') {
+    return {
+      status: 'error',
+      detail: `source entity ${show(e.from)} was merged away — repoint this entry at the survivor`,
+    };
+  }
+  if (!from) return { status: 'error', detail: `source entity ${show(e.from)} not found` };
+
+  const w = e.where ?? {};
+  if (!w.source && !w.raw && !w.city) {
+    return { status: 'error', detail: 'split-rows needs a source, a raw name, or a city to pick rows by' };
+  }
+  let sourceId: string | null = null;
+  let county: string | null = null;
+  if (w.source) {
+    const [s] = await db.execute<{ id: string; code: string | null }>(sql`
+      SELECT s.id, j.code FROM sources s LEFT JOIN jurisdictions j ON j.id = s.jurisdiction_id
+       WHERE s.key = ${w.source}
+    `);
+    if (!s) return { status: 'error', detail: `no source with key "${w.source}"` };
+    sourceId = s.id;
+    // Only a single-county feed scopes bare office names; the loader does the
+    // same (ingestTransactionRows sets jurisdictionCode for those alone).
+    county = s.code && s.code.startsWith('FL-') ? s.code : null;
+  }
+  const sourceFilter = sourceId ? sql`AND t.source_id = ${sourceId}` : sql``;
+  // The city lives on the payer side only, so a city filter picks payer rows.
+  const fromSide = sql`t.from_entity_id = ${from.id}
+    ${w.raw ? sql`AND upper(t.raw_from_name) = upper(${w.raw})` : sql``}
+    ${w.city ? sql`AND upper(t.from_city) = upper(${w.city})` : sql``}`;
+  const toSide = w.city
+    ? sql`false`
+    : sql`t.to_entity_id = ${from.id}
+    ${w.raw ? sql`AND upper(t.raw_to_name) = upper(${w.raw})` : sql``}`;
+  const rows = await db.execute<{ id: string; raw: string | null; amount: string }>(sql`
+    SELECT t.id,
+           CASE WHEN t.from_entity_id = ${from.id} THEN t.raw_from_name ELSE t.raw_to_name END AS raw,
+           t.amount
+      FROM transactions t
+     WHERE ((${fromSide}) OR (${toSide})) ${sourceFilter}
+  `);
+  const picked = [
+    w.source ? `from ${w.source}` : null,
+    w.raw ? `filed as "${w.raw}"` : null,
+    w.city ? `from ${w.city}` : null,
+  ]
+    .filter(Boolean)
+    .join(', ');
+  if (rows.length === 0) {
+    return { status: 'applied', detail: `"${from.name}" has no rows left ${picked}` };
+  }
+  const dollars = rows.reduce((a, r) => a + Number(r.amount), 0);
+
+  // The target: an existing entity by id, or a name to converge on or create.
+  let target: EntityRow | null = null;
+  if (e.to.id) {
+    const r = await resolve({ id: e.to.id, name: e.to.name });
+    if (r === 'tombstoned') {
+      return { status: 'error', detail: `target ${show(e.to)} was merged away — repoint this entry` };
+    }
+    if (!r) return { status: 'error', detail: `target ${show(e.to)} not found` };
+    target = r;
+  } else if (e.to.name) {
+    const r = await resolve({ name: e.to.name });
+    if (r && r !== 'tombstoned') target = r;
+    else if (!e.to.kind) {
+      return { status: 'error', detail: `"${e.to.name}" does not exist yet; give it a kind to create it` };
+    }
+  } else {
+    return { status: 'error', detail: 'split-rows needs a target: {id,name} or {name,kind}' };
+  }
+  if (target && target.id === from.id) {
+    return { status: 'error', detail: `target of split-rows is the source itself ("${from.name}")` };
+  }
+  const verb = target ? `onto "${target.name}"` : `onto new entity "${e.to.name}" (${e.to.kind})`;
+  if (!APPLY) {
+    return {
+      status: 'pending',
+      detail: `would move ${rows.length} row(s) ($${dollars.toFixed(2)}) ${picked} off "${from.name}" ${verb}`,
+    };
+  }
+
+  const ids = rows.map((r) => r.id);
+  let targetId: string;
+  if (target) {
+    targetId = target.id;
+    await db.execute(sql`
+      UPDATE transactions
+         SET from_entity_id = CASE WHEN from_entity_id = ${from.id} THEN ${targetId} ELSE from_entity_id END,
+             to_entity_id   = CASE WHEN to_entity_id   = ${from.id} THEN ${targetId} ELSE to_entity_id END
+       WHERE id = ANY(${sql.param(ids)}::uuid[])
+    `);
+  } else {
+    const created = await splitEntity(db, from.id, ids, {
+      name: e.to.name as string,
+      kind: e.to.kind as NonNullable<typeof e.to.kind>,
+    });
+    targetId = created.id;
+  }
+
+  // The spellings that travelled now resolve to the target, keyed the way the
+  // feed keys them, and stop resolving to the source once nothing there uses
+  // them. Registry-origin aliases on the source are the county index's own
+  // record and stay.
+  if (e.alias !== false) {
+    const raws = [...new Set(rows.map((r) => r.raw).filter((r): r is string => !!r))];
+    for (const raw of raws) {
+      const norm = normalizeName(raw);
+      if (!norm) continue;
+      const key = county && isGenericLocalOffice(norm) ? scopedName(norm, county) : norm;
+      await db.execute(sql`
+        INSERT INTO entity_aliases (entity_id, alias, normalized_alias, origin, confidence)
+        VALUES (${targetId}, ${raw}, ${key}, 'manual', 1)
+        ON CONFLICT (entity_id, normalized_alias) DO NOTHING
+      `);
+      const [left] = await db.execute<{ x: number }>(sql`
+        SELECT 1 AS x FROM transactions t
+         WHERE ((t.from_entity_id = ${from.id} AND upper(t.raw_from_name) = upper(${raw}))
+             OR (t.to_entity_id = ${from.id} AND upper(t.raw_to_name) = upper(${raw})))
+           ${sourceFilter}
+         LIMIT 1
+      `);
+      if (!left) {
+        await db.execute(sql`
+          DELETE FROM entity_aliases
+           WHERE entity_id = ${from.id}
+             AND normalized_alias = ANY(${sql.param([norm, key])}::text[])
+             AND origin <> 'registry'
+        `);
+      }
+    }
+  }
+  return {
+    status: 'pending',
+    detail: `moved ${rows.length} row(s) ($${dollars.toFixed(2)}) ${picked} off "${from.name}" ${verb}`,
+  };
+}
+
 async function runSetKind(e: Extract<Entry, { op: 'set-kind' }>): Promise<Outcome> {
   const row = await resolve(e.entity);
   if (row === 'tombstoned') {
@@ -264,6 +449,22 @@ async function runRename(e: Extract<Entry, { op: 'rename' }>): Promise<Outcome> 
   if (!APPLY) {
     return { status: 'pending', detail: `would rename "${row.name}" -> "${e.name}"` };
   }
+  if (e.detach) {
+    // The identity moves with the name: the old spelling was a bare office
+    // that belongs to no county in particular, and must not keep answering
+    // for this one. Feed-scoped aliases ("NAME @FL-STJOHNS") are untouched.
+    const [cur] = await db.execute<{ normalized_name: string }>(
+      sql`SELECT normalized_name FROM entities WHERE id = ${row.id}`,
+    );
+    await db.execute(sql`
+      UPDATE entities SET name = ${e.name}, normalized_name = ${normalizeName(e.name)}
+       WHERE id = ${row.id}
+    `);
+    await db.execute(sql`
+      DELETE FROM entity_aliases WHERE entity_id = ${row.id} AND normalized_alias = ${cur.normalized_name}
+    `);
+    return { status: 'pending', detail: `renamed "${row.name}" -> "${e.name}" and detached the old spelling` };
+  }
   await db.execute(sql`UPDATE entities SET name = ${e.name} WHERE id = ${row.id}`);
   // The corrected spelling resolves here from now on. The filed spelling
   // already does, through normalized_name and the observed alias, and both
@@ -286,20 +487,56 @@ async function runAlias(e: Extract<Entry, { op: 'alias' }>): Promise<Outcome> {
   if (!row) {
     return { status: 'error', detail: `entity ${show(e.entity)} not found` };
   }
-  const norm = normalizeName(e.alias);
+  if (e.jurisdiction) {
+    const [j] = await db.execute<{ id: string }>(
+      sql`SELECT id FROM jurisdictions WHERE code = ${e.jurisdiction}`,
+    );
+    if (!j) return { status: 'error', detail: `no jurisdiction with code "${e.jurisdiction}"` };
+  }
+  const norm = e.jurisdiction
+    ? scopedName(normalizeName(e.alias), e.jurisdiction)
+    : normalizeName(e.alias);
+  const shown = e.jurisdiction ? `"${e.alias}" @${e.jurisdiction}` : `"${e.alias}"`;
   const [hit] = await db.execute<{ id: string }>(sql`
     SELECT id FROM entity_aliases WHERE entity_id = ${row.id} AND normalized_alias = ${norm}
   `);
-  if (hit) return { status: 'applied', detail: `"${row.name}" already carries "${e.alias}"` };
+  if (hit) return { status: 'applied', detail: `"${row.name}" already carries ${shown}` };
   if (!APPLY) {
-    return { status: 'pending', detail: `would pin "${e.alias}" onto "${row.name}"` };
+    return { status: 'pending', detail: `would pin ${shown} onto "${row.name}"` };
   }
   await db.execute(sql`
     INSERT INTO entity_aliases (entity_id, alias, normalized_alias, origin, confidence)
     VALUES (${row.id}, ${e.alias}, ${norm}, 'manual', 1)
     ON CONFLICT (entity_id, normalized_alias) DO NOTHING
   `);
-  return { status: 'pending', detail: `pinned "${e.alias}" onto "${row.name}"` };
+  return { status: 'pending', detail: `pinned ${shown} onto "${row.name}"` };
+}
+
+async function runDropAlias(e: Extract<Entry, { op: 'drop-alias' }>): Promise<Outcome> {
+  const row = await resolve(e.entity);
+  if (row === 'tombstoned') {
+    return { status: 'applied', detail: `${show(e.entity)} was merged away; nothing to drop` };
+  }
+  if (!row) {
+    return { status: 'error', detail: `entity ${show(e.entity)} not found` };
+  }
+  const norm = e.jurisdiction
+    ? scopedName(normalizeName(e.alias), e.jurisdiction)
+    : normalizeName(e.alias);
+  const shown = e.jurisdiction ? `"${e.alias}" @${e.jurisdiction}` : `"${e.alias}"`;
+  const hits = await db.execute<{ id: string }>(sql`
+    SELECT id FROM entity_aliases WHERE entity_id = ${row.id} AND normalized_alias = ${norm}
+  `);
+  if (hits.length === 0) {
+    return { status: 'applied', detail: `"${row.name}" does not carry ${shown}` };
+  }
+  if (!APPLY) {
+    return { status: 'pending', detail: `would take ${shown} off "${row.name}"` };
+  }
+  await db.execute(sql`
+    DELETE FROM entity_aliases WHERE entity_id = ${row.id} AND normalized_alias = ${norm}
+  `);
+  return { status: 'pending', detail: `took ${shown} off "${row.name}"` };
 }
 
 async function runOfficerAlias(e: Extract<Entry, { op: 'officer-alias' }>): Promise<Outcome> {
@@ -359,6 +596,7 @@ async function main() {
     process.exit(1);
   }
 
+  recordRenames(entries);
   console.log(`${FILE}: ${entries.length} entries${APPLY ? '' : ' (dry run — pass --apply to act)'}\n`);
 
   let changed = 0;
@@ -374,9 +612,11 @@ async function main() {
       out =
         entry.op === 'merge' ? await runMerge(entry)
         : entry.op === 'split' ? await runSplit(entry)
+        : entry.op === 'split-rows' ? await runSplitRows(entry)
         : entry.op === 'set-kind' ? await runSetKind(entry)
         : entry.op === 'rename' ? await runRename(entry)
         : entry.op === 'alias' ? await runAlias(entry)
+        : entry.op === 'drop-alias' ? await runDropAlias(entry)
         : entry.op === 'officer-alias' ? await runOfficerAlias(entry)
         : entry.op === 'manual-sql' ? runManualSql(entry)
         : { status: 'error' as const, detail: `unknown op "${(entry as { op: string }).op}"` };
