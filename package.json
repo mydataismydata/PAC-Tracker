@@ -12,6 +12,7 @@
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:push": "drizzle-kit push",
     "ingest": "tsx --env-file-if-exists=.env scripts/ingest.ts",
+    "corrections": "tsx --env-file-if-exists=.env scripts/corrections.ts",
     "probe:voterfocus": "tsx --env-file-if-exists=.env scripts/probe-voterfocus.ts",
     "trace": "tsx scripts/trace.ts",
     "user": "tsx --env-file-if-exists=.env scripts/user.ts"
