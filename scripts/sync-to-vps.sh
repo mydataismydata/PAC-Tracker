@@ -171,7 +171,16 @@ Ship it:
   scp .exports/delta.sql.gz vps:~/PAC-Tracker/
 On the VPS:
   gunzip -c delta.sql.gz | docker exec -i pactracker-db psql -U pactracker -d pactracker -v ON_ERROR_STOP=1
+  docker compose run --rm cli ingest verify
   docker compose run --rm cli ingest rebuild
+
+The load runs in one transaction under ON_ERROR_STOP: if it prints ERROR it
+committed nothing and nothing landed — read the error, fix it, re-run. A clean
+exit means the whole delta applied, including the tombstone deletes.
+
+`ingest verify` then confirms no merged-away entity is still present or
+referenced — the Driskell block. It must say "clean". (rebuild runs the same
+check at its end, so a standalone verify is belt-and-suspenders.)
 
 The rebuild is not optional. Reattributing money leaves edge_rollups and
 entity_cycle_totals describing where it used to be.

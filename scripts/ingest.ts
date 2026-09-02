@@ -32,6 +32,8 @@
  *   pnpm ingest collapse-mirrors                  # dry run of the mirror rule: committee-to-committee transfers filed by both sides
  *     --recipient-lag=60 --payer-lag=14 --scope=keepers --apply
  *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
+ *   pnpm ingest verify                            # confirm no merged-away entity is still present or referenced
+ *                                                 (rebuild runs this at the end; on the VPS run it after loading a delta)
  *
  * Repairing resolution, once a human has confirmed what is what:
  *   pnpm ingest merge <keepId> <loserId> [...]   # fold duplicates into one entity
@@ -60,6 +62,7 @@ import {
   startRun,
   finishRun,
   rebuildAll,
+  verifyReferentialIntegrity,
   purgeSource,
   backfillIndustry,
   backfillCommitteeKind,
@@ -232,12 +235,19 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'verify') {
+    process.exit((await runVerify()) ? 0 : 1);
+  }
+
   if (mode === 'rebuild') {
     console.log('Rebuilding all edge rollups and totals…');
     const counts = await rebuildAll(db);
     console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
     await summarize();
-    process.exit(0);
+    // Every rebuild ends by confirming no merged-away reference survived — the
+    // check runs on the deployment box too, right after it loads a delta.
+    const clean = await runVerify();
+    process.exit(clean ? 0 : 1);
   }
 
   if (mode === 'backfill-industry') {
@@ -920,6 +930,32 @@ async function ingestCounty(slug: string, electionId?: string) {
       `${totalRepaired ? `, ${totalRepaired} back-labelled with their cycle` : ''}`,
   );
   await summarize();
+}
+
+/**
+ * Report the referential-integrity checks and say whether the graph is clean.
+ * Returns true when nothing is wrong. Used on its own (`ingest verify`) and at
+ * the end of every rebuild, on this Mac and on the deployment box.
+ */
+async function runVerify(): Promise<boolean> {
+  const report = await verifyReferentialIntegrity(db);
+  console.log('Referential integrity:');
+  for (const c of report.checks) {
+    const mark = c.count === 0 ? 'ok  ' : 'FAIL';
+    const eg = c.count > 0 ? `  e.g. ${c.examples.join(', ')}` : '';
+    console.log(`  [${mark}] ${c.name}: ${c.count}${eg}`);
+    if (c.count > 0) console.log(`         ${c.detail}`);
+  }
+  if (report.ok) {
+    console.log('  clean — no merged-away entity is still present or referenced.');
+  } else {
+    console.error(
+      '\nA tombstoned entity is still present or referenced. On the deployment box this\n' +
+        'blocks the tombstone delete and rolls back the whole load. Re-run the sync\n' +
+        '(scripts/sync-to-vps.sh repoints stragglers onto the survivor before deleting).',
+    );
+  }
+  return report.ok;
 }
 
 async function summarize() {
