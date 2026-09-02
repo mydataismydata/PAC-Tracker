@@ -7,6 +7,8 @@
  */
 
 import { sql, eq, and, isNull, inArray } from 'drizzle-orm';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
 import {
@@ -20,7 +22,13 @@ import {
   committeeOfficers,
   officerAliases,
 } from '@/db/schema';
-import { EntityResolver, refreshTraversability } from './resolve';
+import {
+  EntityResolver,
+  refreshTraversability,
+  classifyContributorDetailed,
+  STRONG_KIND_RULES,
+} from './resolve';
+import type { KindRule } from './resolve';
 import type { RawContributionRow, RegistryCommitteeDetail } from './fl-doe/parse';
 import type { RawTransactionRow } from './types';
 import { derivedCycleSql } from '@/lib/cycles';
@@ -30,7 +38,10 @@ import {
   officerKey,
   normalizeName,
   looksLikeCommittee,
+  personDisplayName,
+  unescapeQuotes,
 } from '@/lib/normalize';
+import { manualKindEntityIds } from '@/lib/corrections';
 import { classifyIndustry } from './industry';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
@@ -331,6 +342,7 @@ export async function ingestTransactionRows(
         rawName: row.counterpartyRaw,
         role: 'contributor',
         kindHint: row.counterpartyKind,
+        payee: row.direction === 'expenditure',
         city: row.city,
         state: row.state,
         zip: row.zip,
@@ -1272,6 +1284,388 @@ export async function backfillCommitteeKind(
   return { scanned, reclassified };
 }
 
+export interface ContributorKindOptions {
+  /** Write the changes. Off, the run only counts and writes the review file. */
+  apply: boolean;
+  /** Where a dry run writes the rows a person should look at. */
+  reviewPath?: string;
+  /** Where a dry run writes every display name it would change. */
+  namesPath?: string;
+  /**
+   * A flip settled by occupation or by default goes to review at or above
+   * this much money in and out. Flips settled by the name itself go at a
+   * million, as a spot check.
+   */
+  reviewFloor: number;
+}
+
+export interface ContributorKindReport {
+  scanned: number;
+  /** "organization -> individual (person-name)" → count. */
+  flips: Record<string, number>;
+  /** Flips by the source that created the entity. */
+  bySource: Record<string, number>;
+  /** Rows written to the review file. */
+  review: number;
+  /**
+   * The subset of `flips` on county-created rows settled by a weak rule.
+   * Their kind came from the filer's own type code, so every one is written
+   * to the review file, whatever the money.
+   */
+  county: Record<string, number>;
+  /** Rows left alone because a person set their kind in the corrections log. */
+  locked: number;
+  /** Display names that change, by how: restored as filed, or reordered from comma form. */
+  nameChanges: Record<string, number>;
+  applied: number;
+}
+
+const STRONG_REVIEW_FLOOR = 1_000_000;
+
+type KindRow = {
+  id: string;
+  name: string;
+  kind: string;
+  occupation: string | null;
+  source: string | null;
+  filed: string | null;
+  given: string;
+  received: string;
+};
+
+interface NameRow {
+  id: string;
+  from: string;
+  to: string;
+  name: string;
+  next: string;
+  filed: string;
+  how: string;
+}
+
+interface ReviewRow {
+  money: number;
+  id: string;
+  from: string;
+  to: string;
+  rule: KindRule;
+  tier: 'strong' | 'weak' | 'county';
+  name: string;
+  filed: string;
+  occupation: string | null;
+  source: string | null;
+  given: string;
+  received: string;
+}
+
+/** A corporate form after the comma: "…PARTNERS, LTD." reads best as filed. */
+const CORPORATE_LEAD = /,\s*(INC|LLC|LTD|LP|LLP|LLLP|PA|P\.A\.|PLLC|PL|PC|P\.C\.|CORP|CO|COMPANY|INCORPORATED|LIMITED)\b/i;
+
+/** "LAST, FIRST" turned around, as the old display logic did it; null without a comma. */
+function commaReorder(filed: string): string | null {
+  const m = filed.match(/^([^,]+),\s*(.+)$/);
+  return m ? `${m[2].trim()} ${m[1].trim()}`.replace(/\s+/g, ' ') : null;
+}
+
+function csvCell(v: unknown): string {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * Re-kind organization/individual contributors under the current
+ * `classifyContributor`.
+ *
+ * Florida's state feed writes a person as "LAST FIRST MIDDLE" with no comma,
+ * and until `classifyName` learned that shape every such donor whose
+ * occupation was not RETIRED, HOMEMAKER, ATTORNEY, PHYSICIAN or SELF-EMPLOYED
+ * landed as `organization`: 606,406 organizations against 72,518 individuals
+ * from that one source. The reverse mistake is rarer but costlier — a law
+ * firm filed as "RONALD BOOK, PA" with occupation ATTORNEY became a person,
+ * and the comma reorder that follows from that gave it the display name
+ * "PA RONALD BOOK".
+ *
+ * Only organization/individual rows are examined; committees, parties and
+ * candidates are left alone, as is anything holding a committee
+ * registration. Each row is judged from its as-filed spelling (the first
+ * alias) so that a reordered display name does not feed back into the
+ * decision. A row that never gave, only received, is a vendor, and a vendor
+ * the name cannot place is an organization. A display name is rewritten only
+ * when the old logic produced it, so a name set by hand — a split, a
+ * correction — is never clobbered; an organization that the old reorder
+ * garbled ("PA RONALD BOOK") gets its as-filed spelling back, while one it
+ * happened to improve ("USA, MURPHY") keeps the turned-around form. Rows
+ * settled by occupation or by default rather than by the name itself are
+ * written to the review file when enough money rides on them, with the rule
+ * that settled each, so a person can see what they are overriding. Every
+ * flip into committee is written regardless of money, as is every
+ * individual → organization flip that rests on weak evidence: both sets are
+ * small, and both change more than a label. A law firm going the same way on
+ * the strength of its "PA" is written at the ordinary floor rather than the
+ * million-dollar spot-check floor.
+ *
+ * County feeds carry a real contributor-type code, so a county-created row's
+ * kind is evidence, not a guess. A weak rule — occupation, a bare comma, a
+ * plain name — still applies, but every such row is written to the review
+ * file as `county`, whatever the money, so the person reviewing sees each
+ * one. The 2026-09-02 review went through all 880 of them.
+ *
+ * A row whose kind a person has set in `corrections/corrections.jsonl` is
+ * never touched, name included. That is what makes the review durable: a
+ * re-run after the classifier changes cannot undo a recorded judgement.
+ *
+ * Idempotent: a re-run after the fix finds nothing to flip.
+ */
+export async function backfillContributorKind(
+  db: Db,
+  opts: ContributorKindOptions,
+  onBatch?: (scanned: number) => void,
+): Promise<ContributorKindReport> {
+  const BATCH = 10_000;
+  let cursor = '00000000-0000-0000-0000-000000000000';
+  const report: ContributorKindReport = {
+    scanned: 0,
+    flips: {},
+    bySource: {},
+    review: 0,
+    county: {},
+    locked: 0,
+    nameChanges: {},
+    applied: 0,
+  };
+  const review: ReviewRow[] = [];
+  const names: NameRow[] = [];
+  let committees = 0;
+  const locked = await manualKindEntityIds(db);
+
+  for (;;) {
+    const rows = await db.execute<KindRow>(sql`
+      SELECT e.id, e.name, e.kind::text AS kind, e.occupation,
+             s.key AS source, a.alias AS filed,
+             e.total_given::text AS given, e.total_received::text AS received
+        FROM entities e
+        LEFT JOIN sources s ON s.id = e.source_id
+        LEFT JOIN LATERAL (
+          SELECT alias FROM entity_aliases
+           WHERE entity_id = e.id
+           ORDER BY created_at, id
+           LIMIT 1
+        ) a ON true
+       WHERE e.id > ${cursor}::uuid
+         AND e.kind IN ('organization', 'individual')
+         AND NOT EXISTS (SELECT 1 FROM committee_registrations r WHERE r.entity_id = e.id)
+       ORDER BY e.id
+       LIMIT ${BATCH}
+    `);
+    if (rows.length === 0) break;
+    cursor = rows[rows.length - 1].id;
+    report.scanned += rows.length;
+
+    const ids: string[] = [];
+    const kinds: string[] = [];
+    const fixes: string[] = [];
+    for (const row of rows) {
+      if (locked.has(row.id)) {
+        report.locked++;
+        continue;
+      }
+      const filed = (row.filed ?? row.name).trim();
+      const payee = Number(row.given) === 0 && Number(row.received) > 0;
+      const { kind, rule } = classifyContributorDetailed(filed, row.occupation, { payee });
+      const reordered = commaReorder(filed);
+      const mechanical = row.name === filed || row.name === reordered;
+      let display: string;
+      if (kind === 'individual') display = personDisplayName(filed);
+      else if (row.name === reordered && !CORPORATE_LEAD.test(filed)) display = row.name;
+      else display = filed;
+      const nameFix = display !== row.name && mechanical ? display : null;
+      if (kind === row.kind && nameFix === null) continue;
+
+      if (kind !== row.kind) {
+        const key = `${row.kind} -> ${kind} (${rule})`;
+        const src = row.source ?? 'none';
+        const money = Number(row.given) + Number(row.received);
+        const coded = src.startsWith('voterfocus');
+        const tier = STRONG_KIND_RULES.has(rule) ? 'strong' : coded ? 'county' : 'weak';
+        report.flips[key] = (report.flips[key] ?? 0) + 1;
+        report.bySource[src] = (report.bySource[src] ?? 0) + 1;
+        if (kind === 'committee') committees++;
+        if (tier === 'county') report.county[key] = (report.county[key] ?? 0) + 1;
+        const reverse = row.kind === 'individual' && kind === 'organization';
+        const always = tier === 'county' || kind === 'committee' || (reverse && tier === 'weak');
+        const floor = tier === 'strong' && !reverse ? STRONG_REVIEW_FLOOR : opts.reviewFloor;
+        if (always || money >= floor) {
+          review.push({
+            money,
+            id: row.id,
+            from: row.kind,
+            to: kind,
+            rule,
+            tier,
+            name: row.name,
+            filed,
+            occupation: row.occupation,
+            source: row.source,
+            given: row.given,
+            received: row.received,
+          });
+        }
+      }
+      if (nameFix !== null) {
+        const how = nameFix === filed ? 'restored as filed' : 'reordered from comma form';
+        report.nameChanges[how] = (report.nameChanges[how] ?? 0) + 1;
+        if (!opts.apply && opts.namesPath) {
+          names.push({ id: row.id, from: row.kind, to: kind, name: row.name, next: nameFix, filed, how });
+        }
+      }
+      ids.push(row.id);
+      kinds.push(kind);
+      fixes.push(nameFix ?? '');
+    }
+
+    if (opts.apply && ids.length > 0) {
+      await db.execute(sql`
+        UPDATE entities e
+           SET kind = v.kind::entity_kind,
+               name = COALESCE(NULLIF(v.name, ''), e.name),
+               updated_at = now()
+          FROM unnest(
+                 ${sql.param(ids)}::uuid[],
+                 ${sql.param(kinds)}::text[],
+                 ${sql.param(fixes)}::text[]
+               ) AS v(id, kind, name)
+         WHERE e.id = v.id
+      `);
+      report.applied += ids.length;
+    }
+    onBatch?.(report.scanned);
+  }
+
+  // A row that became a committee and also receives money should be
+  // crawlable, the same as after `backfillCommitteeKind`.
+  if (opts.apply && committees > 0) await refreshTraversability(db);
+
+  if (!opts.apply && opts.reviewPath) {
+    review.sort((a, b) => b.money - a.money);
+    const header = [
+      'entity_id', 'current_kind', 'proposed_kind', 'rule', 'tier', 'name', 'filed_as',
+      'occupation', 'source', 'total_given', 'total_received', 'decision',
+    ];
+    const lines = [header.join(',')];
+    for (const r of review) {
+      lines.push(
+        [r.id, r.from, r.to, r.rule, r.tier, r.name, r.filed, r.occupation, r.source, r.given, r.received, '']
+          .map(csvCell)
+          .join(','),
+      );
+    }
+    mkdirSync(dirname(opts.reviewPath), { recursive: true });
+    writeFileSync(opts.reviewPath, lines.join('\n') + '\n');
+    report.review = review.length;
+  }
+
+  if (!opts.apply && opts.namesPath) {
+    const lines = ['entity_id,current_kind,proposed_kind,name,proposed_name,filed_as,how'];
+    for (const n of names) {
+      lines.push([n.id, n.from, n.to, n.name, n.next, n.filed, n.how].map(csvCell).join(','));
+    }
+    mkdirSync(dirname(opts.namesPath), { recursive: true });
+    writeFileSync(opts.namesPath, lines.join('\n') + '\n');
+  }
+
+  return report;
+}
+
+export interface QuoteReport {
+  entities: number;
+  aliases: number;
+  /** Alias rows dropped because the entity already carried the clean spelling. */
+  aliasesDropped: number;
+  transactions: number;
+}
+
+/**
+ * Strip the backslash a PHP-style export puts before a quote ("Bono\'s Pit
+ * Bar-B-Q", "Marisa O\'Connor") from every stored name.
+ *
+ * The VoterFocus parser now does this on the way in (`unescapeQuotes`); this
+ * repairs what was loaded before it did — display names, the filed
+ * spellings in `entity_aliases`, and the raw names on transactions. The
+ * normalized forms are recomputed too: `normalizeName` reads "\'" as a
+ * word break and "'" as nothing ("BONO S" against "BONOS"), so an entity
+ * left with the escaped normalized name would never again match the clean
+ * spelling the parser now produces, and the next ingest would open a second
+ * node. An alias whose clean form the entity already carries is dropped
+ * rather than duplicated. The dedupe hash was computed from the escaped
+ * string and is left alone, so a re-ingest of the same filing still
+ * collapses onto its existing row.
+ */
+export async function backfillQuotes(db: Db, apply: boolean): Promise<QuoteReport> {
+  const bsq = "\\'";
+  const bsd = '\\"';
+  const hit = (col: string) =>
+    sql`(strpos(${sql.raw(col)}, ${bsq}) > 0 OR strpos(${sql.raw(col)}, ${bsd}) > 0)`;
+  const fixed = (col: string) =>
+    sql`replace(replace(${sql.raw(col)}, ${bsq}, ${"'"}), ${bsd}, ${'"'})`;
+
+  const ents = await db.execute<{ id: string; name: string }>(
+    sql`SELECT id, name FROM entities WHERE ${hit('name')}`,
+  );
+  const als = await db.execute<{ id: string; entity_id: string; alias: string }>(
+    sql`SELECT id, entity_id, alias FROM entity_aliases WHERE ${hit('alias')}`,
+  );
+  const [txn] = await db.execute<{ n: string }>(sql`
+    SELECT count(*)::text AS n FROM transactions
+     WHERE ${hit('raw_from_name')} OR ${hit('raw_to_name')}
+  `);
+  const report: QuoteReport = {
+    entities: ents.length,
+    aliases: als.length,
+    aliasesDropped: 0,
+    transactions: Number(txn?.n ?? 0),
+  };
+  if (!apply) return report;
+
+  if (ents.length > 0) {
+    const ids = ents.map((e) => e.id);
+    const names = ents.map((e) => unescapeQuotes(e.name));
+    const norms = names.map(normalizeName);
+    await db.execute(sql`
+      UPDATE entities e
+         SET name = v.name, normalized_name = v.norm, updated_at = now()
+        FROM unnest(
+               ${sql.param(ids)}::uuid[],
+               ${sql.param(names)}::text[],
+               ${sql.param(norms)}::text[]
+             ) AS v(id, name, norm)
+       WHERE e.id = v.id
+    `);
+  }
+  for (const a of als) {
+    const alias = unescapeQuotes(a.alias);
+    const norm = normalizeName(alias);
+    const [clash] = await db.execute<{ id: string }>(sql`
+      SELECT id FROM entity_aliases
+       WHERE entity_id = ${a.entity_id} AND normalized_alias = ${norm} AND id <> ${a.id}
+    `);
+    if (clash) {
+      await db.execute(sql`DELETE FROM entity_aliases WHERE id = ${a.id}`);
+      report.aliasesDropped++;
+    } else {
+      await db.execute(sql`
+        UPDATE entity_aliases SET alias = ${alias}, normalized_alias = ${norm} WHERE id = ${a.id}
+      `);
+    }
+  }
+  await db.execute(sql`
+    UPDATE transactions
+       SET raw_from_name = ${fixed('raw_from_name')},
+           raw_to_name = ${fixed('raw_to_name')}
+     WHERE ${hit('raw_from_name')} OR ${hit('raw_to_name')}
+  `);
+  return report;
+}
+
 /**
  * Pull a set of transactions off an entity and onto a new one.
  *
@@ -1296,7 +1690,7 @@ export async function splitEntity(
   txnIds: string[],
   fields: {
     name: string;
-    kind: 'individual' | 'organization' | 'committee' | 'candidate';
+    kind: 'individual' | 'organization' | 'committee' | 'candidate' | 'party';
     city?: string | null;
     stateCode?: string | null;
     zip?: string | null;

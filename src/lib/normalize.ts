@@ -8,6 +8,8 @@
  * makes the graph connected starts here.
  */
 
+import { FIRST_NAMES } from './first-names';
+
 /** Florida truncates the candidate/committee column at this width. */
 export const FL_NAME_TRUNCATION_WIDTH = 40;
 
@@ -57,6 +59,94 @@ const POLITICAL_SUFFIXES = new Set([
 
 /** Words dropped entirely when comparing — pure noise across all filings. */
 const STOPWORDS = new Set(['THE', 'OF', 'AND', 'A', 'AN']);
+
+/**
+ * Words that do not occur inside a person's name. One of them anywhere in a
+ * contributor string settles it as an organization before any person
+ * heuristic runs, which is what keeps "RONALD BOOK PA" a law firm when its
+ * occupation column says ATTORNEY.
+ *
+ * Words that double as surnames or given names are left out on purpose —
+ * PARK, GREEN, WEST, POWER, LAKE, CHURCH, MARINA. "PARK JAMES" has to resolve
+ * through JAMES, so those are kept out of the first-name list instead. AND is
+ * left out too: "SMITH JOHN AND MARY" is a couple, not a company.
+ */
+const ORG_WORDS = new Set([
+  ...CORPORATE_SUFFIXES,
+  ...POLITICAL_SUFFIXES,
+  'THE', 'OF', 'DBA', 'LLLP', 'PL', 'LIMITED', 'COMPANIES', 'BROS', 'BROTHERS', 'SONS',
+  'ASSOCIATION', 'ASSOCIATIONS', 'ASSN', 'ASSOC', 'ASSOCIATES', 'ALLIANCE', 'COALITION', 'COUNCIL',
+  'CHAMBER', 'COMMERCE', 'SOCIETY', 'LEAGUE', 'FEDERATION', 'INSTITUTE', 'FOUNDATION', 'UNION',
+  'LOCAL', 'BROTHERHOOD', 'PARTNERS', 'PARTNERSHIP', 'VENTURES', 'INVESTMENTS', 'MANAGEMENT',
+  'CONSULTING', 'CONSULTANTS', 'SERVICES', 'SYSTEMS', 'SOLUTIONS', 'TECHNOLOGY', 'TECHNOLOGIES',
+  'INDUSTRIES', 'INTERNATIONAL', 'GLOBAL', 'WORLDWIDE', 'COMMUNICATIONS', 'TELECOMMUNICATIONS',
+  'NETWORK', 'NETWORKS', 'MEDIA', 'ADVERTISING', 'PUBLISHING', 'PRINTING', 'SOFTWARE', 'DIGITAL',
+  'INTERACTIVE', 'ONLINE', 'INTERNET', 'WIRELESS', 'CABLE', 'BROADCASTING', 'TELEVISION',
+  'PROPERTIES', 'REALTY', 'REALTORS', 'HOMES', 'BUILDERS', 'CONSTRUCTION', 'CONTRACTORS',
+  'CONTRACTING', 'ENGINEERING', 'ENGINEERS', 'ARCHITECTS', 'DEVELOPMENT', 'DEVELOPERS',
+  'DISTRIBUTORS', 'DISTRIBUTING', 'DISTRIBUTION', 'MANUFACTURING', 'PRODUCTS', 'PRODUCTIONS',
+  'WHOLESALE', 'SUPPLY', 'SUPPLIES', 'EQUIPMENT', 'MOTORS', 'AUTOMOTIVE', 'TRUCKING', 'LOGISTICS',
+  'TRANSPORTATION', 'AVIATION', 'AIRLINES', 'RAILROAD', 'RESORT', 'RESORTS', 'HOTEL', 'HOTELS',
+  'RESTAURANT', 'RESTAURANTS', 'MARKETS', 'STORES', 'FOODS', 'SEAFOOD', 'BEVERAGE', 'BEVERAGES',
+  'BREWING', 'TOBACCO', 'GAMING', 'CASINO', 'ENTERTAINMENT', 'STUDIOS', 'ENERGY', 'ELECTRIC',
+  'UTILITIES', 'PETROLEUM', 'FARMS', 'RANCH', 'NURSERY', 'NURSERIES', 'AGRICULTURE', 'CITRUS',
+  'CATTLE', 'TIMBER', 'LUMBER', 'TITLE', 'MORTGAGE', 'LENDING', 'LEASING', 'RENTALS', 'STORAGE',
+  'SECURITY', 'STAFFING', 'PAYROLL', 'ACCOUNTING', 'ATTORNEYS', 'LAWYERS', 'LEGAL', 'ROOFING',
+  'PLUMBING', 'PAVING', 'CONCRETE', 'LANDSCAPING', 'HEALTH', 'HEALTHCARE', 'MEDICAL', 'DENTAL',
+  'CLINIC', 'HOSPITAL', 'PHARMACY', 'LABORATORIES', 'LABS', 'BANK', 'BANCORP', 'BANCSHARES',
+  'FINANCIAL', 'CAPITAL', 'CREDIT', 'FUNDS', 'INSURANCE', 'ASSURANCE', 'MUTUAL', 'UNIVERSITY',
+  'COLLEGE', 'SCHOOL', 'SCHOOLS', 'ACADEMY', 'MINISTRIES', 'BAPTIST', 'METHODIST', 'CATHOLIC',
+  'LUTHERAN', 'PRESBYTERIAN', 'EPISCOPAL', 'GOVERNMENT', 'GOVERNMENTAL', 'MUNICIPAL', 'STATE',
+  'COUNTY', 'CITY', 'VILLAGE', 'AUTHORITY', 'DISTRICT', 'DEPARTMENT', 'DEPT', 'BUREAU', 'AGENCY',
+  'BOARD', 'COMMISSION', 'OFFICE', 'TRIBE', 'TRIBAL', 'NATION', 'AMERICA', 'AMERICAS', 'AMERICAN',
+  'AMERICANS', 'NATIONAL', 'FLORIDA', 'FLORIDAS', 'FLORIDIANS', 'USA', 'US', 'SOUTHEAST',
+  'SOUTHEASTERN', 'SOUTHERN', 'NORTHERN', 'EASTERN', 'WESTERN', 'CENTRAL', 'GULF', 'ATLANTIC',
+  'PACIFIC', 'COAST', 'COASTAL', 'CITIZENS', 'VOTERS', 'TAXPAYERS', 'FAMILIES', 'PEOPLE',
+  'NEIGHBORS', 'COMMUNITY', 'COMMUNITIES', 'FRIENDS', 'DEMOCRACY', 'LEADERSHIP', 'LEADERS',
+  'FUTURE', 'VICTORY', 'PROSPERITY', 'VALUES', 'CONSERVATIVE', 'CONSERVATIVES', 'REPUBLICAN',
+  'REPUBLICANS', 'DEMOCRAT', 'DEMOCRATS', 'DEMOCRATIC', 'PARTY', 'PROJECT', 'ACTION', 'INITIATIVE',
+  'MOVEMENT', 'FIRST', 'HOME', 'WORLD', 'PLAZA', 'APARTMENTS', 'CONDOMINIUM', 'HOA',
+  // The vendor side: consultants, mail houses, printers, the IRS.
+  'STRATEGIES', 'STRATEGY', 'STRATEGIC', 'MESSAGING', 'COMMUNICATION', 'CONNECTIONS',
+  'RESEARCH', 'ANALYTICS', 'INTELLIGENCE', 'CREATIVE', 'DESIGN', 'DESIGNS', 'GRAPHICS',
+  'PRESS', 'MAIL', 'MAILING', 'MAILERS', 'POLITICS', 'CAMPAIGNS', 'ACCOUNT', 'ACCOUNTS',
+  'TRANSMITTAL', 'TREASURY', 'REVENUE', 'POSTAL', 'USPS', 'IRS', 'SERVICE', 'ADVISORS',
+  'ADVISORY', 'AFFAIRS', 'PLACEMENTS', 'VIDEO', 'PRODUCTION', 'MARKETING', 'PAYMENTS',
+  'PAYMENT', 'PROCESSING', 'MERCHANT', 'COM', 'NET', 'ORG', 'PIZZA', 'BBQ', 'SMOKEHOUSE',
+  'GRILL', 'CAFE', 'BAKERY', 'CATERING', 'DELI', 'DINER', 'PRINT', 'SIGNS', 'SIGN', 'BANNERS',
+  'APPAREL', 'UNIFORMS', 'RENTAL', 'EVENTS', 'EVENT', 'VENUE', 'LAWN', 'LANDSCAPE', 'PEST',
+  'CLEANING', 'MAINTENANCE', 'REPAIR', 'AUTO', 'TIRE', 'TIRES', 'PARTS', 'ELECTRONICS',
+  'COMPUTERS', 'TECH', 'SYSTEM', 'NEWSPAPER', 'NEWS', 'JOURNAL', 'GAZETTE', 'HERALD', 'TRIBUNE',
+  'RADIO', 'STATION', 'STUDIO', 'PHOTOGRAPHY', 'FILMS', 'MUSIC', 'QUARRIES', 'QUARRY', 'KENNEL',
+  'LOUNGE', 'FAMILY', 'CENTER', 'CENTRE', 'ISLAND', 'MAJORITY', 'MINORITY', 'CAUCUS', 'ASSEMBLY',
+  'ENTERPRISE', 'INDUSTRY', 'MANOR', 'ET', 'ETC', 'ESTATE', 'SALES', 'AVENUE', 'AVE', 'BLVD',
+  'BOULEVARD', 'HIGHWAY', 'HWY', 'SUITE', 'MAILROOM', 'TRAVEL', 'REDEVELOPMENT', 'CHAMPIONSHIPS',
+  'TOURNAMENT', 'FESTIVAL', 'EXPO', 'CONFERENCE', 'CONVENTION', 'SUMMIT', 'GALA', 'BANQUET',
+  'TICKETS', 'REGISTRATION', 'DUES', 'FEES', 'SUBSCRIPTION', 'HOSTING', 'WEBSITE', 'WEB',
+  'CLEANERS', 'PRINTERS', 'FLORIST', 'FLORISTS', 'CATERERS', 'MOVERS', 'MARKET', 'GROCERY',
+  'LIQUOR', 'LIQUORS', 'PUB', 'TAVERN', 'BREWERY', 'DISTILLERY', 'WINERY', 'BISTRO', 'EATERY',
+  'STEAKHOUSE', 'PIZZERIA', 'CANTINA', 'TRATTORIA', 'RISTORANTE', 'THERAPEUTICS', 'STADIUM',
+  'ARENA', 'OUTDOOR', 'MECHANICAL', 'UNIVERSAL', 'CHANNEL', 'SQUARED', 'PHARMACEUTICALS',
+  'BIOSCIENCES', 'CORPORATE', 'HEADQUARTERS', 'DEPOT', 'OFFICEMAX', 'REGENCY', 'PPLC',
+]);
+
+/** Tokens that only ever ride along on a person's name. */
+const PERSON_MARKERS = new Set([
+  'JR', 'SR', 'II', 'III', 'IV',
+  'MD', 'DDS', 'DMD', 'PHD', 'ESQ', 'CPA', 'DVM', 'RN', 'JD', 'MBA', 'RPH', 'DPM',
+  'DR', 'MR', 'MRS', 'MS',
+]);
+
+/**
+ * Undo the backslash a PHP-style export puts before a quote.
+ *
+ * VoterFocus ships "Bono\'s Pit Bar-B-Q" and "Marisa O\'Connor"; the backslash
+ * is the export's, not the filer's. Only quote escapes are undone. A stray
+ * backslash inside a name ("WE\EISHAUS AMY") is the filer's and stays.
+ */
+export function unescapeQuotes(raw: string): string {
+  return raw.replace(/\\(['"])/g, '$1');
+}
 
 /**
  * Strip the parenthetical type tag Florida appends to recipient names, e.g.
@@ -142,27 +232,91 @@ export function looksLikeCommittee(raw: string): boolean {
   return /\bPAC\b|\bCOMMITTEE\b/i.test(raw.trim());
 }
 
-/**
- * Heuristic: does this contributor string name a person rather than an org?
- *
- * Florida reports individuals as "LAST, FIRST" or "LAST, FIRST M" and reports
- * organizations as plain names. Occupation is a strong secondary signal but is
- * handled by the caller.
- */
-export function looksLikePerson(raw: string): boolean {
-  const s = raw.trim();
-  if (/\b(INC|LLC|CORP|COMPANY|PAC|COMMITTEE|ASSOCIATION|UNION|FUND|TRUST|LP|LLP)\b/i.test(s)) {
-    return false;
-  }
-  // "SMITH, JOHN" / "SMITH, JOHN A"
-  if (/^[A-Za-z'.\- ]+,\s*[A-Za-z][A-Za-z'.\- ]*$/.test(s)) return true;
-  return false;
+/** What a contributor string looks like on its own, before occupation is consulted. */
+export type NameShape = 'committee' | 'organization' | 'person' | 'person-comma' | 'unknown';
+
+function nameTokens(raw: string): string[] {
+  return (
+    normalizeName(raw)
+      // Punctuated forms come out of `normalizeName` letter by letter.
+      .replace(/\bL L L P\b/g, 'LLLP')
+      .replace(/\bP L L C\b/g, 'PLLC')
+      .replace(/\bL L C\b/g, 'LLC')
+      .replace(/\bL L P\b/g, 'LLP')
+      .replace(/\bD B A\b/g, 'DBA')
+      .replace(/\bM D\b/g, 'MD')
+      // "P.A." and "P.C." close a name; mid-name "P A" is initials.
+      .replace(/\b(P A|P C|P L|L C)$/, (m) => m.replace(' ', ''))
+      .split(' ')
+      .filter(Boolean)
+  );
 }
 
-/** Reorder "LAST, FIRST" into "FIRST LAST"; leave anything else untouched. */
+/**
+ * The words of a name that could belong to a person: two to six of them,
+ * letters only, none an organization word. Null for anything else.
+ */
+export function plainNameTokens(raw: string): string[] | null {
+  const tokens = nameTokens(raw);
+  if (tokens.length < 2 || tokens.length > 6) return null;
+  if (tokens.some((t) => ORG_WORDS.has(t) || /[0-9]/.test(t))) return null;
+  return tokens;
+}
+
+/**
+ * Florida's state feed writes a person as "LAST FIRST MIDDLE" with no comma;
+ * county feeds write "First Last" or "LAST, FIRST"; organizations are plain
+ * names in every feed. An organization word anywhere is decisive. A given
+ * name from `FIRST_NAMES` or a marker like JR or MD makes a person. A comma
+ * with neither is `person-comma`: almost always a person, but on the word of
+ * the punctuation alone. A name with none of these is left undecided for the
+ * caller's occupation check.
+ */
+export function classifyName(raw: string): NameShape {
+  const s = raw.trim();
+  if (looksLikeCommittee(s)) return 'committee';
+  const tokens = nameTokens(s);
+  if (tokens.length === 0) return 'unknown';
+  if (tokens.some((t) => ORG_WORDS.has(t) || /[0-9]/.test(t))) return 'organization';
+  const givenName = (ts: string[]) => ts.some((t) => PERSON_MARKERS.has(t) || FIRST_NAMES.has(t));
+  // "WEINSTEIN, PETER & BARBARA" is a couple; "RUMBERGER, KIRK & CALDWELL" is
+  // a firm. An ampersand joins people only when every side names one.
+  const sides = s.split(/\s*(?:&|\bAND\b)\s*/i);
+  if (sides.length > 1 && !sides.every((side) => givenName(nameTokens(side)))) return 'organization';
+  // "SMITH, JOHN" / "SMITH, J" / "SMITH JOHN, JR": one comma is a person in
+  // every feed, rare given names included — the state's expenditure export
+  // writes paid staff this way. The exception is a county filer's truncated
+  // "…Sales, In" or "…Redevelopment, LL".
+  const comma = s.match(/^[^,]+,\s*([^,]+)$/);
+  if (comma) {
+    const lead = nameTokens(comma[1])[0] ?? '';
+    if (lead === 'IN' || lead === 'LL') return 'organization';
+    return givenName(tokens) ? 'person' : 'person-comma';
+  }
+  if (tokens.length < 2 || tokens.length > 6) return 'unknown';
+  return givenName(tokens) ? 'person' : 'unknown';
+}
+
+/** Heuristic: does this contributor string name a person rather than an org? */
+export function looksLikePerson(raw: string): boolean {
+  const shape = classifyName(raw);
+  return shape === 'person' || shape === 'person-comma';
+}
+
+/**
+ * Reorder "LAST, FIRST" into "FIRST LAST"; leave anything else untouched.
+ *
+ * For a string the caller already knows names a person. Only a single comma
+ * marks the boundary, and only when a given name follows it: "SMITH JOHN, JR"
+ * and "STERLING JANNETT, D" already read last-name-first, and moving what
+ * follows the comma to the front would garble them, as would turning
+ * "MCCLAIN, ELIZABETH, A." around.
+ */
 export function personDisplayName(raw: string): string {
-  const m = raw.trim().match(/^([^,]+),\s*(.+)$/);
-  if (!m || !looksLikePerson(raw)) return raw.trim();
+  const m = raw.trim().match(/^([^,]+),\s*([^,]+)$/);
+  if (!m) return raw.trim();
+  const lead = nameTokens(m[2])[0] ?? '';
+  if (lead.length < 2 || PERSON_MARKERS.has(lead)) return raw.trim();
   return `${m[2].trim()} ${m[1].trim()}`.replace(/\s+/g, ' ');
 }
 

@@ -22,6 +22,11 @@
  *   pnpm ingest backfill-industry                # classify entities left over from before this existed
  *   pnpm ingest backfill-industry --force         # reclassify every entity (taxonomy changed)
  *   pnpm ingest backfill-committee-kind           # fix PACs stuck as "organization" from before classifyContributor knew better
+ *   pnpm ingest backfill-contributor-kind         # dry run: re-kind organization/individual contributors, write .working/kind-review.csv
+ *     --apply --review=<path> --names=<path> --min-review=10000
+ *                                                 (write it; review file; name-change file; review floor in dollars)
+ *   pnpm ingest backfill-quotes                   # count stored names carrying the export's backslash ("Bono\'s")
+ *   pnpm ingest backfill-quotes --apply           # strip it from entity names, aliases, and raw transaction names
  *
  * Repairing resolution, once a human has confirmed what is what:
  *   pnpm ingest merge <keepId> <loserId> [...]   # fold duplicates into one entity
@@ -53,6 +58,8 @@ import {
   purgeSource,
   backfillIndustry,
   backfillCommitteeKind,
+  backfillContributorKind,
+  backfillQuotes,
   mergeEntities,
   splitEntity,
 } from '@/lib/ingest/pipeline';
@@ -247,6 +254,67 @@ async function main() {
       if (scanned % 50_000 === 0) console.log(`  ${scanned} scanned…`);
     });
     console.log(`  ${result.scanned} scanned, ${result.reclassified} reclassified to committee`);
+    process.exit(0);
+  }
+
+  if (mode === 'backfill-contributor-kind') {
+    const apply = flags.apply === 'true';
+    const reviewPath = flags.review ?? '.working/kind-review.csv';
+    const namesPath = flags.names ?? '.working/kind-names.csv';
+    const reviewFloor = Number(flags['min-review'] ?? 10_000);
+    console.log(
+      apply
+        ? 'Re-kinding organization/individual contributors…'
+        : `Dry run — flips at or above ${fmt(reviewFloor)} go to ${reviewPath}`,
+    );
+    const report = await backfillContributorKind(
+      db,
+      {
+        apply,
+        reviewPath: apply ? undefined : reviewPath,
+        namesPath: apply ? undefined : namesPath,
+        reviewFloor,
+      },
+      (scanned) => {
+        if (scanned % 100_000 === 0) console.log(`  ${scanned} scanned…`);
+      },
+    );
+    console.log(`  ${report.scanned} scanned`);
+    for (const [k, n] of Object.entries(report.flips).sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${String(n).padStart(8)}  ${k}`);
+    }
+    console.log('  by the source that created the entity:');
+    for (const [k, n] of Object.entries(report.bySource).sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${String(n).padStart(8)}  ${k}`);
+    }
+    const countyRows = Object.values(report.county).reduce((s, n) => s + n, 0);
+    if (countyRows > 0) {
+      console.log(`  of which county-coded rows a weak rule flips, every one listed for review (${countyRows}):`);
+      for (const [k, n] of Object.entries(report.county).sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${String(n).padStart(8)}  ${k}`);
+      }
+    }
+    if (report.locked > 0) {
+      console.log(`  ${report.locked} left alone: kind set by a person in corrections/corrections.jsonl`);
+    }
+    console.log(`  display names ${apply ? 'changed' : 'that would change'}:`);
+    for (const [k, n] of Object.entries(report.nameChanges).sort((a, b) => b[1] - a[1])) {
+      console.log(`  ${String(n).padStart(8)}  ${k}`);
+    }
+    if (apply) console.log(`  ${report.applied} rows updated. Run \`pnpm ingest rebuild\`, then sync.`);
+    else console.log(`  ${report.review} rows written to ${reviewPath}; name changes to ${namesPath}`);
+    process.exit(0);
+  }
+
+  if (mode === 'backfill-quotes') {
+    const apply = flags.apply === 'true';
+    const r = await backfillQuotes(db, apply);
+    console.log(
+      `  ${apply ? 'fixed' : 'would fix'} ${r.entities} entity names, ${r.aliases} aliases` +
+        `${apply ? ` (${r.aliasesDropped} dropped as already carried clean)` : ''}, ` +
+        `${r.transactions} transactions' raw names`,
+    );
+    if (apply) console.log('  Nothing to rebuild. Sync when ready.');
     process.exit(0);
   }
 
