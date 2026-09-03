@@ -63,7 +63,7 @@ const LINK_MODES: { value: LinkMode; label: string; hint: string }[] = [
   {
     value: 'registration',
     label: 'Registration links',
-    hint: 'Hop on shared officers instead of money: every committee naming the same chair or treasurer. Reaches committees with no payment between them, then draws the money that does move inside the network. Dashed lines are paperwork, not payments.',
+    hint: 'Hop on shared officers instead of money: every entity naming the same person — a chair or treasurer of a committee, or a registered agent or board member of a corporation. Reaches entities with no payment between them, then draws the money that does move inside the network. Dashed lines are paperwork, not payments.',
   },
 ];
 

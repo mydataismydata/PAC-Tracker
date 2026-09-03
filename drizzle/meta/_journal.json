@@ -71,6 +71,13 @@
       "when": 1787969381454,
       "tag": "0009_touch_entities_updated_at",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788460909509,
+      "tag": "0010_numerous_sunspot",
+      "breakpoints": true
     }
   ]
 }

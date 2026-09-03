@@ -407,6 +407,11 @@ export const officerRole = pgEnum('officer_role', [
   'treasurer',
   'deputy_treasurer',
   'registered_agent',
+  // A director or board member of a corporation, from its Division of
+  // Corporations record. Not a campaign-committee appointment — but it links
+  // the corporation to everything else the same person governs, exactly as a
+  // shared treasurer links committees.
+  'director',
   'other',
 ]);
 
@@ -563,6 +568,56 @@ export const committeeOfficers = pgTable(
     // The clustering lookup: every committee this person is named on.
     index('committee_officers_name_idx').on(t.normalizedName),
   ],
+);
+
+/**
+ * What an entity is when it is a corporation rather than a campaign committee.
+ *
+ * A nonprofit that moves political money — a 501(c)(4), say — files with the
+ * Division of Corporations and the IRS, not the Division of Elections. Its
+ * donors are not disclosed, so the graph cannot trace behind it. Its
+ * governance is public though, and that is the useful part: the registered
+ * agent and the board are what tie these shells to each other and to the
+ * people who run them. This holds that corporate and Form 990 record, kept
+ * apart from `committee_registrations` because the source is different in kind.
+ */
+export const orgProfiles = pgTable(
+  'org_profiles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    entityId: uuid('entity_id')
+      .notNull()
+      .references(() => entities.id, { onDelete: 'cascade' }),
+
+    /** e.g. "Florida Not-For-Profit Corporation". */
+    corpType: text('corp_type'),
+    /** e.g. "501(c)(4)". */
+    taxStatus: text('tax_status'),
+    /** True when the org files with the IRS as a 527 political organization. */
+    is527: boolean('is_527'),
+    ein: text('ein'),
+    /** The Division of Corporations document number. */
+    docNumber: text('doc_number'),
+    status: text('status'),
+    filedDate: date('filed_date'),
+    address: text('address'),
+    registeredAgent: text('registered_agent'),
+    /** The organization's stated mission, from its Form 990. */
+    mission: text('mission'),
+    website: text('website'),
+
+    /** Board of directors: `[{ name, title }]`. */
+    board: jsonb('board').$type<{ name: string; title?: string }[]>(),
+    /** Form 990 figures by year, e.g. `{ revenue: { "2024": 2135289 }, ... }`. */
+    financials: jsonb('financials').$type<Record<string, Record<string, number>>>(),
+    /** True when the 990 Schedule B (contributors) is withheld from the public copy. */
+    donorsRestricted: boolean('donors_restricted'),
+
+    note: text('note'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('org_profiles_entity_key').on(t.entityId)],
 );
 
 /**
