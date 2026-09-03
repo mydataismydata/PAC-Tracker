@@ -202,14 +202,21 @@ async function main() {
       console.error('use --election=<id> (with the equals sign), e.g. --election=33');
       process.exit(1);
     }
-    if (flags.all === 'true') await ingestCountyHistory(term || 'stjohns');
-    else await ingestCounty(term || 'stjohns', flags.election);
+    if (flags.all === 'true') {
+      // A full-history sweep rebuilds inline; verify the result the way
+      // `ingest rebuild` does, so a sweep can't leave a merged-away reference
+      // behind unnoticed.
+      await ingestCountyHistory(term || 'stjohns');
+      process.exit((await runVerify()) ? 0 : 1);
+    }
+    await ingestCounty(term || 'stjohns', flags.election);
     process.exit(0);
   }
 
   if (mode === 'cycle') {
     await ingestCycle(term || election, fl, { sourceId, jurisdictionId }, resolver);
-    process.exit(0);
+    // The sweep rebuilds inline; verify like `ingest rebuild` does.
+    process.exit((await runVerify()) ? 0 : 1);
   }
 
   if (mode === 'irs') {
