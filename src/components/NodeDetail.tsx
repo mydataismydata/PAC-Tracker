@@ -23,6 +23,8 @@ import {
 } from '@/lib/graph/types';
 import { useTrace, type TraceResult } from '@/lib/graph/useTrace';
 import type { EntityOfficer, OfficerSubject } from '@/lib/graph/useOfficers';
+import { useOrgProfile } from '@/lib/graph/useOfficers';
+import { officerRoleLabel } from '@/lib/graph/orgProfile';
 import {
   isSourceRow,
   useLedger,
@@ -129,6 +131,9 @@ export default function NodeDetail({
   // routes the hooks; everything below is identical either way.
   const officerHub = node !== null && isOfficerNode(node.id);
   const subjectId = node?.id ?? null;
+  // The corporate / Form 990 record, when this entity is a nonprofit rather
+  // than a campaign committee. Absent for officer hubs and ordinary nodes.
+  const orgProfile = useOrgProfile(officerHub ? null : subjectId);
 
   const query = useMemo(
     () => ({ view, direction, q, sort, cycle, dateFrom, dateTo }),
@@ -328,6 +333,63 @@ export default function NodeDetail({
         </p>
       )}
 
+      {/* A corporation, not a campaign committee: what it is, who runs it, and
+          the fact that its donors are not disclosed. Shown on every screen —
+          this is the point the panel exists to make for a node like this. */}
+      {orgProfile && (
+        <div className="space-y-1.5 border-b border-slate-800 px-4 pb-3 pt-3 text-[12px] lg:text-[11px]">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="rounded bg-amber-900/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-300">
+              {orgProfile.taxStatus ?? orgProfile.corpType ?? 'Organization'}
+            </span>
+            {orgProfile.donorsRestricted && (
+              <span className="text-[10px] text-amber-400/80" title="Donors are not disclosed anywhere">
+                donors undisclosed
+              </span>
+            )}
+          </div>
+          {orgProfile.mission && <p className="text-slate-300">{orgProfile.mission}</p>}
+          <dl className="space-y-0.5 text-slate-400">
+            {orgProfile.corpType && (
+              <div>
+                <span className="text-slate-600">Type </span>
+                {orgProfile.corpType}
+                {orgProfile.status ? ` · ${orgProfile.status}` : ''}
+              </div>
+            )}
+            {orgProfile.ein && (
+              <div>
+                <span className="text-slate-600">EIN </span>
+                {orgProfile.ein}
+                {orgProfile.docNumber ? ` · Doc ${orgProfile.docNumber}` : ''}
+              </div>
+            )}
+            {orgProfile.registeredAgent && (
+              <div>
+                <span className="text-slate-600">Registered agent </span>
+                {orgProfile.registeredAgent}
+              </div>
+            )}
+            {orgProfile.board && orgProfile.board.length > 0 && (
+              <div>
+                <span className="text-slate-600">Board </span>
+                {orgProfile.board
+                  .map((b) => (b.title ? `${b.name} (${b.title})` : b.name))
+                  .join(', ')}
+              </div>
+            )}
+            {orgProfile.financials?.revenue && (
+              <div>
+                <span className="text-slate-600">990 revenue </span>
+                {Object.entries(orgProfile.financials.revenue)
+                  .map(([y, v]) => `${y}: ${formatMoney(v)}`)
+                  .join(' · ')}
+              </div>
+            )}
+          </dl>
+        </div>
+      )}
+
       {/* ------------------------------------------------------------ header */}
       {/* Phones only. The bar over the canvas carries all of this on a wide
           screen, where it would otherwise cost a third of the panel. */}
@@ -342,7 +404,7 @@ export default function NodeDetail({
                   key={`${o.role}-${o.normalizedName}`}
                   className="flex items-baseline gap-1.5 text-[13px] lg:text-[11px]"
                 >
-                  <span className="w-14 shrink-0 capitalize text-slate-600">{o.role}</span>
+                  <span className="w-24 shrink-0 text-slate-600">{officerRoleLabel(o.role)}</span>
                   <button
                     type="button"
                     onClick={() => onFocus(o.nodeId, { officer: { name: o.fullName, role: o.role } })}

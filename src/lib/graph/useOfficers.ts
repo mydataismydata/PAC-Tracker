@@ -62,3 +62,26 @@ export function useOfficers(entityId: string | null) {
   // subject, so a stale list would otherwise flash under a new name.
   return entityId ? officers : [];
 }
+
+/** The corporate / Form 990 profile for an entity, or null when it has none. */
+export function useOrgProfile(entityId: string | null) {
+  const [profile, setProfile] = useState<import('@/lib/graph/orgProfile').OrgProfile | null>(null);
+
+  useEffect(() => {
+    setProfile(null);
+    if (!entityId) return;
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch(`/api/entities/${entityId}/profile`, { signal: controller.signal });
+        if (!res.ok) return;
+        setProfile((await res.json()).profile ?? null);
+      } catch {
+        // A missing profile just means no org block; not an error state.
+      }
+    })();
+    return () => controller.abort();
+  }, [entityId]);
+
+  return entityId ? profile : null;
+}

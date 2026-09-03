@@ -37,6 +37,9 @@ import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
 import { OFFICER_NODE_PREFIX, isOfficerNode } from './types';
 
+/** Officer roles that create a shared-officer (registration) link. */
+type OfficerBasis = 'chair' | 'treasurer' | 'registered_agent' | 'director';
+
 type Db = PostgresJsDatabase<typeof schema>;
 
 export type Direction = 'upstream' | 'downstream' | 'both';
@@ -108,7 +111,7 @@ export interface GraphEdge {
    */
   kind: 'money' | 'registration';
   /** Registration edges only: the role held in common. */
-  basis?: 'chair' | 'treasurer';
+  basis?: OfficerBasis;
   /** Registration edges only: who, for the label. */
   sharedWith?: string;
 }
@@ -253,7 +256,7 @@ async function fetchNeighbors(
 interface RegistrationRow extends Record<string, unknown> {
   from_id: string;
   neighbor_id: string;
-  basis: 'chair' | 'treasurer';
+  basis: OfficerBasis;
   /** Normalized key — the thing that actually matched. */
   shared_key: string;
   /** As filed, for display. */
@@ -330,7 +333,7 @@ async function fetchRegistrationNeighbors(
           JOIN entities n ON n.id = o2.entity_id
          WHERE o1.entity_id = f.id
            AND o1.is_current
-           AND o1.role IN ('chair', 'treasurer')
+           AND o1.role IN ('chair', 'treasurer', 'registered_agent', 'director')
          ORDER BY n.total_received DESC NULLS LAST
          LIMIT ${opts.maxPerNode}
       ) AS hop
