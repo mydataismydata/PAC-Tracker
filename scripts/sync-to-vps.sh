@@ -116,9 +116,10 @@ TXN_SET=$(setclause transactions)
   echo "  ON CONFLICT (id) DO UPDATE SET $TXN_SET;"
   echo "DROP TABLE _sync_transactions;"
 
-  # Registrations and officers mutate in place (is_current flips), so replace
-  # them wholesale rather than trying to diff. Both are under 2 MB.
-  for t in committee_registrations committee_officers officer_aliases; do
+  # Registrations, officers, and org profiles mutate in place (is_current flips,
+  # a 990 figure is revised), so replace them wholesale rather than trying to
+  # diff. All are small. Their rows reference entities, which are already loaded.
+  for t in committee_registrations committee_officers officer_aliases org_profiles; do
     echo "TRUNCATE $t CASCADE;"
     echo "COPY $t FROM stdin;"
     copy "SELECT * FROM $t"
