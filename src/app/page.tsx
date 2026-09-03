@@ -929,7 +929,6 @@ export default function Home() {
                   direction={direction}
                   onDirectionChange={setDirection}
                   officers={searchedOfficers}
-                  onOpenOfficer={(nodeId, officer) => void handleFocusEntity(nodeId, { officer })}
                   onFindRegistrations={handleFindRegistrations}
                   registrationsOn={settings.linkMode === 'registration'}
                 />
@@ -1197,7 +1196,6 @@ function SubjectBar({
   direction,
   onDirectionChange,
   officers,
-  onOpenOfficer,
   onFindRegistrations,
   registrationsOn,
 }: {
@@ -1217,8 +1215,8 @@ function SubjectBar({
   given: string;
   direction: LedgerDirection;
   onDirectionChange: (d: LedgerDirection) => void;
+  /** Only the count is read now — whether there is anyone to hop on. */
   officers: EntityOfficer[];
-  onOpenOfficer: (nodeId: string, officer: { name: string; role: string }) => void;
   onFindRegistrations: () => void;
   registrationsOn: boolean;
 }) {
@@ -1320,37 +1318,12 @@ function SubjectBar({
             </span>
           )}
 
-          {/* Who runs it, and the one question that always follows, on the same
-              line as the names it acts on. Absent where the state recorded no
-              officers, since there is then nothing to hop on. */}
+          {/* The one question the officers always prompt, without the roster
+              itself — the chair and treasurer now live in the panel, beside
+              the rest of this entity's detail. Absent where the state recorded
+              no officers, since there is then nothing to hop on. */}
           {officers.length > 0 && (
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
-              {officers.map((o) => (
-                <span
-                  key={`${o.role}-${o.normalizedName}`}
-                  className="flex items-baseline gap-1.5 text-[11px]"
-                >
-                  <span className="shrink-0 capitalize text-slate-600">{o.role}</span>
-                  <button
-                    type="button"
-                    onClick={() => onOpenOfficer(o.nodeId, { name: o.fullName, role: o.role })}
-                    className="max-w-[12rem] truncate text-left text-violet-300 hover:text-violet-200
-                               hover:underline"
-                    title="Open this person and everything their committees raised"
-                  >
-                    {o.fullName}
-                  </button>
-                  <span
-                    className={`shrink-0 tabular-nums ${
-                      o.committees >= 25 ? 'text-slate-600' : 'text-violet-400'
-                    }`}
-                    title={`Named on ${committeeCount(o.committees)}`}
-                  >
-                    ×{o.committees}
-                  </span>
-                </span>
-              ))}
-
               <button
                 type="button"
                 onClick={onFindRegistrations}

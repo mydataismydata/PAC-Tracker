@@ -15,6 +15,7 @@ import {
   committeeCount,
   formatMoney,
   formatMoneyFull,
+  industryLabel,
   kindLabel,
   isOfficerNode,
   kindColor,
@@ -185,6 +186,21 @@ export default function NodeDetail({
   }
 
   const slug = node.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+  // The one-line identity of whatever is open, for the panel header on a wide
+  // screen: type, office, where it is, and the sector it was classified into.
+  // A hub is a person, so it reads as an office and a committee count instead.
+  const detailMeta = officerHub
+    ? `${node.office ?? 'officer'}${subject ? ` · named on ${committeeCount(subject.committees)}` : ''}`
+    : [
+        kindLabel(node),
+        node.office,
+        node.status === 'closed' ? 'closed' : null,
+        node.city ? `${node.city}, ${node.stateCode ?? ''}` : null,
+        industryLabel(node),
+      ]
+        .filter(Boolean)
+        .join(' · ');
 
   const exportLedgerCsv = async () => {
     setExporting(true);
@@ -390,45 +406,51 @@ export default function NodeDetail({
         </div>
       )}
 
+      {/* Who runs a committee — chair and treasurer — in the same spot a
+          nonprofit shows its board, and on every screen for the same reason.
+          Each name links to the other committees naming that person, which is
+          the question it always prompts. Suppressed where an org profile is
+          already listing the governance, so the two never double up. */}
+      {!orgProfile && officers.length > 0 && (
+        <div className="border-b border-slate-800 px-4 pb-3 pt-3">
+          <span className="mb-1.5 block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+            Who runs it
+          </span>
+          <ul className="space-y-0.5">
+            {officers.map((o) => (
+              <li
+                key={`${o.role}-${o.normalizedName}`}
+                className="flex items-baseline gap-1.5 text-[13px] lg:text-[11px]"
+              >
+                <span className="w-24 shrink-0 text-slate-600">{officerRoleLabel(o.role)}</span>
+                <button
+                  type="button"
+                  onClick={() => onFocus(o.nodeId, { officer: { name: o.fullName, role: o.role } })}
+                  className="min-w-0 flex-1 truncate text-left text-slate-300 hover:text-violet-300
+                             hover:underline"
+                  title="Open this person and everything their committees raised"
+                >
+                  {o.fullName}
+                </button>
+                <span
+                  className={`shrink-0 tabular-nums ${
+                    o.committees >= 25 ? 'text-slate-600' : 'text-violet-400'
+                  }`}
+                  title={`Named on ${committeeCount(o.committees)}`}
+                >
+                  ×{o.committees}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* ------------------------------------------------------------ header */}
       {/* Phones only. The bar over the canvas carries all of this on a wide
-          screen, where it would otherwise cost a third of the panel. */}
+          screen, where it would otherwise cost a third of the panel. The
+          officers moved to their own block above, which shows on every screen. */}
       <div className="space-y-3 border-b border-slate-800 px-4 pb-4 pt-3 lg:hidden">
-        <div>
-          {/* Who runs it. Each name is a link to the other committees naming
-              the same person, which is the question it always prompts. */}
-          {officers.length > 0 && (
-            <ul className="mt-1.5 space-y-0.5">
-              {officers.map((o) => (
-                <li
-                  key={`${o.role}-${o.normalizedName}`}
-                  className="flex items-baseline gap-1.5 text-[13px] lg:text-[11px]"
-                >
-                  <span className="w-24 shrink-0 text-slate-600">{officerRoleLabel(o.role)}</span>
-                  <button
-                    type="button"
-                    onClick={() => onFocus(o.nodeId, { officer: { name: o.fullName, role: o.role } })}
-
-                    className="min-w-0 flex-1 truncate text-left text-slate-300 hover:text-violet-300
-                               hover:underline"
-                    title="Open this person and everything their committees raised"
-                  >
-                    {o.fullName}
-                  </button>
-                  <span
-                    className={`shrink-0 tabular-nums ${
-                      o.committees >= 25 ? 'text-slate-600' : 'text-violet-400'
-                    }`}
-                    title={`Named on ${committeeCount(o.committees)}`}
-                  >
-                    ×{o.committees}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
         <div className="grid grid-cols-2 gap-2">
 
           <button
@@ -517,6 +539,13 @@ export default function NodeDetail({
                 : 'counterparties'
               : 'transactions'}
             {q && ' matching'} · {formatMoneyFull(ledger.totalAmount)}
+          </span>
+        )}
+        {/* Type and city, under the name and the row count: the identity line
+            the bar used to carry, now beside the rows it belongs to. */}
+        {detailMeta && (
+          <span className="mt-0.5 block truncate text-[10.5px] text-slate-500" title={detailMeta}>
+            {detailMeta}
           </span>
         )}
       </div>
