@@ -100,6 +100,18 @@ function defaultSortFor(mode: PanelMode): LedgerSort {
   return mode === 'transactions' ? 'date' : 'amount';
 }
 
+/**
+ * The tab last open for each entity, so returning to one reopens where the
+ * reader left off rather than resetting to the default.
+ *
+ * The panel remounts on every node switch (keyed by node id), so its `mode`
+ * state cannot carry across on its own; this map lives at module scope and does.
+ * It pairs with the trace cache in `useTrace`: together they mean going back to
+ * an entity last read on Funding origins reopens that tab with its report
+ * already drawn, instead of the default tab and a fresh long query.
+ */
+const lastPanelMode = new Map<string, PanelMode>();
+
 export default function NodeDetail({
   node,
   nodes,
@@ -116,7 +128,9 @@ export default function NodeDetail({
   onDatesChange,
   cycle,
 }: Props) {
-  const [mode, setMode] = useState<PanelMode>('sources');
+  const [mode, setMode] = useState<PanelMode>(() =>
+    node ? (lastPanelMode.get(node.id) ?? 'sources') : 'sources',
+  );
   const [sort, setSort] = useState<LedgerSort>('amount');
   const [q, setQ] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -578,6 +592,7 @@ export default function NodeDetail({
               onClick={() => {
                 setMode(m.value);
                 setSort(defaultSortFor(m.value));
+                lastPanelMode.set(node.id, m.value);
               }}
               title={m.hint}
               className={`rounded px-1.5 py-1 text-[13px] lg:text-[11px] font-medium leading-tight transition ${
