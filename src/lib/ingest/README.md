@@ -85,6 +85,43 @@ Contract details worth knowing:
   Detection is narrow on purpose: Palm Beach Aggregates LLC and Mid Coast Aggregates are
   real donors.
 
+### `org-990` — dark-money nonprofit profiles
+
+The exception to the rule above: this adapter writes no transactions. Some of the
+largest injectors into the Stafford Jones network are 501(c)(4) corporations, not
+committees — they file Form 990 with the IRS and register with the Division of
+Corporations, and file nothing with any election office, so their money enters
+the graph only where a committee reports receiving it and their donors never
+enter it at all. What is public is their governance and their finances, and that
+is what this loads, into `org_profiles` (the Details panel) and `committee_officers`
+(the registered agent and the board, as officer hubs the crawler links on).
+
+```bash
+pnpm ingest orgs          # refresh every tracked org
+pnpm ingest orgs eif      # just one, by slug
+```
+
+Two records describe each org, and only one has a machine route:
+
+- **IRS Form 990, via ProPublica's Nonprofit Explorer API** (`org-990/client.ts`) —
+  keyed by EIN, no key needed. Dependable for the tax status (the subsection code
+  says 501(c)(4) from (c)(6)), the legal name and the address. The financials are
+  only as complete as the IRS e-file extract: a year filed on paper comes back as
+  a PDF link with no numbers, so a missing figure is unknown, not zero. Fetched
+  fresh every run.
+- **The Florida Division of Corporations (Sunbiz)** — the registered agent, the
+  document number, the incorporation date, the status and the board. Sunbiz sits
+  behind a Cloudflare bot wall with no API, so these few fields are a hand-kept
+  overlay in `TRACKED_ORGS` (`org-990/adapter.ts`), read once from the website.
+  The overlay is deliberately thin: everything the 990 answers is left to the 990,
+  so adding an org is an EIN plus a handful of Sunbiz-only fields.
+
+`buildProfile` merges the two, letting the IRS win where both have a figure and the
+overlay fill the years it does not. The command needs no rebuild — these tables
+feed the panel and the crawler directly, not the money rollups — and both ship
+wholesale in the next sync. This replaced a hand-written loader; the automated 990
+half already carries years of financials the hand list never had.
+
 ### `voterfocus-<county>` — county Supervisors of Elections
 
 Covers the county tier: county commission, school board, city commission, and special

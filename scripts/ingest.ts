@@ -17,6 +17,8 @@
  *   pnpm ingest county stjohns --all             # every cycle the portal offers
  *   pnpm ingest counties                         # list supported counties
  *   pnpm ingest irs rslc                         # a national 527's funders (IRS 8872)
+ *   pnpm ingest orgs                             # refresh dark-money org profiles (IRS 990 via ProPublica + Sunbiz overlay)
+ *   pnpm ingest orgs eif                          # just one, by slug
  *   pnpm ingest purge voterfocus-duval           # drop one source, to re-ingest cleanly
  *   pnpm ingest expand 2                         # auto-expand frontier N rounds
  *   pnpm ingest backfill-industry                # classify entities left over from before this existed
@@ -77,6 +79,9 @@ import {
 
 import { Irs8872Adapter, TRACKED_ORGS, findOrg } from '@/lib/ingest/irs-8872/adapter';
 import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
+import { Propublica990Client, type Propublica990Response } from '@/lib/ingest/org-990/client';
+import { TRACKED_ORGS as ORG_PROFILE_ORGS, findTrackedOrg, buildProfile } from '@/lib/ingest/org-990/adapter';
+import { ensureOrgProfileSource, upsertProfile } from '@/lib/ingest/org-990/store';
 import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
@@ -221,6 +226,11 @@ async function main() {
 
   if (mode === 'irs') {
     await ingestIrsOrg(term || 'rslc');
+    process.exit(0);
+  }
+
+  if (mode === 'orgs') {
+    await ingestOrgProfiles(term || undefined);
     process.exit(0);
   }
 
@@ -666,6 +676,60 @@ async function ingestIrsOrg(slug: string) {
   console.log('\nRebuilding rollups…');
   const counts = await rebuildAll(db);
   console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
+}
+
+/**
+ * Refresh the corporate / Form 990 profiles of the dark-money nonprofits.
+ *
+ * The tax status, name and financials come live from the IRS 990 (ProPublica);
+ * the registered agent, document number and board are the hand-kept Sunbiz
+ * overlay, because Sunbiz has no machine route. Writes `org_profiles` and the
+ * governance officers, so it needs no rebuild — those tables feed the panel and
+ * the crawler directly, not the money rollups. Replaces the old hand loader.
+ */
+async function ingestOrgProfiles(slug?: string) {
+  const one = slug ? findTrackedOrg(slug) : undefined;
+  const orgs = slug ? (one ? [one] : []) : ORG_PROFILE_ORGS;
+  if (orgs.length === 0) {
+    console.error(
+      `unknown org "${slug}". Known: ${ORG_PROFILE_ORGS.map((o) => o.slug).join(', ')}`,
+    );
+    process.exit(1);
+  }
+
+  const client = new Propublica990Client({
+    onRequest: ({ url, attempt }) => {
+      if (attempt > 1) console.log(`    retry ${attempt}: ${url}`);
+    },
+  });
+  const sourceId = await ensureOrgProfileSource(db);
+
+  console.log(`\nRefreshing ${orgs.length} org profile(s) — IRS 990 (ProPublica) + Sunbiz overlay\n`);
+
+  for (const org of orgs) {
+    process.stdout.write(`  ${org.name.slice(0, 40).padEnd(42)} `);
+    let resp: Propublica990Response | null = null;
+    try {
+      resp = await client.organization(org.ein);
+    } catch (err) {
+      console.log(`990 fetch failed (${String(err).slice(0, 50)}) — overlay only`);
+    }
+
+    const built = buildProfile(org, resp);
+    await upsertProfile(db, sourceId, built);
+
+    const { taxStatusFromIrs, financialYearsFromIrs } = built.provenance;
+    const status = resp
+      ? `${built.taxStatus ?? '—'} ${taxStatusFromIrs ? '(IRS)' : '(overlay)'}, ` +
+        `${financialYearsFromIrs} IRS financial year(s)`
+      : 'not in ProPublica — overlay only';
+    console.log(`agent + ${org.sunbiz.directors.length} directors · ${status}`);
+  }
+
+  console.log(
+    '\n  Done. org_profiles and governance officers updated — no rebuild needed.\n' +
+      '  Both tables ship wholesale in the next sync (scripts/sync-to-vps.sh).',
+  );
 }
 
 /**
