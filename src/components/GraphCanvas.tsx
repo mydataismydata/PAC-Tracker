@@ -131,6 +131,16 @@ function highlightRoute(cy: Core, chain: string[], keepLit: string[]): boolean {
     if (i > 0) route = route.union(hops[i - 1].edgesWith(hop));
   }
 
+  // Paperwork, not money: also keep lit any registration hop tying a tile on
+  // this money route to an officer hub — the treasurer, chair or agent behind
+  // those committees — so the person stays connected to the path instead of
+  // dimming out one hop off it. A dashed registration edge never records a
+  // payment, so lighting it beside the route claims no money the route did not.
+  // Only the hub and the single hop reaching it light; the hub's own links to
+  // its other committees stay dimmed, so the focus does not sprawl.
+  const regHops = route.nodes().connectedEdges('edge[kind = "registration"]');
+  route = route.union(regHops).union(regHops.connectedNodes('node[kind = "officer"]'));
+
   // Tiles that stay readable without being part of this route — the seed and
   // everywhere the reader has been. Nodes only: two tiles being on the same
   // trail says nothing about money passing between them, and lighting an edge
