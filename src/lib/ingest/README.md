@@ -97,11 +97,12 @@ is what this loads, into `org_profiles` (the Details panel) and `committee_offic
 (the registered agent and the board, as officer hubs the crawler links on).
 
 ```bash
-pnpm ingest orgs          # refresh every tracked org
-pnpm ingest orgs eif      # just one, by slug
+pnpm ingest orgs                   # refresh every tracked org
+pnpm ingest orgs eif               # just one, by slug
+pnpm ingest orgs --sunbiz-refresh  # force a fresh download of the quarterly feed
 ```
 
-Two records describe each org, and only one has a machine route:
+Two records describe each org, and both now have a machine route:
 
 - **IRS Form 990, via ProPublica's Nonprofit Explorer API** (`org-990/client.ts`) —
   keyed by EIN, no key needed. Dependable for the tax status (the subsection code
@@ -110,17 +111,32 @@ Two records describe each org, and only one has a machine route:
   a PDF link with no numbers, so a missing figure is unknown, not zero. Fetched
   fresh every run.
 - **The Florida Division of Corporations (Sunbiz)** — the registered agent, the
-  document number, the incorporation date, the status and the board. Sunbiz sits
-  behind a Cloudflare bot wall with no API, so these few fields are a hand-kept
-  overlay in `TRACKED_ORGS` (`org-990/adapter.ts`), read once from the website.
-  The overlay is deliberately thin: everything the 990 answers is left to the 990,
-  so adding an org is an EIN plus a handful of Sunbiz-only fields.
+  board, the status and the formation date. The *search* site sits behind a
+  Cloudflare bot wall, but the same registry ships as a free public SFTP feed with
+  no such wall (`sunbiz/client.ts`). The not-for-profit quarterly snapshot is one
+  ~42 MB zip that unpacks into ten fixed-width files split by the last digit of the
+  document number; the client downloads it once, caches it under `.exports/` for
+  the quarter, and inflates only the member files a wanted document number lands
+  in. `sunbiz/parse.ts` reads the 1,440-byte record layout
+  (`dos.sunbiz.org/data-definitions/cor.html`). Two consequences worth knowing:
+  the quarterly snapshot **drops long-dissolved entities** (Foundation for a Safe
+  Environment, administratively dissolved in 2022, is not in it), and a name field
+  is three fixed sub-columns (last 20, first 14, middle 8), not free text.
 
-`buildProfile` merges the two, letting the IRS win where both have a figure and the
-overlay fill the years it does not. The command needs no rebuild — these tables
-feed the panel and the crawler directly, not the money rollups — and both ship
-wholesale in the next sync. This replaced a hand-written loader; the automated 990
-half already carries years of financials the hand list never had.
+The hand-kept overlay in `TRACKED_ORGS` (`org-990/adapter.ts`) is now a **fallback
+and a curator**, not the source: it names each org's EIN and document number, the
+fields no feed carries (corporate type, mission, the donor-secrecy note), and it
+stands in for the whole Sunbiz half when the feed has no record — which is how a
+dissolved org keeps its governance. A curated title also wins over the feed's when
+it is more specific: the feed files most board members as the bare code `D`
+(Director), so the overlay is where a chairman stays a chairman.
+
+`buildProfile` merges all three, letting the IRS win on financials and the feed win
+on governance. The command needs no rebuild — these tables feed the panel and the
+crawler directly, not the money rollups — and both ship wholesale in the next sync.
+The SFTP feed uses the published anonymous credentials from the state's own
+data-downloads page; the same feed's full for-profit file (~1.8 GB) would scale
+this to every shell sharing a registered agent, which is the obvious next step.
 
 ### `voterfocus-<county>` — county Supervisors of Elections
 

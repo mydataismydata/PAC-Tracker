@@ -9,18 +9,23 @@
  *     legal name and address, and the year-by-year financials the IRS
  *     extracted. Fetched fresh every run.
  *   - The Florida Division of Corporations (Sunbiz) — the registered agent, the
- *     document number, the incorporation date, the status, and the board.
- *     Sunbiz sits behind a Cloudflare bot wall with no API, so these few fields
- *     are kept by hand in `TRACKED_ORGS` below and read once from the website.
+ *     board, the status and the formation date. The search site sits behind a
+ *     Cloudflare bot wall, but the same registry ships as a public SFTP feed
+ *     (`../sunbiz/`), so these are fetched from that feed keyed by document
+ *     number, not read by hand.
  *
- * The overlay is deliberately thin: everything the 990 can answer is left to the
- * 990, so adding an org is an EIN plus the handful of Sunbiz-only fields. The
- * registered agent and the board still become officer-hub links, which is what
- * ties the shells together — a shared agent is the strongest link in this
- * network, and it exists only in the Sunbiz half.
+ * The overlay in `TRACKED_ORGS` below is now a fallback and a curator, not the
+ * source: it names the document number to look up and the fields the feed does
+ * not carry (corporate type, mission, the donor-secrecy note), and it stands in
+ * for the whole Sunbiz half when the quarterly feed has no record — which is how
+ * a dissolved org the snapshot drops keeps its governance. The registered agent
+ * and the board become officer-hub links either way, which is what ties the
+ * shells together: a shared agent is the strongest link in this network.
  */
 
+import { officerKey } from '@/lib/normalize';
 import type { Propublica990Response } from './client';
+import type { SunbizRecord } from '@/lib/ingest/sunbiz/parse';
 
 export interface Person {
   first: string;
@@ -161,8 +166,15 @@ export interface BuiltProfile {
   donorsRestricted: boolean;
   note: string | null;
   people: { role: 'registered_agent' | 'director'; person: Person }[];
-  /** What the 990 actually supplied this run, for the CLI to report. */
-  provenance: { taxStatusFromIrs: boolean; financialYearsFromIrs: number };
+  /** What the live sources actually supplied this run, for the CLI to report. */
+  provenance: {
+    taxStatusFromIrs: boolean;
+    financialYearsFromIrs: number;
+    /** True when the registered agent and board came from the Sunbiz feed. */
+    governanceFromFeed: boolean;
+    /** How many officers the feed record carried (0 when it fell back). */
+    officersFromFeed: number;
+  };
 }
 
 /** IRS subsection code (the "c" paragraph) to its exemption label. */
@@ -217,20 +229,70 @@ function mergeFinancials(
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/** The feed's one-letter status to the label the panel shows. */
+function statusLabel(code: 'A' | 'I'): string {
+  return code === 'A' ? 'Active' : 'Inactive';
+}
+
 /**
- * Merge a tracked org's Sunbiz overlay with its live 990, into one profile row.
+ * The board as {name, title} for the panel, from the feed's officers.
  *
- * `resp` is null when ProPublica does not know the EIN; the overlay then stands
- * on its own, which is the same profile the hand loader used to write.
+ * The feed files most board members under the bare code "D" (Director); the
+ * curated overlay sometimes knows a more specific office (a chairman, a
+ * president). So the feed decides who is on the board, and a matching overlay
+ * entry supplies the better title where it has one.
  */
-export function buildProfile(org: TrackedOrg, resp: Propublica990Response | null): BuiltProfile {
+function boardFromFeed(fed: SunbizRecord, overlay: Person[]): BuiltProfile['board'] {
+  return fed.officers.map((o) => {
+    const key = officerKey(o.name.last, o.name.first);
+    const curated = overlay.find((d) => officerKey(d.last, d.first) === key);
+    const title = curated?.title ?? o.titleLabel;
+    return title ? { name: o.name.display, title } : { name: o.name.display };
+  });
+}
+
+/** The registered agent and officers to write as officer hubs, from the feed. */
+function peopleFromFeed(fed: SunbizRecord): BuiltProfile['people'] {
+  const people: BuiltProfile['people'] = [];
+  if (fed.registeredAgent) {
+    const ra = fed.registeredAgent;
+    people.push({ role: 'registered_agent', person: { first: ra.first, last: ra.last, display: ra.display } });
+  }
+  for (const o of fed.officers) {
+    people.push({ role: 'director', person: { first: o.name.first, last: o.name.last, display: o.name.display } });
+  }
+  return people;
+}
+
+/**
+ * Assemble one profile row from up to three sources.
+ *
+ * The 990 supplies tax status and financials; the Sunbiz feed supplies the
+ * registered agent, the board, the status and the formation date; the hand-kept
+ * overlay supplies what neither has (corporate type, mission, the donor-secrecy
+ * note) and stands in for the whole Sunbiz half when the feed has no record —
+ * which is how a dissolved org the quarterly snapshot drops keeps its governance.
+ *
+ * `resp` is null when ProPublica does not know the EIN; `sunbiz` is null when the
+ * feed has no record for this document number.
+ */
+export function buildProfile(
+  org: TrackedOrg,
+  resp: Propublica990Response | null,
+  sunbiz: SunbizRecord | null = null,
+): BuiltProfile {
   const s = org.sunbiz;
   const irsTaxStatus = resp ? subsectionLabel(resp.organization.subsection_code) : null;
   const irsFinancials = resp ? financialsFrom990(resp) : {};
 
-  const people: BuiltProfile['people'] = [];
-  if (s.registeredAgent) people.push({ role: 'registered_agent', person: s.registeredAgent });
-  for (const d of s.directors) people.push({ role: 'director', person: d });
+  const overlayPeople: BuiltProfile['people'] = [];
+  if (s.registeredAgent) overlayPeople.push({ role: 'registered_agent', person: s.registeredAgent });
+  for (const d of s.directors) overlayPeople.push({ role: 'director', person: d });
+
+  const people = sunbiz ? peopleFromFeed(sunbiz) : overlayPeople;
+  const board = sunbiz
+    ? boardFromFeed(sunbiz, s.directors)
+    : s.directors.map((d) => (d.title ? { name: d.display, title: d.title } : { name: d.display }));
 
   return {
     entityId: org.entityId,
@@ -238,14 +300,14 @@ export function buildProfile(org: TrackedOrg, resp: Propublica990Response | null
     taxStatus: irsTaxStatus ?? s.taxStatus ?? null,
     is527: s.is527,
     ein: org.ein,
-    docNumber: s.docNumber ?? null,
-    status: s.status,
-    filedDate: s.filedDate ?? null,
+    docNumber: sunbiz?.docNumber ?? s.docNumber ?? null,
+    status: sunbiz ? statusLabel(sunbiz.status) : s.status,
+    filedDate: sunbiz?.fileDate ?? s.filedDate ?? null,
     address: s.address ?? (resp ? addressFrom990(resp.organization) : null),
-    registeredAgent: s.registeredAgent?.display ?? null,
+    registeredAgent: sunbiz?.registeredAgent?.display ?? s.registeredAgent?.display ?? null,
     mission: s.mission ?? null,
     website: s.website ?? null,
-    board: s.directors.map((d) => (d.title ? { name: d.display, title: d.title } : { name: d.display })),
+    board,
     financials: mergeFinancials(irsFinancials, s.financials),
     donorsRestricted: s.donorsRestricted,
     note: s.note ?? null,
@@ -255,6 +317,8 @@ export function buildProfile(org: TrackedOrg, resp: Propublica990Response | null
       financialYearsFromIrs: new Set(
         Object.values(irsFinancials).flatMap((years) => Object.keys(years)),
       ).size,
+      governanceFromFeed: sunbiz != null,
+      officersFromFeed: sunbiz ? sunbiz.officers.length : 0,
     },
   };
 }

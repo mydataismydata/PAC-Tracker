@@ -1,4 +1,12 @@
+# Explicit build decisions for dependencies that ship an install script.
+# esbuild / sharp / unrs-resolver build their native pieces as before.
+# cpu-features / ssh2 do not: cpu-features is an optional crypto speed-up for
+# ssh2, which runs pure-JS without it, and ssh2 is used only for the quarterly
+# Sunbiz feed download in the org-profile ingest. Recording every one keeps
+# `pnpm install` from failing its ignored-build check.
 allowBuilds:
+  esbuild: true
   sharp: true
   unrs-resolver: true
-  esbuild: true
+  cpu-features: false
+  ssh2: false
