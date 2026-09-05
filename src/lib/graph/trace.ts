@@ -9,7 +9,9 @@
  * Attribution is pro-rata, because money in an account is fungible: a conduit
  * that took $1M and passed on $100k passed on 10% of each of its own sources.
  * That is a claim about proportions of a pool, not about the route a particular
- * dollar took.
+ * dollar took. It is also bounded by the pool: a conduit that passed on more
+ * than its tracked sources put in passed on all of them, and the rest is
+ * reported as unexplained rather than invented onto the donors.
  *
  * Implemented as breadth-first mass propagation rather than a recursive CTE.
  * The obvious `WITH RECURSIVE` over the graph does not terminate here: carrying
@@ -236,23 +238,53 @@ export async function trace(
     );
     const next = new Map<string, Parcel>();
 
-    for (const parcel of parcels) {
+    // Each parcel's eligible upstream, worked out before any is attributed, so
+    // that a conduit carrying several parcels can be planned as one pool.
+    const plans = parcels.map((parcel) => {
       const all = inbound.get(parcel.entityId) ?? [];
-      // Self-funding is not an upstream source, and would loop forever.
-      let eligible = all.filter((e) => e.from_id !== parcel.entityId);
+      // Self-funding is not an upstream source, and would loop forever. Nor is
+      // a refund: a negative line is money leaving, and left in the pool it
+      // shrinks the denominator so every real donor's share inflates, then
+      // becomes a negative share of its own that no cap can bound.
+      let eligible = all.filter((e) => e.from_id !== parcel.entityId && Number(e.amount) > 0);
       if (dateOrdered && parcel.cutoff !== null) {
         // Same-day is allowed: a transfer can be funded by money banked that day.
         eligible = eligible.filter((e) => e.txn_date !== null && e.txn_date <= parcel.cutoff!);
       }
-
       const known = eligible.reduce((s, e) => s + Number(e.amount), 0);
+      return { parcel, eligible, known };
+    });
+
+    // Pro-rata is a claim about a pool, and a pool cannot pass on more than was
+    // put into it. Sum what every parcel would draw from each inbound edge, and
+    // where that exceeds what the edge actually carried, scale the draw down to
+    // fit. Without this, a conduit that paid out more than its tracked receipts
+    // — its own treasury, money from outside the window — had the excess
+    // manufactured onto its donors: a candidate who spent $603 at a supermarket
+    // that then gave $400k of its own money was credited with $13,699 of it.
+    // Summed across parcels, not per parcel, because a donor gave once whatever
+    // number of parcels the conduit happens to be carrying. The shortfall is
+    // reported as unexplained at the conduit, which is what it is.
+    const demand = new Map<InboundRow, number>();
+    for (const { parcel, eligible, known } of plans) {
+      if (known <= 0) continue;
+      for (const e of eligible) {
+        demand.set(e, (demand.get(e) ?? 0) + (Number(e.amount) / known) * parcel.amount);
+      }
+    }
+    const fit = new Map<InboundRow, number>();
+    for (const [e, d] of demand) fit.set(e, d > Number(e.amount) ? Number(e.amount) / d : 1);
+
+    for (const { parcel, eligible, known } of plans) {
       if (known <= 0) {
         bump(dark, parcel.entityId, parcel.amount, depth - 1, parcel.chain);
         continue;
       }
 
+      let explained = 0;
       for (const e of eligible) {
-        const share = (Number(e.amount) / known) * parcel.amount;
+        const share = (Number(e.amount) / known) * parcel.amount * (fit.get(e) ?? 1);
+        explained += share;
         const chain = [...parcel.chain, e.from_id];
         if (share < minDollars) {
           dispersed += share;
@@ -279,6 +311,11 @@ export async function trace(
         if (existing) existing.amount += share;
         else next.set(key, { entityId: e.from_id, cutoff, amount: share, chain });
       }
+
+      // What the tracked receipts could not cover came from somewhere the
+      // filings do not show. Half a cent is float, not money.
+      const unexplained = parcel.amount - explained;
+      if (unexplained > 0.005) bump(dark, parcel.entityId, unexplained, depth - 1, parcel.chain);
     }
 
     parcels = [...next.values()];
