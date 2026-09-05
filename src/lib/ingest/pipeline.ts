@@ -63,6 +63,8 @@ export interface IngestResult {
   rowsFetched: number;
   rowsInserted: number;
   rowsSkipped: number;
+  /** Rows dropped as money the graph does not track: interest income, treasury parking. */
+  rowsExcluded: number;
   /** Rows already stored whose missing election cycle this run filled in. */
   rowsRepaired: number;
   /** Expenditures dropped because the recipient already filed the same money. */
@@ -198,6 +200,33 @@ export async function ensureIrsSource(
 }
 
 /**
+ * Whether a row is money the graph does not track: interest a bank paid a
+ * committee, or a committee parking its own funds in an interest-bearing
+ * vehicle. Neither is political money — nobody contributed it and it reached
+ * no campaign — but both are filed alongside the money that is, and either
+ * one left in makes a bank, or a church loan fund, read as a funding source.
+ *
+ * Interest is Florida's `INT`, the county feeds' truncation `IN`, and a few
+ * rows filed under other codes whose purpose simply reads "interest". Parking
+ * is an expenditure described as a transfer to an interest-bearing account; a
+ * plain bank deposit is never filed at all, so that catches only the odd
+ * treasurer who reported one. The same rules, as SQL, purged what was already
+ * loaded: migrations/manual/drop-interest-and-cfr.sql.
+ */
+export function isNonPoliticalMoney(
+  direction: 'contribution' | 'expenditure',
+  typeCode: string | null,
+  description: string | null,
+): boolean {
+  const code = (typeCode ?? '').trim().toUpperCase();
+  const desc = description ?? '';
+  if (direction === 'contribution') {
+    return code === 'INT' || code === 'IN' || /^\s*(bank\s+|savings\s+)?interest\b/i.test(desc);
+  }
+  return /interest[ -]bearing/i.test(desc);
+}
+
+/**
  * Persist a batch of parsed contribution rows.
  *
  * Resolution runs row-by-row because each resolution can create an entity that
@@ -214,9 +243,14 @@ export async function ingestContributionRows(
 
   let inserted = 0;
   let skipped = 0;
+  let excluded = 0;
   const touched = new Set<string>();
 
   for (const row of rows) {
+    if (isNonPoliticalMoney('contribution', row.typeCode, row.inkindDescription)) {
+      excluded++;
+      continue;
+    }
     try {
       const recipient = await resolver.resolve({
         rawName: row.recipientName,
@@ -288,6 +322,7 @@ export async function ingestContributionRows(
     rowsFetched: rows.length,
     rowsInserted: inserted,
     rowsSkipped: skipped,
+    rowsExcluded: excluded,
     // The state feed has always carried its cycle, and the rows that predate
     // that were backfilled once, so there is nothing here left to repair.
     rowsRepaired: 0,
@@ -336,9 +371,14 @@ export async function ingestTransactionRows(
   let skipped = 0;
   let repaired = 0;
   let mirrored = 0;
+  let excluded = 0;
   const touched = new Set<string>();
 
   for (const row of rows) {
+    if (isNonPoliticalMoney(row.direction, row.typeCode, row.description)) {
+      excluded++;
+      continue;
+    }
     try {
       const filer = await resolver.resolve({
         rawName: row.filerRaw,
@@ -476,6 +516,7 @@ export async function ingestTransactionRows(
     rowsFetched: rows.length,
     rowsInserted: inserted,
     rowsSkipped: skipped,
+    rowsExcluded: excluded,
     rowsRepaired: repaired,
     rowsMirrored: mirrored,
     entitiesCreated: stats.created - before,

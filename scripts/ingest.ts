@@ -427,7 +427,7 @@ async function main() {
     await finishRun(db, runId, result);
 
     console.log(
-      `\n  inserted ${result.rowsInserted}, skipped ${result.rowsSkipped}, ` +
+      `\n  inserted ${result.rowsInserted}, skipped ${result.rowsSkipped}, excluded ${result.rowsExcluded}, ` +
         `${result.entitiesCreated} new entities`,
     );
     console.log('  resolver:', JSON.stringify(result.resolverStats));
@@ -472,7 +472,7 @@ async function expand(
       try {
         const rows = await fl.contributionsFromContributor(node.name, fetchOpts);
         const res = await ingestContributionRows(db, rows, { ...ctx, resolver });
-        console.log(`${rows.length} rows -> +${res.rowsInserted} txns, +${res.entitiesCreated} nodes`);
+        console.log(`${rows.length} rows -> +${res.rowsInserted} txns, +${res.entitiesCreated} nodes${res.rowsExcluded ? `, ${res.rowsExcluded} interest/parking dropped` : ''}`);
       } catch (err) {
         console.log(`failed: ${String(err).slice(0, 60)}`);
         // Mark it attempted so the next round does not retry the same node.
@@ -546,7 +546,7 @@ async function ingestCycle(
         totalCreated += res.entitiesCreated;
         console.log(
           `  ${win.from}..${win.to}  ${String(win.rows.length).padStart(6)} rows -> ` +
-            `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes`,
+            `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes${res.rowsExcluded ? `, ${res.rowsExcluded} interest/parking dropped` : ''}`,
         );
       }
     }
@@ -649,7 +649,7 @@ async function ingestIrsOrg(slug: string) {
       console.log(
         `  ${filing.periodBegin ?? '?'}..${filing.periodEnd ?? '?'}  ` +
           `${String(rows.length).padStart(4)} rows ${fmt(sum).padStart(12)} -> ` +
-          `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+          `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes${res.rowsExcluded ? `, ${res.rowsExcluded} interest/parking dropped` : ''}` +
           `${filing.skipped ? `  (${filing.skipped} unparsed)` : ''}` +
           `${agg.length ? `  [${fmt(aggSum)} unitemized]` : ''}`,
       );
@@ -810,7 +810,7 @@ async function ingestSpendingCycle(
         totalCreated += res.entitiesCreated;
         console.log(
           `  ${win.from}..${win.to}  ${String(win.rows.length).padStart(6)} rows -> ` +
-            `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+            `+${res.rowsInserted} txns, +${res.entitiesCreated} nodes${res.rowsExcluded ? `, ${res.rowsExcluded} interest/parking dropped` : ''}` +
             `${res.rowsMirrored ? `, ${res.rowsMirrored} mirrored` : ''}`,
         );
       }
@@ -877,7 +877,7 @@ async function ingestSpending(
     await finishRun(db, runId, { rowsFetched: rows.length, rowsInserted: res.rowsInserted });
 
     console.log(
-      `  ${rows.length} rows -> +${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+      `  ${rows.length} rows -> +${res.rowsInserted} txns, +${res.entitiesCreated} nodes${res.rowsExcluded ? `, ${res.rowsExcluded} interest/parking dropped` : ''}` +
         `${res.rowsRepaired ? `, ${res.rowsRepaired} back-labelled` : ''}`,
     );
 
