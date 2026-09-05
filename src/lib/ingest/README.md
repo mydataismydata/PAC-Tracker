@@ -212,6 +212,23 @@ pnpm ingest purge voterfocus-duval && pnpm ingest county duval
 `purgeSource` only deletes entities nothing else references, so a committee that
 also appears in state filings keeps its other transactions.
 
+### Interest and treasury parking are not money here
+
+Two kinds of row are dropped at ingest by `isNonPoliticalMoney` (`pipeline.ts`),
+on both ingest paths: interest a bank paid a committee — Florida's `INT`, the
+county feeds' truncation `IN`, and a few rows filed under other codes whose
+purpose simply reads "interest" — and expenditures described as a transfer to an
+interest-bearing account. Neither is political money: nobody contributed it and
+it reached no campaign. Left in, the first made banks read as "original sources"
+($16.6M of interest across the dataset) and the second made a church loan fund
+the Jones committees used as a savings account read as a $1.1M funder, because
+its redemptions came back filed as checks. A plain bank deposit is never filed
+at all, which is why only the odd treasurer's parking transfer shows up.
+
+What was already loaded was purged by `migrations/manual/drop-interest-and-cfr.sql`,
+which also removed every row on CHRISTIAN FINANCIAL RESOURCES. The delta does not
+ship deletions, so that file runs on every database, followed by a rebuild.
+
 ### Adding an adapter
 
 1. Insert a `jurisdictions` row and a `sources` row — `ensureCountySource` in
