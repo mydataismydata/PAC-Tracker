@@ -210,14 +210,21 @@ export async function ensureIrsSource(
  * rows filed under other codes whose purpose simply reads "interest". Parking
  * is an expenditure described as a transfer to an interest-bearing account; a
  * plain bank deposit is never filed at all, so that catches only the odd
- * treasurer who reported one. The same rules, as SQL, purged what was already
- * loaded: migrations/manual/drop-interest-and-cfr.sql.
+ * treasurer who reported one. Tax, too: every row on the Internal Revenue
+ * Service under any spelling — 1120-POL income tax, employer taxes, filing
+ * fees, and the odd refund back — matched on the whole name, letters only, so
+ * a company merely containing "IRS" is not caught. The same rules, as SQL,
+ * purged what was already loaded: migrations/manual/drop-interest-and-cfr.sql
+ * and drop-irs.sql.
  */
 export function isNonPoliticalMoney(
   direction: 'contribution' | 'expenditure',
   typeCode: string | null,
   description: string | null,
+  counterparty: string | null = null,
 ): boolean {
+  const who = (counterparty ?? '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (/^(USTREASURY)?(IRS|INTERNALREVENUESERVICES?)(USTREASURY)?(VIAEFTPS)?$/.test(who)) return true;
   const code = (typeCode ?? '').trim().toUpperCase();
   const desc = description ?? '';
   if (direction === 'contribution') {
@@ -247,7 +254,7 @@ export async function ingestContributionRows(
   const touched = new Set<string>();
 
   for (const row of rows) {
-    if (isNonPoliticalMoney('contribution', row.typeCode, row.inkindDescription)) {
+    if (isNonPoliticalMoney('contribution', row.typeCode, row.inkindDescription, row.contributorRaw)) {
       excluded++;
       continue;
     }
@@ -375,7 +382,7 @@ export async function ingestTransactionRows(
   const touched = new Set<string>();
 
   for (const row of rows) {
-    if (isNonPoliticalMoney(row.direction, row.typeCode, row.description)) {
+    if (isNonPoliticalMoney(row.direction, row.typeCode, row.description, row.counterpartyRaw)) {
       excluded++;
       continue;
     }
