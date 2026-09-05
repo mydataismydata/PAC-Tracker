@@ -51,3 +51,7 @@ scripts/tmp-*.ts
 
 # Local-only operational notes (VPS deploy, credentials, runbooks).
 /docs-local/
+
+# Server-local compose tuning. Generated per box by
+# docs-local/ovh/configure-stack.sh; never the same on two machines.
+docker-compose.override.yml
