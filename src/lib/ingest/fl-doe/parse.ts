@@ -348,7 +348,17 @@ export function hashRow(parts: string[]): string {
 export interface RegistryCommittee {
   name: string;
   type: string | null;
+  /**
+   * Status folded to what `entity_status` can hold.
+   *
+   * The registry prints three words, not two: a committee whose registration
+   * the state revoked reads "Revoked", and there were 1,022 of them against
+   * 5,135 closed. Revoked is not active, so it folds to closed here; the word
+   * itself survives in `statusText`.
+   */
   status: 'active' | 'closed' | 'unknown';
+  /** The status exactly as printed, which `committee_registrations` keeps. */
+  statusText: string | null;
   /**
    * The state's account number, lifted from the row's own link.
    *
@@ -391,12 +401,8 @@ export function parseCommitteeRegistryHtml(html: string): RegistryCommittee[] {
     out.push({
       name,
       type: type.toUpperCase(),
-      status:
-        status.toLowerCase() === 'active'
-          ? 'active'
-          : status.toLowerCase() === 'closed'
-            ? 'closed'
-            : 'unknown',
+      status: registrationStatus(status),
+      statusText: status || null,
       acctNum: raw[0].match(/ComDetail\.asp\?account=(\d+)/i)?.[1] ?? null,
     });
   }
@@ -473,6 +479,8 @@ export interface RegistryCommitteeDetail {
    * active.
    */
   status?: 'active' | 'closed' | 'unknown';
+  /** The status word exactly as the detail page printed it. */
+  statusText?: string | null;
   /**
    * Every officer the detail page names, the registered agent included.
    *
@@ -542,6 +550,20 @@ export function parseCommitteeListTsv(text: string): {
   }
 
   return { rows, skipped };
+}
+
+/**
+ * Fold a printed registration status onto what `entity_status` can hold.
+ *
+ * Anything the state has stopped recognizing — closed, revoked, terminated —
+ * is one thing as far as the graph is concerned: not an active committee. The
+ * printed word is kept alongside so the registration record stays exact.
+ */
+function registrationStatus(text: string): 'active' | 'closed' | 'unknown' {
+  const s = text.trim().toLowerCase();
+  if (s.startsWith('active')) return 'active';
+  if (/^(closed|revoked|terminated|dissolved|inactive|expired)/.test(s)) return 'closed';
+  return 'unknown';
 }
 
 /**
@@ -655,7 +677,7 @@ export function parseCommitteeDetailHtml(
 
   const mailing = addressBlock(fields.get('address') ?? []);
   const typeDescription = nullIfBlank(fields.get('type')?.[0]);
-  const statusText = (fields.get('status')?.[0] ?? '').toLowerCase();
+  const statusText = (fields.get('status')?.[0] ?? '').trim();
 
   const officers: RegistryOfficer[] = [];
   for (const { label, role } of DETAIL_OFFICER_ROLES) {
@@ -703,11 +725,8 @@ export function parseCommitteeDetailHtml(
     treasurerLast: treasurer?.last ?? null,
     treasurerFirst: treasurer?.first ?? null,
     treasurerMiddle: treasurer?.middle ?? null,
-    status: statusText.startsWith('active')
-      ? 'active'
-      : statusText.startsWith('closed')
-        ? 'closed'
-        : 'unknown',
+    status: registrationStatus(statusText),
+    statusText: statusText || null,
     officers,
   };
 }
