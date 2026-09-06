@@ -46,6 +46,44 @@ crowded end.
 Whatever still cannot be split is reported by the CLI rather than swallowed — a silently
 short window is indistinguishable from real coverage once it is in the graph.
 
+#### Who runs a committee
+
+Three feeds carry registration records, and which one applies depends on whether the
+committee is still open.
+
+```bash
+pnpm ingest registry            # name, type and status for every committee, A-Z
+pnpm ingest committees          # bulk extract: active committees only
+pnpm ingest committee-details   # per-committee page: closed committees, and the agent
+```
+
+`extractComList.asp` is one request for the whole roster and gives seventeen columns
+including the account number, the address and the chair and treasurer. It covers **active
+committees only**. Everything the state has closed — over five thousand accounts — is
+absent from it, which is why those nodes had no officers at all.
+
+`ComDetail.asp?account=N` serves the same record one committee at a time, whatever its
+status, and adds the **registered agent**, which the bulk extract omits for every
+committee. That is the field that ties a committee to the corporate filings loaded from
+Sunbiz: the agent on a closed PAC is often the agent on the nonprofit funding it.
+
+The account number comes from the registry lookup, which links each name to its detail
+page. `sweepCommitteeAccounts()` keys that sweep by account rather than by name, because a
+name reused after a committee closed is two accounts with two sets of officers.
+
+Reading it costs one request per committee, so the sweep skips any account that already
+has a registration and a recorded agent; an interrupted run resumes rather than starting
+over. `--refresh` re-reads every page, `--status=active|all` widens it beyond closed ones,
+and `--accounts=70275,83962` fetches named accounts without the A-Z sweep.
+
+The page prints an officer as one written-out string where the extract gives three
+columns, and the officer key is built from the split. So the split has to land on the same
+surname the extract would have filed, suffix included — its `ChrNameLast` holds "Windes
+Jr." and "Welton III". `splitPersonName()` does that. Where the same written-out name is
+already on file, its own split and key win over the guess: that is the only way to recover
+a surname of more than one word, since nothing in "Maria De Los Angeles Landrua Rivas"
+says where the middle name stops.
+
 ### `irs-8872-<org>` — national 527s
 
 Not a bulk import. It answers one question the Florida data cannot: where a *national*
