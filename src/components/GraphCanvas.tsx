@@ -230,28 +230,35 @@ function highlightNeighborhood(cy: Core, node: NodeSingular, keepLit: string[] =
 }
 
 /**
- * Dim everything except one route through the graph.
+ * Dim everything except the routes through the graph the reader has asked for.
  *
  * Used where the interesting thing is not who a tile trades with but how it
  * connects back to the entity the reader started from — a donor several
  * transfers upstream, say, whose neighbourhood says nothing about why it is on
- * screen. Returns false when the route has fewer than two tiles drawn, so the
- * caller can fall back to the neighbourhood rather than dimming the whole map
- * down to a single tile.
+ * screen. Takes several routes because the panel lets names be clicked down
+ * one after another, and the point of doing that is to see them lit at once.
+ * Returns false when no route has two tiles drawn, so the caller can fall back
+ * to the neighbourhood rather than dimming the whole map down to a single tile.
  */
-function highlightRoute(cy: Core, chain: string[], keepLit: string[]): boolean {
-  const hops = chain
-    .map((id) => cy.getElementById(id))
-    .filter((el) => el.nonempty() && el.isNode());
-  if (hops.length < 2) return false;
-
+function highlightRoutes(cy: Core, chains: string[][], keepLit: string[]): boolean {
   let route = cy.collection();
-  for (const [i, hop] of hops.entries()) {
-    route = route.union(hop);
-    // Either direction: a chain is a route the money took, and the edge
-    // recording it points whichever way the filing did.
-    if (i > 0) route = route.union(hops[i - 1].edgesWith(hop));
+  let drawn = 0;
+
+  for (const chain of chains) {
+    const hops = chain
+      .map((id) => cy.getElementById(id))
+      .filter((el) => el.nonempty() && el.isNode());
+    if (hops.length < 2) continue;
+    drawn++;
+
+    for (const [i, hop] of hops.entries()) {
+      route = route.union(hop);
+      // Either direction: a chain is a route the money took, and the edge
+      // recording it points whichever way the filing did.
+      if (i > 0) route = route.union(hops[i - 1].edgesWith(hop));
+    }
   }
+  if (drawn === 0) return false;
 
   // Paperwork, not money: also keep lit any registration hop tying a tile on
   // this money route to an officer hub — the treasurer, chair or agent behind
@@ -323,7 +330,13 @@ interface Props {
    * money out of the panel shows the connection rather than a fresh, unrelated
    * cluster around wherever you landed.
    */
-  highlightChain?: string[] | null;
+  /**
+   * Routes to light, each a list of tile ids from the reader's position out.
+   *
+   * More than one because names clicked in the panel stack up rather than
+   * replacing each other.
+   */
+  highlightChains?: string[][] | null;
   /**
    * Tiles to leave readable whatever else is dimmed.
    *
@@ -373,7 +386,7 @@ export default function GraphCanvas({
   onReady,
   viewIntent,
   selectedId,
-  highlightChain,
+  highlightChains,
   keepLit,
   ghost,
 }: Props) {
@@ -387,14 +400,23 @@ export default function GraphCanvas({
   const layoutRef = useRef<cytoscape.Layouts | null>(null);
   const relayoutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
-   * The route to favour over the neighbourhood, readable from a callback.
+   * The routes to favour over the neighbourhood, readable from a callback.
    *
    * `focusOn` and the tap handler are created once and live for the lifetime of
    * the canvas, so neither can close over the current prop. A ref lets both ask
-   * what the route is at the moment they run.
+   * what the routes are at the moment they run.
    */
-  const chainRef = useRef<string[] | null>(null);
+  const chainsRef = useRef<string[][]>([]);
   const keepLitRef = useRef<string[]>([]);
+  /**
+   * The tap handlers, for the same reason and by the same means.
+   *
+   * They are installed once, so calling the prop directly would call whichever
+   * version existed at mount — and the parent's answer to a tap depends on
+   * what the reader has done since, such as which names they have clicked down
+   * in the panel.
+   */
+  const handlersRef = useRef({ onSelectNode, onExpandNode });
   /**
    * Bumped every time a Cytoscape instance is created.
    *
@@ -423,8 +445,8 @@ export default function GraphCanvas({
    * neighbourhood.
    */
   const applyHighlight = useCallback((cy: Core, node: NodeSingular) => {
-    const chain = chainRef.current;
-    if (chain && chain.length > 1 && highlightRoute(cy, chain, keepLitRef.current)) return;
+    const chains = chainsRef.current;
+    if (chains.length > 0 && highlightRoutes(cy, chains, keepLitRef.current)) return;
     highlightNeighborhood(cy, node, keepLitRef.current);
   }, []);
 
@@ -613,19 +635,19 @@ export default function GraphCanvas({
 
     cy.on('tap', 'node', (evt: EventObject) => {
       const n = evt.target as NodeSingular;
-      onSelectNode?.(n.data('entity') as GraphNode);
+      handlersRef.current.onSelectNode?.(n.data('entity') as GraphNode);
       highlightNeighborhood(cy, n);
     });
 
     cy.on('tap', (evt: EventObject) => {
       if (evt.target === cy) {
         cy.elements().removeClass('dimmed').removeClass('highlighted');
-        onSelectNode?.(null);
+        handlersRef.current.onSelectNode?.(null);
       }
     });
 
     cy.on('dbltap', 'node', (evt: EventObject) => {
-      onExpandNode?.((evt.target as NodeSingular).id());
+      handlersRef.current.onExpandNode?.((evt.target as NodeSingular).id());
     });
 
     // Dragging a node pins it so later layout passes leave it alone.
@@ -656,8 +678,8 @@ export default function GraphCanvas({
       cy.destroy();
       cyRef.current = null;
     };
-    // Handlers are stable for the lifetime of the canvas.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Built once and torn down with the canvas. The tap handlers reach the
+    // current props through `handlersRef` rather than closing over them.
   }, []);
 
   /* ------------------------------------------------------------- syncing -- */
@@ -1061,19 +1083,22 @@ export default function GraphCanvas({
   // Declared above the two effects that read it, so a route arriving with a
   // selection is in place before the highlight for that selection runs.
   useEffect(() => {
-    chainRef.current = highlightChain ?? null;
+    chainsRef.current = highlightChains ?? [];
     keepLitRef.current = keepLit ?? [];
-  }, [highlightChain, keepLit]);
+  }, [highlightChains, keepLit]);
+
+  useEffect(() => {
+    handlersRef.current = { onSelectNode, onExpandNode };
+  }, [onSelectNode, onExpandNode]);
 
   /**
-   * Lay in the route's missing tiles, and take the previous set away.
-
+   * Lay in the routes' missing tiles, and take the previous set away.
    *
-   * Placed by stepping off whichever tile of the route is already on screen,
+   * Placed by stepping off whichever tile of a route is already on screen,
    * never by running a layout: a layout pass moves every other tile on the
-   * canvas, which is the precise disorientation this exists to prevent. Only
-   * one route's worth of ghosts is ever present, so following a second name
-   * clears the first rather than silting the map up.
+   * canvas, which is the precise disorientation this exists to prevent. What
+   * is here is what the reader currently has clicked down, so a name they let
+   * go of takes its tile with it.
    */
   useEffect(() => {
     const cy = cyRef.current;
@@ -1094,13 +1119,17 @@ export default function GraphCanvas({
           from = already.position();
           continue;
         }
-        step++;
-        // Fanned above and below the line so a long route does not lay its
-        // tiles end to end off the edge of the viewport.
+        // Fanned around the tile they hang off rather than stepped along one
+        // line. Several names clicked down all hang off the same tile, and a
+        // line would lay every one of them in the same two places. The golden
+        // angle spreads consecutive tiles instead of clumping them, and the
+        // separation pass below opens whatever this still leaves touching.
+        const angle = step * 2.399963;
         const position = {
-          x: from.x - GHOST_DX,
-          y: from.y + (step % 2 === 1 ? -GHOST_DY : GHOST_DY),
+          x: from.x - GHOST_DX * Math.cos(angle),
+          y: from.y + GHOST_DY * 2 * Math.sin(angle),
         };
+        step++;
         cy.add({
           group: 'nodes',
           classes: 'ghost',
@@ -1130,6 +1159,10 @@ export default function GraphCanvas({
         });
       }
     });
+
+    // Only the tiles just laid in may move. The graph itself holds still,
+    // which is the whole point of placing these by hand rather than by layout.
+    separateTiles(cy, (id) => !cy.getElementById(id).hasClass('ghost'));
   }, [ghost, cyEpoch, ready]);
 
   /**
@@ -1157,7 +1190,7 @@ export default function GraphCanvas({
     cy.nodes().unselect();
     node.select();
     applyHighlight(cy, node as NodeSingular);
-  }, [selectedId, highlightChain, keepLit, ghost, cyEpoch, ready, nodes, applyHighlight]);
+  }, [selectedId, highlightChains, keepLit, ghost, cyEpoch, ready, nodes, applyHighlight]);
 
 
 
