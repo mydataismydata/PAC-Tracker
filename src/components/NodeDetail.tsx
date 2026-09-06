@@ -39,7 +39,16 @@ interface Props {
   node: GraphNode | null;
   /** Nodes currently drawn, so the panel can mark which rows are on the canvas. */
   nodes: Map<string, GraphNode>;
-  onFocus: (nodeId: string, link?: FocusLink) => void;
+  /**
+   * Click a name down, or let it back up.
+   *
+   * Not navigation. The panel goes on showing the same entity: what changes is
+   * the canvas, which lights the name and the hop joining it to whatever is
+   * open here. Reading a donor's own ledger means clicking its tile.
+   */
+  onHighlight: (nodeId: string, link?: FocusLink) => void;
+  /** The names currently clicked down, so each row can show whether it is. */
+  highlighted: ReadonlySet<string>;
   onRecenter: (nodeId: string) => void;
   /**
    * The person behind an officer hub, resolved by the parent.
@@ -112,10 +121,18 @@ function defaultSortFor(mode: PanelMode): LedgerSort {
  */
 const lastPanelMode = new Map<string, PanelMode>();
 
+/**
+ * Whether the filters are open, for the same reason and by the same trick as
+ * `lastPanelMode`: the panel remounts on every tile, and a reader who folded
+ * the filters away to see more rows meant it for more than one entity.
+ */
+let filtersOpen = true;
+
 export default function NodeDetail({
   node,
   nodes,
-  onFocus,
+  onHighlight,
+  highlighted,
   onRecenter,
   subject,
   officers,
@@ -134,6 +151,7 @@ export default function NodeDetail({
   const [sort, setSort] = useState<LedgerSort>('amount');
   const [q, setQ] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [showFilters, setShowFilters] = useState(filtersOpen);
   const [dateOrdered, setDateOrdered] = useState(true);
 
   // The origins tab asks a different question of the same subject, so the
@@ -216,6 +234,15 @@ export default function NodeDetail({
         .filter(Boolean)
         .join(' · ');
 
+  /**
+   * Every spelling the state filed for this person, where there is more than
+   * one. Two of them are routinely misspellings that keyed apart until they
+   * were corrected, which is worth being able to see — but beside the name,
+   * not as a block of its own above everything else in the column.
+   */
+  const spellings =
+    officerHub && subject && subject.spellings.length > 1 ? subject.spellings : null;
+
   const exportLedgerCsv = async () => {
     setExporting(true);
     try {
@@ -283,6 +310,53 @@ export default function NodeDetail({
 
   return (
     <div ref={setScrollEl} className="flex h-full flex-col overflow-y-auto lg:overflow-hidden">
+      {/* --------------------------------------------------- panel identity */}
+      {/* Says whose rows these are, at the top of the column holding them. The
+          accent runs down the left edge so the answer is legible from the
+          canvas without reading: lit means you are looking at something you
+          opened, dark means the entity you searched. */}
+      <div
+        className={`hidden shrink-0 border-b border-l-[3px] border-slate-800 px-3.5 py-[11px]
+                    transition-colors duration-200 lg:block ${
+                      exploring
+                        ? 'border-l-indigo-500 bg-indigo-950/25'
+                        : 'border-l-slate-700 bg-transparent'
+                    }`}
+      >
+        <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+          Details for
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span
+            className="h-2 w-2 shrink-0 rounded-full"
+            style={{ backgroundColor: kindColor(node.kind) }}
+            aria-hidden
+          />
+          <span className="truncate text-[13px] font-semibold text-slate-100" title={node.name}>
+            {node.name}
+          </span>
+          <SpellingsMark spellings={spellings} />
+        </span>
+        {showLedger && (
+          <span className="block truncate text-[10.5px] text-slate-400">
+            {ledger.total.toLocaleString()}{' '}
+            {view === 'sources'
+              ? direction === 'out'
+                ? 'recipients'
+                : 'counterparties'
+              : 'transactions'}
+            {q && ' matching'} · {formatMoneyFull(ledger.totalAmount)}
+          </span>
+        )}
+        {/* Type and city, under the name and the row count: the identity line
+            the bar used to carry, now beside the rows it belongs to. */}
+        {detailMeta && (
+          <span className="mt-0.5 block truncate text-[10.5px] text-slate-500" title={detailMeta}>
+            {detailMeta}
+          </span>
+        )}
+      </div>
+
       {/* --------------------------------------------------------- identity */}
       {/* A direct child of the scroller. `sticky` is bounded by its own parent,
           so nested inside the header card below this would scroll away with the
@@ -294,8 +368,9 @@ export default function NodeDetail({
         className="sticky top-0 z-20 shrink-0 border-b border-slate-800 bg-slate-950 px-4 pb-2
                    pt-3 lg:hidden"
       >
-        <h3 className="truncate text-base font-semibold leading-snug text-slate-100 lg:whitespace-normal lg:text-sm">
-          {node.name}
+        <h3 className="flex items-center gap-1.5 text-base font-semibold leading-snug text-slate-100 lg:text-sm">
+          <span className="truncate">{node.name}</span>
+          <SpellingsMark spellings={spellings} />
         </h3>
         <p className={`mt-0.5 text-[13px] text-slate-400 ${collapsed ? 'hidden' : ''}`}>
             {officerHub ? (
@@ -349,19 +424,6 @@ export default function NodeDetail({
           </div>
         )}
       </div>
-
-      {/* Every spelling the state filed for this person. Worth showing: two of
-          them are misspellings that keyed apart until corrected. Its own block
-          because everything else in the old header card moved to the bar over
-          the canvas, and a card holding nothing still draws its border. */}
-      {officerHub && subject && subject.spellings.length > 1 && (
-        <p
-          className="border-b border-slate-800 px-4 pb-3 pt-3 text-[11px] leading-relaxed
-                     text-slate-600 lg:shrink-0 lg:text-[10px]"
-        >
-          Filed as {subject.spellings.join(' · ')}
-        </p>
-      )}
 
       {/* A corporation, not a campaign committee: what it is, who runs it, and
           the fact that its donors are not disclosed. Shown on every screen —
@@ -439,10 +501,19 @@ export default function NodeDetail({
                 <span className="w-24 shrink-0 text-slate-600">{officerRoleLabel(o.role)}</span>
                 <button
                   type="button"
-                  onClick={() => onFocus(o.nodeId, { officer: { name: o.fullName, role: o.role } })}
-                  className="min-w-0 flex-1 truncate text-left text-slate-300 hover:text-violet-300
-                             hover:underline"
-                  title="Open this person and everything their committees raised"
+                  onClick={() =>
+                    onHighlight(o.nodeId, {
+                      label: officerRoleLabel(o.role),
+                      officer: { name: o.fullName, role: o.role },
+                    })
+                  }
+                  className={`min-w-0 flex-1 truncate text-left hover:text-violet-300
+                              hover:underline ${
+                                highlighted.has(o.nodeId)
+                                  ? 'font-semibold text-violet-300'
+                                  : 'text-slate-300'
+                              }`}
+                  title="Show this person on the canvas, with the committees they are named on"
                 >
                   {o.fullName}
                 </button>
@@ -518,54 +589,31 @@ export default function NodeDetail({
 
       </div>
 
-      {/* --------------------------------------------------- panel identity */}
-      {/* Says whose rows these are, at the top of the column holding them. The
-          accent runs down the left edge so the answer is legible from the
-          canvas without reading: lit means you are looking at something you
-          opened, dark means the entity you searched. */}
-      <div
-        className={`hidden shrink-0 border-b border-l-[3px] border-slate-800 px-3.5 py-[11px]
-                    transition-colors duration-200 lg:block ${
-                      exploring
-                        ? 'border-l-indigo-500 bg-indigo-950/25'
-                        : 'border-l-slate-700 bg-transparent'
-                    }`}
-      >
-        <span className="block text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-          Details for
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="h-2 w-2 shrink-0 rounded-full"
-            style={{ backgroundColor: kindColor(node.kind) }}
-            aria-hidden
-          />
-          <span className="truncate text-[13px] font-semibold text-slate-100" title={node.name}>
-            {node.name}
-          </span>
-        </span>
-        {showLedger && (
-          <span className="block truncate text-[10.5px] text-slate-400">
-            {ledger.total.toLocaleString()}{' '}
-            {view === 'sources'
-              ? direction === 'out'
-                ? 'recipients'
-                : 'counterparties'
-              : 'transactions'}
-            {q && ' matching'} · {formatMoneyFull(ledger.totalAmount)}
-          </span>
-        )}
-        {/* Type and city, under the name and the row count: the identity line
-            the bar used to carry, now beside the rows it belongs to. */}
-        {detailMeta && (
-          <span className="mt-0.5 block truncate text-[10.5px] text-slate-500" title={detailMeta}>
-            {detailMeta}
-          </span>
-        )}
-      </div>
-
       {/* ------------------------------------------------------------ controls */}
-      <div className="space-y-2 border-b border-slate-800 p-3 lg:shrink-0">
+      {/* Folds away, because on a tall list the rows are what the reader came
+          for and these keep a third of the column from them. What it hides is
+          all set-and-forget: the side of the ledger, the view, the two date
+          bounds and the export. */}
+      <button
+        type="button"
+        onClick={() => {
+          filtersOpen = !showFilters;
+          setShowFilters(!showFilters);
+        }}
+        title={showFilters ? 'Hide the filters' : 'Show the filters'}
+        className="flex shrink-0 items-center justify-between border-b border-slate-800 px-3 py-1.5
+                   text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-100
+                   transition hover:bg-slate-900"
+      >
+        Filters
+        <VerticalChevron direction={showFilters ? 'up' : 'down'} />
+      </button>
+
+      <div
+        className={`space-y-2 border-b border-slate-800 p-3 lg:shrink-0 ${
+          showFilters ? '' : 'hidden'
+        }`}
+      >
         <div className="grid grid-cols-3 gap-1">
           {DIRECTIONS.map((d) => (
             <button
@@ -648,6 +696,15 @@ export default function NodeDetail({
         </div>
 
 
+        {/* What the trace could account for, above the button that exports it. */}
+        {mode === 'origins' && traced.result && (
+          <OriginsSummary
+            result={traced.result}
+            dateOrdered={dateOrdered}
+            onToggleDateOrdered={() => setDateOrdered((v) => !v)}
+          />
+        )}
+
         {/* Export stays put across tabs; only the sort is ledger-only. */}
         <div className="flex items-center justify-between gap-2">
           {showLedger && (
@@ -720,9 +777,8 @@ export default function NodeDetail({
         {mode === 'origins' && (
           <OriginsReport
             state={traced}
-            dateOrdered={dateOrdered}
-            onToggleDateOrdered={() => setDateOrdered((v) => !v)}
-            onFocus={onFocus}
+            onHighlight={onHighlight}
+            highlighted={highlighted}
             nodes={nodes}
           />
         )}
@@ -743,8 +799,9 @@ export default function NodeDetail({
               <LedgerRowItem
                 key={isSourceRow(r) ? `${r.entity_id}-${r.flow}` : r.id}
                 row={r}
-                onFocus={onFocus}
+                onHighlight={onHighlight}
                 inGraph={target !== null && nodes.has(target)}
+                pinned={target !== null && highlighted.has(target)}
               />
             );
           })}
@@ -769,6 +826,71 @@ export default function NodeDetail({
         </>)}
       </div>
     </div>
+  );
+}
+
+/**
+ * How a row in the origins report shows that it is clicked down.
+ *
+ * The same accent the ledger rows use, so a lit tile on the canvas can be
+ * traced back to whichever list put it there.
+ */
+function pinnedRowClass(pinned: boolean): string {
+  return `border-l-2 ${
+    pinned ? 'border-indigo-500 bg-indigo-950/40' : 'border-transparent hover:bg-slate-800/50'
+  }`;
+}
+
+/** The doubled arrow that folds the filters away and brings them back. */
+function VerticalChevron({ direction }: { direction: 'up' | 'down' }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+      aria-hidden
+    >
+      {direction === 'up' ? (
+        <>
+          <polyline points="5 12 12 5 19 12" />
+          <polyline points="5 19 12 12 19 19" />
+        </>
+      ) : (
+        <>
+          <polyline points="5 5 12 12 19 5" />
+          <polyline points="5 12 12 19 19 12" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/**
+ * The other names one person's filings were made under.
+ *
+ * A marker beside the name rather than a line of its own. On a person named on
+ * a hundred committees the list runs long, and it answers a question almost
+ * nobody has until they notice two spellings of the same person and want to
+ * know whether the panel knows they are the same.
+ */
+function SpellingsMark({ spellings }: { spellings: string[] | null }) {
+  if (!spellings) return null;
+  return (
+    <span
+      title={`Also filed as ${spellings.join(' · ')}`}
+      className="flex h-3.5 w-3.5 shrink-0 cursor-help items-center justify-center rounded-full
+                 border border-slate-600 text-[9px] font-semibold text-slate-400
+                 hover:border-slate-400 hover:text-slate-200"
+      aria-label={`Also filed as ${spellings.join(', ')}`}
+    >
+      i
+    </span>
   );
 }
 
@@ -928,38 +1050,26 @@ function originsCsvRows(r: TraceResult): (string | number)[][] {
 }
 
 /**
- * Where this entity's money came from, past the conduits.
+ * How much of this entity's money the trace could account for.
  *
- * Presented apart from the ledger because it answers a different question. The
- * ledger says who wrote the cheque; for a committee funded by other committees
- * that is routinely not who paid. The unresolved and dispersed figures are
- * shown alongside the sources on purpose — a list of origins accounting for a
- * quarter of the money reads as an answer unless the rest is on screen too.
+ * Sits with the controls rather than over the list it summarises, because the
+ * unresolved and long-tail figures are the reason to distrust the list: a set
+ * of origins covering a quarter of the money reads as an answer unless what it
+ * leaves out is on screen beside it.
  */
-function OriginsReport({
-  state,
+function OriginsSummary({
+  result,
   dateOrdered,
   onToggleDateOrdered,
-  onFocus,
-  nodes,
 }: {
-  state: { result: TraceResult | null; loading: boolean; error: string | null };
+  result: TraceResult;
   dateOrdered: boolean;
   onToggleDateOrdered: () => void;
-  onFocus: (nodeId: string, link?: FocusLink) => void;
-  nodes: Map<string, GraphNode>;
 }) {
-  if (state.error) return <p className="p-3 text-[13px] lg:text-xs text-red-400">{state.error}</p>;
-  if (state.loading && !state.result) {
-    return <p className="p-3 text-[13px] lg:text-xs text-slate-500">Following the money…</p>;
-  }
-  if (!state.result) return null;
-
-  const r = state.result;
-  const attributed = r.sources.reduce((a, b) => a + b.amount, 0);
-  const viaPools = r.injectionPoints.reduce((a, b) => a + b.amount, 0);
-  const unresolved = r.unresolved.reduce((a, b) => a + b.amount, 0);
-  const pct = (n: number) => (r.seed.total > 0 ? (n / r.seed.total) * 100 : 0);
+  const attributed = result.sources.reduce((a, b) => a + b.amount, 0);
+  const viaPools = result.injectionPoints.reduce((a, b) => a + b.amount, 0);
+  const unresolved = result.unresolved.reduce((a, b) => a + b.amount, 0);
+  const pct = (n: number) => (result.seed.total > 0 ? (n / result.seed.total) * 100 : 0);
 
   const bar = (label: string, value: number, className: string) => (
     <div className="flex items-center gap-2">
@@ -974,30 +1084,61 @@ function OriginsReport({
   );
 
   return (
-    <div>
-      <div className="space-y-2 border-b border-slate-800 p-3">
-        <div className="space-y-1">
-          {bar('Traced', attributed, 'bg-emerald-500')}
-          {viaPools > 0 && bar('National pool', viaPools, 'bg-sky-500')}
-          {bar('Unresolved', unresolved, 'bg-slate-500')}
-          {bar('Long tail', r.dispersed, 'bg-slate-700')}
-        </div>
-        <label className="flex cursor-pointer items-center gap-2 text-[11px] lg:text-[10px] text-slate-400">
-          <input
-            type="checkbox"
-            checked={dateOrdered}
-            onChange={onToggleDateOrdered}
-            className="accent-indigo-500"
-          />
-          Only credit money a conduit held before it paid out
-        </label>
-        <p className="text-[11px] lg:text-[10px] leading-relaxed text-slate-600">
-          Pro-rata across {r.hops} hops: what share of the pool each source funded, not the route a
-          particular dollar took.
-          {r.truncated && ' Hit the strand ceiling — some paths folded into the long tail.'}
-        </p>
+    <div className="space-y-2 border-t border-slate-800 pt-2">
+      <div className="space-y-1">
+        {bar('Traced', attributed, 'bg-emerald-500')}
+        {viaPools > 0 && bar('National pool', viaPools, 'bg-sky-500')}
+        {bar('Unresolved', unresolved, 'bg-slate-500')}
+        {bar('Long tail', result.dispersed, 'bg-slate-700')}
       </div>
+      <label className="flex cursor-pointer items-center gap-2 text-[11px] lg:text-[10px] text-slate-400">
+        <input
+          type="checkbox"
+          checked={dateOrdered}
+          onChange={onToggleDateOrdered}
+          className="accent-indigo-500"
+        />
+        Only credit money a conduit held before it paid out
+      </label>
+      <p className="text-[11px] lg:text-[10px] leading-relaxed text-slate-600">
+        Pro-rata across {result.hops} hops: what share of the pool each source funded, not the
+        route a particular dollar took.
+        {result.truncated && ' Hit the strand ceiling — some paths folded into the long tail.'}
+      </p>
+    </div>
+  );
+}
 
+/**
+ * Where this entity's money came from, past the conduits.
+ *
+ * Presented apart from the ledger because it answers a different question. The
+ * ledger says who wrote the cheque; for a committee funded by other committees
+ * that is routinely not who paid. The unresolved and dispersed figures are
+ * shown alongside the sources on purpose — a list of origins accounting for a
+ * quarter of the money reads as an answer unless the rest is on screen too.
+ */
+function OriginsReport({
+  state,
+  onHighlight,
+  highlighted,
+  nodes,
+}: {
+  state: { result: TraceResult | null; loading: boolean; error: string | null };
+  onHighlight: (nodeId: string, link?: FocusLink) => void;
+  highlighted: ReadonlySet<string>;
+  nodes: Map<string, GraphNode>;
+}) {
+  if (state.error) return <p className="p-3 text-[13px] lg:text-xs text-red-400">{state.error}</p>;
+  if (state.loading && !state.result) {
+    return <p className="p-3 text-[13px] lg:text-xs text-slate-500">Following the money…</p>;
+  }
+  if (!state.result) return null;
+
+  const r = state.result;
+
+  return (
+    <div>
       {r.sources.length === 0 && (
         <p className="p-3 text-[13px] lg:text-xs text-slate-600">
           No originating sources found. Every path ends at a committee with no recorded upstream.
@@ -1006,10 +1147,10 @@ function OriginsReport({
 
       <ul className="divide-y divide-slate-800/60">
         {r.sources.map((s) => (
-          <li key={s.id} className="hover:bg-slate-800/50">
+          <li key={s.id} className={pinnedRowClass(highlighted.has(s.id))}>
             <button
               type="button"
-              onClick={() => onFocus(s.id, { chain: s.chain, label: 'traced', flow: 'in' })}
+              onClick={() => onHighlight(s.id, { chain: s.chain, label: 'traced', flow: 'in' })}
               className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
             >
               <span className="min-w-0 flex-1">
@@ -1047,8 +1188,10 @@ function OriginsReport({
             <div className="mt-1 flex items-baseline justify-between gap-2">
               <button
                 type="button"
-                onClick={() => onFocus(p.id, { chain: p.chain, label: 'traced', flow: 'in' })}
-                className="min-w-0 flex-1 truncate text-left text-[13px] lg:text-xs text-slate-200 hover:underline"
+                onClick={() => onHighlight(p.id, { chain: p.chain, label: 'traced', flow: 'in' })}
+                className={`min-w-0 flex-1 truncate text-left text-[13px] hover:underline lg:text-xs ${
+                  highlighted.has(p.id) ? 'font-semibold text-indigo-300' : 'text-slate-200'
+                }`}
               >
                 {p.name}
               </button>
@@ -1066,13 +1209,13 @@ function OriginsReport({
           </div>
           <ul className="divide-y divide-slate-800/60">
             {p.funders.map((f) => (
-              <li key={f.id} className="hover:bg-slate-800/50">
+              <li key={f.id} className={pinnedRowClass(highlighted.has(f.id))}>
                 <button
                   type="button"
                   // The pool's own funder, so the route runs through the pool:
                   // one hop further out than the pool's own.
                   onClick={() =>
-                    onFocus(f.id, { chain: [...p.chain, f.id], label: 'traced', flow: 'in' })
+                    onHighlight(f.id, { chain: [...p.chain, f.id], label: 'traced', flow: 'in' })
                   }
                   className="flex w-full items-baseline justify-between gap-2 px-3 py-1 text-left"
                 >
@@ -1099,10 +1242,10 @@ function OriginsReport({
           </p>
           <ul className="divide-y divide-slate-800/60">
             {r.unresolved.map((s) => (
-              <li key={s.id} className="hover:bg-slate-800/50">
+              <li key={s.id} className={pinnedRowClass(highlighted.has(s.id))}>
                 <button
                   type="button"
-                  onClick={() => onFocus(s.id, { chain: s.chain, label: 'traced', flow: 'in' })}
+                  onClick={() => onHighlight(s.id, { chain: s.chain, label: 'traced', flow: 'in' })}
                   className="flex w-full items-start justify-between gap-2 px-3 py-1.5 text-left"
                 >
                   <span className="min-w-0 flex-1">
@@ -1158,12 +1301,15 @@ function rowTarget(row: LedgerRow): string | null {
 
 function LedgerRowItem({
   row,
-  onFocus,
+  onHighlight,
   inGraph,
+  pinned,
 }: {
   row: LedgerRow;
-  onFocus: (nodeId: string, link?: FocusLink) => void;
+  onHighlight: (nodeId: string, link?: FocusLink) => void;
   inGraph: boolean;
+  /** Clicked down: this party is lit on the canvas, and so is the hop to it. */
+  pinned: boolean;
 }) {
   const source = isSourceRow(row);
   const name = source ? row.name : row.counterparty_name;
@@ -1216,15 +1362,21 @@ function LedgerRowItem({
   const target = rowTarget(row);
 
   return (
-    <li className={target ? 'hover:bg-slate-800/50' : ''}>
+    <li
+      className={`border-l-2 ${
+        pinned
+          ? 'border-indigo-500 bg-indigo-950/40'
+          : `border-transparent ${target ? 'hover:bg-slate-800/50' : ''}`
+      }`}
+    >
       {target ? (
         <button
           type="button"
           // No chain: the row is a hop off the entity on screen, and the parent
           // knows which one that is. The amount labels the hop where it has to
           // be drawn in.
-          onClick={() => onFocus(target, { label: formatMoney(row.amount), flow: row.flow })}
-
+          onClick={() => onHighlight(target, { label: formatMoney(row.amount), flow: row.flow })}
+          title={pinned ? 'Take this off the canvas' : 'Show this on the canvas'}
           className="w-full text-left"
         >
 

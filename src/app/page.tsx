@@ -127,6 +127,28 @@ function FullScreenButton() {
 type MobilePane = 'graph' | 'detail' | 'filters';
 
 /**
+ * One entity's connection back to whatever the panel is currently about.
+ *
+ * Built once, when the name is clicked, rather than recomputed on every
+ * render: resolving it can mean fetching tiles the crawl never drew.
+ */
+interface PinnedRoute {
+  /** Tile ids from the reader's position out to the entity, drawn ones only. */
+  route: string[];
+  /** The tiles themselves, for any hop the canvas has to borrow. */
+  tiles: GraphNode[];
+  /** Hops the crawl does not already draw. */
+  hops: GhostGraph['edges'];
+}
+
+/** What `buildRoute` works out, before anything decides what to do with it. */
+interface Route extends Omit<PinnedRoute, 'route'> {
+  target: GraphNode;
+  drawable: string[];
+  anyBorrowed: boolean;
+}
+
+/**
  * A person named on filings, as a selectable node.
  *
  * The crawl builds these itself in registration mode. This is the same shape
@@ -198,6 +220,16 @@ export default function Home() {
    */
   const [chain, setChain] = useState<string[] | null>(null);
   const [ghost, setGhost] = useState<GhostGraph | null>(null);
+  /**
+   * Names clicked down in the panel, and how each one connects back.
+   *
+   * Held apart from the selection on purpose. Clicking a donor in the ledger
+   * asks "show me this one on the map", not "leave this entity and open that
+   * one" — and asking the first question of five donors in a row is the point:
+   * five lit tiles and five lit edges, read together. Only a tile on the
+   * canvas changes what the panel is about.
+   */
+  const [pins, setPins] = useState<Map<string, PinnedRoute>>(new Map());
   /**
    * Every tile opened since the search, in the order they were opened.
    *
@@ -382,12 +414,23 @@ export default function Home() {
   const handleSelectNode = useCallback(
     (node: GraphNode | null) => {
       setSelected(node);
-      setChain(null);
+
+      // Whatever was clicked down in the panel was a hop off the entity being
+      // left, so it stops meaning anything here. The exception is the tile
+      // just clicked: a tile the crawl never drew is on the canvas only
+      // because a click in the panel put it there, and dropping it would take
+      // away the tile under the cursor. That one is kept, and the hop
+      // explaining it becomes the route to what is now open.
+      const kept = node ? pins.get(node.id) : undefined;
+      setChain(kept?.route ?? null);
+      if (kept) setGhost({ nodes: kept.tiles, edges: kept.hops });
+      setPins(new Map());
+
       pushTrail(node);
       if (node) setPane('detail');
       else setGhost(null);
     },
-    [pushTrail],
+    [pins, pushTrail],
   );
 
 
@@ -570,9 +613,8 @@ export default function Home() {
    * ledger row supplies none, because it is one hop off whatever is open, and
    * only this knows what that is.
    */
-  const handleFocusEntity = useCallback(
-    async (entityId: string, link?: FocusLink) => {
-      const from = selected?.id ?? null;
+  const buildRoute = useCallback(
+    async (entityId: string, link: FocusLink | undefined, from: string | null): Promise<Route | null> => {
       const supplied = link?.chain && link.chain.length > 1 ? link.chain : null;
       const route = (supplied ?? (from && from !== entityId ? [from, entityId] : [entityId]))
         // A route that doubles back would draw a hop from a tile to itself.
@@ -594,13 +636,18 @@ export default function Home() {
           : null;
 
       const target = crawl.nodes.get(entityId) ?? borrowed.get(entityId) ?? hub;
-      if (!target) return;
+      if (!target) return null;
 
 
       // Whatever survived: a hub in the middle of a route resolves to nothing,
-      // and a conduit can have been folded away since the trace ran.
-      const drawable = route.filter((id) => crawl.nodes.get(id) ?? borrowed.get(id));
-      const tiles = drawable.map((id) => crawl.nodes.get(id) ?? borrowed.get(id)!);
+      // and a conduit can have been folded away since the trace ran. The hub at
+      // the end of a route does resolve, to the person it stands for — clicking
+      // a treasurer has to put something on the canvas, and while the graph is
+      // following money there is no tile there to find.
+      const resolve = (id: string) =>
+        crawl.nodes.get(id) ?? borrowed.get(id) ?? (hub && id === entityId ? hub : null);
+      const drawable = route.filter((id) => resolve(id));
+      const tiles = drawable.map((id) => resolve(id)!);
 
       // Which hops the graph already draws. Direction is not checked: an edge
       // between the two ends is the same connection whichever way it was filed.
@@ -623,13 +670,67 @@ export default function Home() {
       }
 
       const anyBorrowed = drawable.some((id) => !crawl.nodes.has(id));
-      setGhost(anyBorrowed || hops.length > 0 ? { nodes: tiles, edges: hops } : null);
-      setChain(drawable.length > 1 ? drawable : null);
-      setSelected(target);
-      pushTrail(target);
+      return { target, drawable, tiles, hops, anyBorrowed };
+    },
+    [crawl.nodes, crawl.edges, fetchNode],
+  );
+
+  /**
+   * Open an entity in the panel, drawing the way there.
+   *
+   * Reached from the breadcrumb over the canvas, which is a way back to
+   * somewhere already visited rather than a way of picking something new.
+   * Whatever was clicked down belonged to the entity being left, so it goes.
+   */
+  const handleFocusEntity = useCallback(
+    async (entityId: string, link?: FocusLink) => {
+      const route = await buildRoute(entityId, link, selected?.id ?? null);
+      if (!route) return;
+
+      setGhost(
+        route.anyBorrowed || route.hops.length > 0
+          ? { nodes: route.tiles, edges: route.hops }
+          : null,
+      );
+      setChain(route.drawable.length > 1 ? route.drawable : null);
+      setPins(new Map());
+      setSelected(route.target);
+      pushTrail(route.target);
       requestFocus(entityId);
     },
-    [crawl.nodes, crawl.edges, fetchNode, pushTrail, requestFocus, selected],
+    [buildRoute, pushTrail, requestFocus, selected],
+  );
+
+  /**
+   * Click a name in the panel down, or let it back up.
+   *
+   * Draws the entity and the hop joining it to whatever the panel is about,
+   * and leaves the panel where it is. Clicking the same name again takes it
+   * off, so a reader can build a picture up and take it apart without ever
+   * losing the entity they are reading.
+   */
+  const handlePinEntity = useCallback(
+    async (entityId: string, link?: FocusLink) => {
+      if (pins.has(entityId)) {
+        setPins((prev) => {
+          const next = new Map(prev);
+          next.delete(entityId);
+          return next;
+        });
+        return;
+      }
+
+      const route = await buildRoute(entityId, link, selected?.id ?? null);
+      if (!route) return;
+      setPins((prev) =>
+        new Map(prev).set(entityId, {
+          route: route.drawable,
+          tiles: route.tiles,
+          hops: route.hops,
+        }),
+      );
+    },
+    [pins, buildRoute, selected],
   );
 
 
@@ -680,6 +781,7 @@ export default function Home() {
   const handleResetSelection = useCallback(() => {
     setChain(null);
     setGhost(null);
+    setPins(new Map());
     setTrail([]);
     setPane('graph');
     const node = seed ? crawl.nodes.get(seed.id) : null;
@@ -705,6 +807,7 @@ export default function Home() {
     if (!seed) return;
     setChain(null);
     setGhost(null);
+    setPins(new Map());
     setTrail([]);
     setSelected(null);
     setRestoredPositions(null);
@@ -763,6 +866,41 @@ export default function Home() {
     () => (seed ? [seed.id, ...trail.map((t) => t.id)] : []),
     [seed, trail],
   );
+
+  /**
+   * Every route the canvas should light: the way to the open entity, and each
+   * name clicked down beside it.
+   */
+  const highlightChains = useMemo(() => {
+    const chains: string[][] = [];
+    if (chain && chain.length > 1) chains.push(chain);
+    for (const pin of pins.values()) if (pin.route.length > 1) chains.push(pin.route);
+    return chains.length > 0 ? chains : null;
+  }, [chain, pins]);
+
+  /**
+   * The tiles the canvas has to borrow for all of that at once.
+   *
+   * Nodes are not deduplicated: a route reads outwards from a tile already on
+   * screen, and repeating that anchor is what tells the canvas where each new
+   * set of tiles hangs from. Edges are, because two routes crossing the same
+   * hop would otherwise ask for it twice.
+   */
+  const canvasGhost = useMemo(() => {
+    if (pins.size === 0) return ghost;
+
+    const nodes: GraphNode[] = [...(ghost?.nodes ?? [])];
+    const edges = new Map<string, GhostGraph['edges'][number]>();
+    for (const e of ghost?.edges ?? []) edges.set(e.id, e);
+    for (const pin of pins.values()) {
+      nodes.push(...pin.tiles);
+      for (const e of pin.hops) edges.set(e.id, e);
+    }
+    return nodes.length > 0 ? { nodes, edges: [...edges.values()] } : null;
+  }, [ghost, pins]);
+
+  /** Which names in the panel are currently clicked down. */
+  const pinnedIds = useMemo(() => new Set(pins.keys()), [pins]);
 
   let totalTracked = 0;
 
@@ -989,9 +1127,9 @@ export default function Home() {
                 onExpandNode={handleRecenter}
                 viewIntent={viewIntent}
                 selectedId={selectedNode?.id ?? null}
-                highlightChain={chain}
+                highlightChains={highlightChains}
                 keepLit={keepLit}
-                ghost={ghost}
+                ghost={canvasGhost}
                 onReady={(h) => {
                   canvasRef.current = h;
                 }}
@@ -1025,7 +1163,8 @@ export default function Home() {
             key={selectedNode?.id ?? 'none'}
             node={selectedNode}
             nodes={crawl.nodes}
-            onFocus={handleFocusEntity}
+            onHighlight={handlePinEntity}
+            highlighted={pinnedIds}
             onRecenter={handleRecenter}
             subject={subject}
             officers={officers}
