@@ -851,7 +851,7 @@ export default function Home() {
         {/* ------------------------------------------------- settings column */}
         <aside
           className={`w-full shrink-0 flex-col border-slate-800 lg:flex lg:border-r
-            ${controlsOpen ? 'lg:w-72' : 'lg:w-44'}
+            ${controlsOpen ? 'lg:w-72' : 'lg:w-36'}
             ${pane === 'filters' ? 'flex' : 'hidden'}`}
         >
           {/* The strip the column closes to. Only from `lg` up: a phone shows
@@ -864,7 +864,8 @@ export default function Home() {
                 onClick={() => setControlsOpen(true)}
                 title="Open the settings column"
                 className="mb-3 flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-[11px]
-                           text-slate-500 transition hover:bg-slate-900 hover:text-slate-300"
+                           font-semibold uppercase tracking-wide text-slate-100 transition
+                           hover:bg-slate-800"
               >
                 <Chevron direction="right" />
                 Settings
@@ -898,7 +899,7 @@ export default function Home() {
                 type="button"
                 onClick={() => setControlsOpen(false)}
                 title="Close the settings column"
-                className="hidden shrink-0 px-2 text-slate-600 transition hover:text-slate-300
+                className="hidden shrink-0 px-2 text-slate-100 transition hover:text-white
                            lg:block"
               >
                 <Chevron direction="left" />
@@ -1059,22 +1060,37 @@ function KindDot({ kind }: { kind: string }) {
   );
 }
 
-/** The arrow on the two controls that open and close the settings column. */
+/**
+ * The arrow on the two controls that open and close the settings column.
+ *
+ * Doubled and heavy, because it is the only way back to the settings the strip
+ * leaves out, and a thin single chevron reads as decoration.
+ */
 function Chevron({ direction }: { direction: 'left' | 'right' }) {
   return (
     <svg
-      width="11"
-      height="11"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="3"
+      strokeWidth="3.5"
       strokeLinecap="round"
       strokeLinejoin="round"
       className="shrink-0"
       aria-hidden
     >
-      <polyline points={direction === 'left' ? '15 5 8 12 15 19' : '9 5 16 12 9 19'} />
+      {direction === 'left' ? (
+        <>
+          <polyline points="12 5 5 12 12 19" />
+          <polyline points="20 5 13 12 20 19" />
+        </>
+      ) : (
+        <>
+          <polyline points="4 5 11 12 4 19" />
+          <polyline points="12 5 19 12 12 19" />
+        </>
+      )}
     </svg>
   );
 }

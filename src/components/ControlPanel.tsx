@@ -34,26 +34,18 @@ interface Props {
  * loaded, an unfiltered graph quietly answers "who has ever funded this",
  * which is rarely the question being asked.
  */
-const CYCLE_CHOICES: {
-  value: string | undefined;
-  label: string;
-  /** What the button says in a strip, where the full label will not fit. */
-  short: string;
-  hint: string;
-}[] = [
+const CYCLE_CHOICES: { value: string | undefined; label: string; hint: string }[] = [
   {
     value: CURRENT_CYCLE.id,
     label: `Current (${CURRENT_CYCLE.label})`,
-    short: CURRENT_CYCLE.label,
     hint: `Only money filed for the ${CURRENT_CYCLE.label} election`,
   },
   {
     value: PREVIOUS_CYCLE.id,
     label: `Previous (${PREVIOUS_CYCLE.label})`,
-    short: PREVIOUS_CYCLE.label,
     hint: `Only money filed for the ${PREVIOUS_CYCLE.label} election`,
   },
-  { value: undefined, label: 'All', short: 'All', hint: 'Every cycle loaded, summed together' },
+  { value: undefined, label: 'All', hint: 'Every cycle loaded, summed together' },
 ];
 
 /** Anything reachable from the dropdown rather than the three shortcuts. */
@@ -143,7 +135,7 @@ export default function ControlPanel({ settings, onChange, disabled, compact }: 
       </Field>
 
       <Field label="Election cycle">
-        <div className="grid grid-cols-3 gap-1">
+        <div className={compact ? 'space-y-1' : 'grid grid-cols-3 gap-1'}>
           {CYCLE_CHOICES.map((c) => (
             <button
               key={c.label}
@@ -152,12 +144,14 @@ export default function ControlPanel({ settings, onChange, disabled, compact }: 
               disabled={disabled}
               onClick={() => set('cycle', c.value)}
               className={`rounded px-2 py-1 text-[11px] font-medium transition ${
+                compact ? 'w-full text-left' : ''
+              } ${
                 settings.cycle === c.value
                   ? 'bg-indigo-600 text-white'
                   : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
               } disabled:opacity-40`}
             >
-              {compact ? c.short : c.label}
+              {c.label}
             </button>
           ))}
         </div>
@@ -185,7 +179,7 @@ export default function ControlPanel({ settings, onChange, disabled, compact }: 
       </Field>
 
       <Field label="Direction">
-        <div className="grid grid-cols-3 gap-1">
+        <div className={compact ? 'space-y-1' : 'grid grid-cols-3 gap-1'}>
           {DIRECTIONS.map((d) => (
             <button
               key={d.value}
@@ -193,7 +187,8 @@ export default function ControlPanel({ settings, onChange, disabled, compact }: 
               title={d.hint}
               disabled={disabled}
               onClick={() => set('direction', d.value)}
-              className={`rounded px-2 py-1.5 text-xs font-medium transition
+              className={`rounded px-2 text-xs font-medium transition
+                ${compact ? 'w-full py-1 text-left' : 'py-1.5'}
                 ${
                   settings.direction === d.value
                     ? 'bg-indigo-600 text-white'
