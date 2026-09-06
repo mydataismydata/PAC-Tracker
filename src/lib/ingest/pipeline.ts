@@ -2288,8 +2288,18 @@ export async function mergeEntities(
       `);
 
       // The loser's own name becomes an alias of the survivor, so the exact
-      // spelling that used to create a second node now resolves straight to
-      // it. onConflictDoNothing: the survivor may already carry this alias.
+      // spelling that used to create a second node now resolves straight to it.
+      //
+      // The conflict case has to *raise* the confidence, not defer to what is
+      // there. The survivor usually already carries this spelling as a review
+      // alias scored under the 0.88 lookup gate — that weak score is precisely
+      // why the two never merged on their own, and why a human is merging them
+      // by hand. Leaving it alone fixes today's rows and lets the next ingest
+      // recreate the node: "US SUGAR CORPORATION" sat at 0.717 against United
+      // States Sugar Corporation, ignored at lookup, after being merged into it.
+      // A hand-confirmed merge is the strongest evidence there is, so the
+      // spelling goes to 1. A `manual` origin is left as it is: a pin someone
+      // wrote by hand outranks one this merge inferred.
       await tx
         .insert(entityAliases)
         .values({
@@ -2299,7 +2309,15 @@ export async function mergeEntities(
           origin: 'resolved',
           confidence: 1,
         })
-        .onConflictDoNothing();
+        .onConflictDoUpdate({
+          target: [entityAliases.entityId, entityAliases.normalizedAlias],
+          set: {
+            alias: loser.name,
+            confidence: 1,
+            origin: sql`CASE WHEN ${entityAliases.origin} = 'manual' THEN 'manual'::alias_origin
+                             ELSE 'resolved'::alias_origin END`,
+          },
+        });
 
       // Fold in the loser's other aliases the same way — skip anything that
       // would collide with one the survivor already has.

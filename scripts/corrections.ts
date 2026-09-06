@@ -502,19 +502,29 @@ async function runAlias(e: Extract<Entry, { op: 'alias' }>): Promise<Outcome> {
     ? scopedName(normalizeName(e.alias), e.jurisdiction)
     : normalizeName(e.alias);
   const shown = e.jurisdiction ? `"${e.alias}" @${e.jurisdiction}` : `"${e.alias}"`;
-  const [hit] = await db.execute<{ id: string }>(sql`
-    SELECT id FROM entity_aliases WHERE entity_id = ${row.id} AND normalized_alias = ${norm}
+  // An existing row does not mean the work is done. A spelling can be present
+  // as a *review* alias, scored under the 0.88 lookup gate and therefore
+  // ignored — which is the state this entry exists to correct. Only a row that
+  // already reaches lookup counts as applied.
+  const [hit] = await db.execute<{ id: string; confidence: number }>(sql`
+    SELECT id, confidence FROM entity_aliases
+     WHERE entity_id = ${row.id} AND normalized_alias = ${norm}
   `);
-  if (hit) return { status: 'applied', detail: `"${row.name}" already carries ${shown}` };
+  if (hit && hit.confidence >= 1) {
+    return { status: 'applied', detail: `"${row.name}" already carries ${shown}` };
+  }
   if (!APPLY) {
-    return { status: 'pending', detail: `would pin ${shown} onto "${row.name}"` };
+    const verb = hit ? `would raise ${shown} from ${hit.confidence.toFixed(3)} to 1 on` : `would pin ${shown} onto`;
+    return { status: 'pending', detail: `${verb} "${row.name}"` };
   }
   await db.execute(sql`
     INSERT INTO entity_aliases (entity_id, alias, normalized_alias, origin, confidence)
     VALUES (${row.id}, ${e.alias}, ${norm}, 'manual', 1)
-    ON CONFLICT (entity_id, normalized_alias) DO NOTHING
+    ON CONFLICT (entity_id, normalized_alias)
+    DO UPDATE SET alias = EXCLUDED.alias, origin = 'manual', confidence = 1
   `);
-  return { status: 'pending', detail: `pinned ${shown} onto "${row.name}"` };
+  const verb = hit ? `raised ${shown} to full confidence on` : `pinned ${shown} onto`;
+  return { status: 'pending', detail: `${verb} "${row.name}"` };
 }
 
 async function runDropAlias(e: Extract<Entry, { op: 'drop-alias' }>): Promise<Outcome> {
@@ -604,12 +614,41 @@ async function main() {
   recordRenames(entries);
   console.log(`${FILE}: ${entries.length} entries${APPLY ? '' : ' (dry run — pass --apply to act)'}\n`);
 
+  // Which `set-kind` lines a later `set-kind` on the same entity overrules.
+  //
+  // The file is a log, oldest first, and a judgement can be revisited: a
+  // grower-owned sugar co-op was called a committee in the 2026-09-02 review
+  // and is an organization on the evidence of its own filings. Replayed in
+  // order the file still converges, because the last word wins. But running an
+  // overruled line does real work — set-kind rewrites the industry and the
+  // traversable flag — and reporting it as pending forever invites someone to
+  // apply it and undo the correction that followed. It is skipped instead, and
+  // the line that overruled it is named.
+  const supersededKind = new Map<number, number>();
+  {
+    const lastKindLine = new Map<string, number>();
+    for (const { line, entry } of entries) {
+      if (entry.op !== 'set-kind') continue;
+      const key = entry.entity.id ?? `name:${entry.entity.name ?? ''}`;
+      const prior = lastKindLine.get(key);
+      if (prior !== undefined) supersededKind.set(prior, line);
+      lastKindLine.set(key, line);
+    }
+  }
+
   let changed = 0;
   let errors = 0;
   for (const { line, entry } of entries) {
     if (!('note' in entry) || !entry.note) {
       console.error(`  line ${line}: every entry needs a note saying why`);
       errors++;
+      continue;
+    }
+    const overruledBy = supersededKind.get(line);
+    if (overruledBy !== undefined) {
+      console.log(
+        `  [ok  ] line ${line} ${entry.op}: overruled by line ${overruledBy}, which sets this entity's kind last`,
+      );
       continue;
     }
     let out: Outcome;
