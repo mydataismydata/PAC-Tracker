@@ -391,6 +391,9 @@ export async function ingestTransactionRows(
         rawName: row.filerRaw,
         role: 'recipient',
         committeeType: row.filerTypeTag,
+        // County portals tag committees with a flag, not a type. Without this a
+        // county-only PC first seen filing was created as a candidate.
+        isCommittee: row.filerIsCommittee ?? undefined,
         office: row.filerOffice,
         party: row.filerParty,
         jurisdictionId: ctx.jurisdictionId,
