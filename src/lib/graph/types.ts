@@ -1,8 +1,18 @@
 import { CURRENT_CYCLE } from '@/lib/cycles';
 /** Shared graph types between the crawler, the API and the UI. */
 
-export type Direction = 'upstream' | 'downstream' | 'both';
-export type LinkMode = 'direct' | 'donor' | 'registration';
+/**
+ * The two enumerations are written as value arrays, not bare unions.
+ *
+ * Request validation has to list the same strings, and a union type cannot be
+ * read at runtime. Listing them twice is what let the saved-search route go on
+ * rejecting `registration` long after the crawl accepted it.
+ */
+export const DIRECTION_VALUES = ['upstream', 'downstream', 'both'] as const;
+export const LINK_MODE_VALUES = ['direct', 'donor', 'registration'] as const;
+
+export type Direction = (typeof DIRECTION_VALUES)[number];
+export type LinkMode = (typeof LINK_MODE_VALUES)[number];
 
 export interface GraphNode {
   id: string;

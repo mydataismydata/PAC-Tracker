@@ -10,24 +10,13 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { db } from '@/db';
-import { crawl, CRAWL_DEFAULTS } from '@/lib/graph/crawl';
+import { crawl } from '@/lib/graph/crawl';
+import { crawlParamsSchema } from '@/lib/graph/crawlParams';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const paramsSchema = z.object({
-  seed: z.string().uuid(),
-  depth: z.coerce.number().int().min(1).max(6).default(CRAWL_DEFAULTS.depth),
-  direction: z.enum(['upstream', 'downstream', 'both']).default(CRAWL_DEFAULTS.direction),
-  linkMode: z.enum(['direct', 'donor', 'registration']).default(CRAWL_DEFAULTS.linkMode),
-  minAmount: z.coerce.number().min(0).optional(),
-  dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  /** Restrict edges and tile totals to one election cycle. */
-  cycle: z.string().max(32).optional(),
-  maxPerNode: z.coerce.number().int().min(1).max(200).default(CRAWL_DEFAULTS.maxPerNode),
-  maxNodes: z.coerce.number().int().min(10).max(5000).default(CRAWL_DEFAULTS.maxNodes),
-});
+const paramsSchema = crawlParamsSchema.extend({ seed: z.string().uuid() });
 
 export async function GET(req: NextRequest) {
   const parsed = paramsSchema.safeParse(Object.fromEntries(req.nextUrl.searchParams));
