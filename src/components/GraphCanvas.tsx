@@ -844,13 +844,21 @@ export default function GraphCanvas({
     cy.panBy({ x: -dx * cy.width(), y: -dy * cy.height() });
   }, []);
 
+  /**
+   * Current tile coordinates, for saving a layout.
+   *
+   * A tile the layout has not placed yet can report a non-finite position, and
+   * one of those is enough for the server to reject the whole save. Leaving it
+   * out costs nothing: a tile with no saved position is placed by the layout
+   * when the search is reopened, which is what happens to every new tile.
+   */
   const getPositions = useCallback(() => {
     const cy = cyRef.current;
     if (!cy) return {};
     const out: Record<string, { x: number; y: number }> = {};
     cy.nodes().forEach((n) => {
       const p = n.position();
-      out[n.id()] = { x: p.x, y: p.y };
+      if (Number.isFinite(p.x) && Number.isFinite(p.y)) out[n.id()] = { x: p.x, y: p.y };
     });
     return out;
   }, []);

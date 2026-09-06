@@ -11,19 +11,9 @@ import { desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '@/db';
 import { savedSearches, entities } from '@/db/schema';
+import { crawlParamsSchema } from '@/lib/graph/crawlParams';
 
 export const dynamic = 'force-dynamic';
-
-const crawlParamsSchema = z.object({
-  depth: z.number().int().min(1).max(6),
-  direction: z.enum(['upstream', 'downstream', 'both']),
-  linkMode: z.enum(['direct', 'donor']),
-  minAmount: z.number().min(0).optional(),
-  dateFrom: z.string().optional(),
-  dateTo: z.string().optional(),
-  maxPerNode: z.number().int().min(1).max(200).optional(),
-  maxNodes: z.number().int().min(10).max(5000).optional(),
-});
 
 const createSchema = z.object({
   name: z.string().min(1).max(120),

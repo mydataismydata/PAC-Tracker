@@ -32,6 +32,23 @@ interface Props {
   onLoad: (search: SavedSearchRow) => void;
 }
 
+/**
+ * Turn a rejected save into something the reader can act on.
+ *
+ * The route answers a bad body with "invalid body" and a field-by-field
+ * breakdown. Showing only the headline left the one message that matters —
+ * which setting the server would not take — sitting unread in the response.
+ */
+async function describeFailure(res: Response): Promise<string> {
+  const body = await res.json().catch(() => null);
+  const headline = body?.error ?? `HTTP ${res.status}`;
+  const fields = body?.detail?.fieldErrors as Record<string, string[]> | undefined;
+  const named = Object.entries(fields ?? {})
+    .map(([field, messages]) => `${field}: ${messages.join(', ')}`)
+    .join('; ');
+  return named ? `${headline} — ${named}` : headline;
+}
+
 export default function SavedSearches({
   currentSeedId,
   currentSeedName,
@@ -94,7 +111,7 @@ export default function SavedSearches({
           nodePositions: getPositions(),
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await describeFailure(res));
       setNameDraft(null);
       await refresh();
     } catch (e) {
