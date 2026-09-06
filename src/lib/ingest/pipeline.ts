@@ -36,6 +36,7 @@ import {
   normalizeAddress,
   normalizePhone,
   officerKey,
+  isOfficerPlaceholder,
   normalizeName,
   looksLikeCommittee,
   personDisplayName,
@@ -845,7 +846,9 @@ export async function ingestCommitteeRegistrations(
           key: raw === null ? null : (canonicalKey.get(raw) ?? raw),
         };
       })
-      .filter((o): o is typeof o & { key: string } => o.key !== null);
+      // A committee that filed "None" named nobody. Keeping the word as a
+      // person invents a hub that every such committee shares.
+      .filter((o): o is typeof o & { key: string } => o.key !== null && !isOfficerPlaceholder(o.key));
 
     // Anyone we recorded last time who is not on the list now has left the
     // role. Superseding rather than deleting keeps the fact that they held it.
