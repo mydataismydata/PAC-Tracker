@@ -790,7 +790,10 @@ export async function ingestCommitteeRegistrations(
           city: row.city,
           stateCode: row.state,
           zip: row.zip,
-          countyName: row.county,
+          // The bulk extract names the county; the detail page has no such
+          // column. A record from the page must not blank what the extract
+          // stored, so a missing county leaves the stored one alone.
+          countyName: sql`COALESCE(${row.county ?? null}, ${committeeRegistrations.countyName})`,
           normalizedAddress: normalizeAddress(row.addr1),
           phone: row.phone,
           phoneDigits: normalizePhone(row.phone),

@@ -49,6 +49,9 @@ scripts/tmp-*.ts
 # CSVs pulled out of the app. Output, not source.
 /.exports/
 
+# Review files and sweep logs the CLI writes for a human to read once.
+/.working/
+
 # Local-only operational notes (VPS deploy, credentials, runbooks).
 /docs-local/
 
