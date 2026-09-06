@@ -42,6 +42,28 @@ const TILE_H = 58;
 const GHOST_DX = TILE_W + 150;
 const GHOST_DY = TILE_H + 70;
 
+/** Clear space kept around every tile, in graph units. */
+const TILE_GAP = 30;
+
+/**
+ * Radius that holds one spaced tile, used to size a ring for a whole batch.
+ *
+ * Area per tile over pi, square-rooted. Multiplying it by the square root of a
+ * count gives a circle with room for that many tiles at the density the gap
+ * asks for, which is what keeps a hundred-spoke hub from being seeded into a
+ * disc a fifth of the size it needs.
+ */
+const TILE_RADIUS = Math.sqrt(((TILE_W + TILE_GAP) * (TILE_H + TILE_GAP)) / Math.PI);
+
+/** Enough sweeps to open a pile of six hundred tiles stacked on one point. */
+const SEPARATION_PASSES = 400;
+
+/** How far one tile may travel in a single sweep. */
+const SEPARATION_STEP = TILE_W * 2;
+
+/** Overlap small enough to stop working on, in graph units. */
+const SEPARATION_TOLERANCE = 0.5;
+
 /** Trim a name to what fits two lines of a tile without overflowing it. */
 function fitLabel(name: string, max = 38): string {
   const clean = name.trim();
@@ -60,14 +82,114 @@ function spawnPosition(
   origin: { x: number; y: number },
   spread: number,
   index: number,
+  count: number,
   level: number,
 ): { x: number; y: number } {
   const angle = index * 2.399963; // golden angle in radians
-  const radius = spread * (0.5 + 0.35 * level) * (0.65 + 0.35 * Math.sqrt(index + 1) * 0.15);
+  // The ring has to hold the whole batch. A committee hub can arrive with a
+  // hundred and forty tiles at once, and seeding those into a ring sized for a
+  // handful hands the layout a pile it never fully unpicks.
+  const ring = Math.max(spread * (0.5 + 0.35 * level), TILE_RADIUS * Math.sqrt(count));
+  // Square root of the index, so tiles land at even density instead of
+  // crowding the middle of the ring.
+  const radius = ring * Math.sqrt((index + 1) / count);
   return {
     x: origin.x + Math.cos(angle) * radius,
     y: origin.y + Math.sin(angle) * radius,
   };
+}
+
+/**
+ * Slide tiles apart until none of them covers another.
+ *
+ * A force layout repels centres. It has no notion of a rectangle that must
+ * stay visible, so a treasurer named on a hundred committees settles with
+ * tiles lying three deep and the names unreadable. This runs once the layout
+ * has stopped, and moves each overlapping pair along whichever axis they
+ * overlap least on. Choosing that axis is what keeps the arrangement
+ * recognisable: tiles slide out of each other rather than being flung across
+ * the canvas, and the graph simply grows to fit.
+ *
+ * Every pair is measured against the sweep before it moves anything, so a tile
+ * pushed by two neighbours at once ends up clear of both. The step limit stops
+ * a dense pile from exploding on its first sweep.
+ *
+ * A tile the reader placed is never moved. Its neighbours give way instead.
+ */
+function separateTiles(cy: Core, isFixed: (id: string) => boolean): void {
+  const boxes = cy.nodes().map((n, index) => {
+    const p = n.position();
+    return {
+      node: n,
+      index,
+      x: p.x,
+      y: p.y,
+      halfW: n.outerWidth() / 2 + TILE_GAP / 2,
+      halfH: n.outerHeight() / 2 + TILE_GAP / 2,
+      movable: !isFixed(n.id()),
+    };
+  });
+  if (boxes.length < 2) return;
+
+  let settled = false;
+  for (let pass = 0; pass < SEPARATION_PASSES && !settled; pass++) {
+    // Ordered by left edge, a tile can only cover ones that start before its
+    // own right edge, so the sweep stops early instead of testing every pair.
+    boxes.sort((a, b) => a.x - a.halfW - (b.x - b.halfW));
+
+    settled = true;
+    for (let i = 0; i < boxes.length; i++) {
+      const a = boxes[i];
+      for (let j = i + 1; j < boxes.length; j++) {
+        const b = boxes[j];
+        if (b.x - b.halfW >= a.x + a.halfW) break;
+
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        const overlapX = a.halfW + b.halfW - Math.abs(dx);
+        const overlapY = a.halfH + b.halfH - Math.abs(dy);
+        if (overlapX <= SEPARATION_TOLERANCE || overlapY <= SEPARATION_TOLERANCE) continue;
+        if (!a.movable && !b.movable) continue;
+        settled = false;
+
+        // Two tiles exactly on top of each other have no direction to separate
+        // along, so fall back to the sweep order to keep the result stable.
+        if (dx === 0 && dy === 0) {
+          dx = a.index < b.index ? -1 : 1;
+          dy = 0;
+        }
+
+        // Move the pair apart along the line between them, far enough that one
+        // axis clears. Holding that direction is what keeps the arrangement
+        // recognisable — a tile slides out from under its neighbour instead of
+        // being knocked sideways into the next one, which is the shuffling that
+        // stops a shortest-axis push from ever settling.
+        const byX = Math.abs(dx) < 1e-6 ? Infinity : (a.halfW + b.halfW) / Math.abs(dx);
+        const byY = Math.abs(dy) < 1e-6 ? Infinity : (a.halfH + b.halfH) / Math.abs(dy);
+        let push = (Math.min(byX, byY) - 1) / 2;
+
+        // A pair almost exactly on top of each other asks to be thrown half the
+        // canvas apart. Capping the step spreads that over several sweeps.
+        const travel = push * Math.hypot(dx, dy);
+        if (travel > SEPARATION_STEP) push *= SEPARATION_STEP / travel;
+
+        // A tile held in place cannot take its half, so the other one takes it.
+        const shareA = a.movable ? (b.movable ? 1 : 2) : 0;
+        const shareB = b.movable ? (a.movable ? 1 : 2) : 0;
+        a.x += dx * push * shareA;
+        a.y += dy * push * shareA;
+        b.x -= dx * push * shareB;
+        b.y -= dy * push * shareB;
+      }
+    }
+  }
+
+  cy.batch(() => {
+    for (const b of boxes) {
+      const p = b.node.position();
+      if (p.x !== b.x || p.y !== b.y) b.node.position({ x: b.x, y: b.y });
+    }
+  });
 }
 
 export interface GraphCanvasHandle {
@@ -580,6 +702,12 @@ export default function GraphCanvas({
       ? { x: (centre.x1 + centre.x2) / 2, y: (centre.y1 + centre.y2) / 2 }
       : { x: 0, y: 0 };
     const spread = centre ? Math.max(centre.w, centre.h, 400) * 0.7 : 400;
+    // Counted before anything is placed, because the ring each tile lands on is
+    // sized for the whole batch rather than for the tile in hand.
+    let incoming = 0;
+    for (const n of nodes.values()) {
+      if (cy.getElementById(n.id).empty() && !initialPositions?.[n.id]) incoming++;
+    }
     let spawnIndex = 0;
 
     for (const n of nodes.values()) {
@@ -600,7 +728,7 @@ export default function GraphCanvas({
         },
         position: initialPositions?.[n.id]
           ? { ...initialPositions[n.id] }
-          : spawnPosition(origin, spread, spawnIndex++, n.level),
+          : spawnPosition(origin, spread, spawnIndex++, incoming, n.level),
       });
     }
 
@@ -662,12 +790,21 @@ export default function GraphCanvas({
 
       // Hold pinned and user-restored tiles; let everything else settle freely
       // so late arrivals don't get wedged into whatever gap is left over.
+      //
+      // Locking as well as constraining them is not belt and braces. fcose
+      // reads `fixedNodeConstraint` only on a randomized run, and a randomized
+      // run is the one thing this must not do, because it would throw every
+      // other tile somewhere new while the reader is looking at them. A locked
+      // node is one Cytoscape itself refuses to move, whatever the layout asks.
       const fixed: { nodeId: string; position: { x: number; y: number } }[] = [];
       cy.nodes().forEach((n) => {
         const id = n.id();
         if (pinnedRef.current.has(id) || initialPositions?.[id]) {
           const p = n.position();
           fixed.push({ nodeId: id, position: { x: p.x, y: p.y } });
+          n.lock();
+        } else {
+          n.unlock();
         }
       });
 
@@ -694,11 +831,20 @@ export default function GraphCanvas({
       } as cytoscape.LayoutOptions);
 
       /**
-       * fcose's own `fit` runs against the size it saw at layout start, which
-       * in a flex pane is often stale, so this is the fit that counts. Skipped
-       * once the user has arranged tiles by hand — their layout wins.
+       * Open the tiles out, then frame them.
+       *
+       * The separation pass runs whatever the reader has arranged, because a
+       * pinned tile only holds its own place and new arrivals still have to be
+       * kept off it. Framing is the part that gets skipped once tiles have been
+       * dragged: moving the viewport there would throw away the view they
+       * built. fcose's own `fit` runs against the size it saw at layout start,
+       * which in a flex pane is often stale, so this is the fit that counts.
        */
       const settleView = () => {
+        // The lock was only for the duration of the layout. Leaving it on would
+        // make a pinned tile the one tile the reader can no longer drag.
+        cy.nodes().unlock();
+        separateTiles(cy, (id) => pinnedRef.current.has(id) || Boolean(initialPositions?.[id]));
         if (pinnedRef.current.size > 0) return;
         cy.resize();
         cy.fit(cy.elements(), 60);
