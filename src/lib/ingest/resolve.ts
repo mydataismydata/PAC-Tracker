@@ -79,6 +79,12 @@ export interface ResolveInput {
   office?: string | null;
   party?: string | null;
   committeeType?: string | null;
+  /**
+   * The source says this filer is a committee without naming a type — the
+   * county portals' `committee=Y` flag. A filer with neither this nor a type is
+   * a candidate.
+   */
+  isCommittee?: boolean;
   city?: string | null;
   state?: string | null;
   zip?: string | null;
@@ -473,7 +479,7 @@ export class EntityResolver {
   private async create(input: ResolveInput, normalized: string): Promise<string> {
     const isRecipient = input.role === 'recipient';
     const kind = isRecipient
-      ? input.committeeType
+      ? input.committeeType || input.isCommittee
         ? ('committee' as const)
         : ('candidate' as const)
       : (kindFromHint(input.kindHint) ??

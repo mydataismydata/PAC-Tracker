@@ -65,6 +65,7 @@
  * express. They are listed, never executed — run them through psql by hand.
  */
 
+import { classifyIndustry } from '@/lib/ingest/industry';
 import { existsSync } from 'node:fs';
 import { db } from '@/db';
 import { sql } from 'drizzle-orm';
@@ -420,12 +421,16 @@ async function runSetKind(e: Extract<Entry, { op: 'set-kind' }>): Promise<Outcom
   if (!APPLY) {
     return { status: 'pending', detail: `would re-kind "${row.name}" ${row.kind} -> ${e.kind}` };
   }
-  // A kind that can receive-and-forward money should be crawlable too.
+  // A kind that can receive-and-forward money should be crawlable too. The
+  // industry label was derived from the old kind, so it is re-derived from the
+  // new one — a committee stops reading as a "Candidate committee".
   const traversable = ['committee', 'party', 'candidate'].includes(e.kind);
+  const industry = classifyIndustry(null, row.name, e.kind);
   await db.execute(sql`
     UPDATE entities
        SET kind = ${e.kind}::entity_kind,
-           is_traversable = is_traversable OR ${traversable}
+           is_traversable = is_traversable OR ${traversable},
+           industry = ${industry}
      WHERE id = ${row.id}
   `);
   return { status: 'pending', detail: `re-kinded "${row.name}" ${row.kind} -> ${e.kind}` };
