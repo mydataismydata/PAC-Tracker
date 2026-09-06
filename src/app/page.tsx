@@ -176,6 +176,17 @@ export default function Home() {
     useState<Record<string, { x: number; y: number }> | null>(null);
   const [tab, setTab] = useState<'controls' | 'saved'>('controls');
   /**
+   * Whether the settings column is open, from `lg` up.
+   *
+   * Open is the state you start in, because with nothing on the canvas the
+   * settings are the only thing to read. Running a search closes it: the
+   * answer wants the width, and the settings that get changed while reading a
+   * graph stay reachable in the strip it closes to. A phone ignores this and
+   * shows the full column, since there the settings are a tab of their own
+   * rather than a column beside the graph.
+   */
+  const [controlsOpen, setControlsOpen] = useState(true);
+  /**
    * Which side of the ledger to read. Held here rather than in the panel
    * because the tiles that set it sit over the canvas now, and the rows they
    * filter sit in the panel.
@@ -239,7 +250,10 @@ export default function Home() {
           const biggest = person?.parts?.[0]?.id;
           if (!biggest) return;
           const e = await fetch(`/api/entities/${biggest}`);
-          if (e.ok) setSeed((await e.json()).entity);
+          if (e.ok) {
+            setControlsOpen(false);
+            setSeed((await e.json()).entity);
+          }
         })();
       }
       return;
@@ -262,7 +276,10 @@ export default function Home() {
     // The link carries only an id, so fetch the entity to label the header.
     void (async () => {
       const res = await fetch(`/api/entities/${seedId}`);
-      if (res.ok) setSeed((await res.json()).entity);
+      if (res.ok) {
+        setControlsOpen(false);
+        setSeed((await res.json()).entity);
+      }
     })();
   }, []);
 
@@ -484,6 +501,7 @@ export default function Home() {
   const handleSearchSelect = useCallback((hit: EntitySearchHit) => {
     setRestoredPositions(null);
     pendingFocusId.current = hit.id;
+    setControlsOpen(false);
     setSeed(hit);
 
     setSelected({
@@ -630,6 +648,7 @@ export default function Home() {
       const node = crawl.nodes.get(nodeId) ?? (selected?.id === nodeId ? selected : null);
       if (!node) return;
       setRestoredPositions(null);
+      setControlsOpen(false);
       setSeed({
         id: node.id,
         name: node.name,
@@ -752,91 +771,14 @@ export default function Home() {
 
   return (
     <div className="flex h-dvh flex-col bg-slate-950 text-slate-100">
-      <div className="flex min-h-0 flex-1">
-        {/* --------------------------------------------------------- sidebar */}
-        {/* Runs the full height of the window and carries the masthead, so the
-            search sits over the two panes it actually drives. */}
-        <aside
-          className={`w-full shrink-0 flex-col border-slate-800 lg:flex lg:w-72 lg:border-r
-            ${pane === 'filters' ? 'flex' : 'hidden'}`}
-        >
-          <div className="hidden shrink-0 items-baseline gap-2 border-b border-slate-800 px-4 py-3 lg:flex">
-            <h1 className="text-base font-semibold tracking-tight">PAC Tracker</h1>
-            <span className="text-xs text-slate-500">Florida</span>
-          </div>
-
-          <div className="flex shrink-0 border-b border-slate-800">
-            {(['controls', 'saved'] as const).map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setTab(t)}
-                className={`flex-1 px-3 py-2 text-xs font-medium transition
-                  ${
-                    tab === t
-                      ? 'border-b-2 border-indigo-500 text-slate-100'
-                      : 'text-slate-500 hover:text-slate-300'
-                  }`}
-              >
-                {t === 'saved' ? 'Saved searches' : 'Controls'}
-              </button>
-            ))}
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {tab === 'controls' ? (
-              <ControlPanel settings={settings} onChange={handleSettingsChange} />
-
-            ) : (
-              <SavedSearches
-                currentSeedId={seed?.id ?? null}
-                currentSeedName={seed?.name ?? null}
-                settings={settings}
-                getPositions={() => canvasRef.current?.getPositions() ?? {}}
-                onLoad={(s) => {
-                  setSettings({ ...DEFAULT_SETTINGS, ...(s.params as Partial<CrawlSettings>) });
-                  setRestoredPositions(
-                    (s.nodePositions as Record<string, { x: number; y: number }> | null) ?? null,
-                  );
-                  const saved: EntitySearchHit = {
-                    id: s.seedEntityId,
-                    name: s.seedName ?? 'seed',
-                    kind: s.seedKind ?? 'unknown',
-                    committee_type: null,
-                    status: 'unknown',
-                    city: null,
-                    state_code: null,
-                    industry: null,
-                    total_received: '0',
-
-                    total_given: '0',
-                    in_degree: 0,
-                    out_degree: 0,
-                    is_traversable: true,
-                    score: 1,
-                  };
-                  setSeed(saved);
-                }}
-
-              />
-            )}
-          </div>
-        </aside>
-
-        {/* Canvas and inspector under one search. Hidden on a phone whenever
-            the sidebar has the screen, which is the only time they share it. */}
-        <div
-          className={`min-w-0 flex-1 flex-col lg:flex ${pane === 'filters' ? 'hidden' : 'flex'}`}
-        >
       {/* ------------------------------------------------------------ header */}
       <header className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-4 py-3">
-        {/* The masthead is the sidebar's job from `lg` up. Below `sm` it is
-            dropped instead of shown, because the search and the buttons
-            together already want more width than a phone has. */}
-        <h1 className="hidden shrink-0 text-sm font-semibold tracking-tight sm:block lg:hidden">
-          PAC Tracker
-        </h1>
-
+        {/* Dropped below `sm` rather than shrunk: the search and the buttons
+            beside it already want more width than a phone has. */}
+        <div className="hidden shrink-0 items-baseline gap-2 sm:flex">
+          <h1 className="text-sm font-semibold tracking-tight lg:text-base">PAC Tracker</h1>
+          <span className="hidden text-xs text-slate-500 lg:inline">Florida</span>
+        </div>
 
         <div className="max-w-xl flex-1">
           <EntitySearch onSelect={handleSearchSelect} cycle={settings.cycle} />
@@ -905,103 +847,200 @@ export default function Home() {
         </div>
       </header>
 
-          <div className="flex min-h-0 flex-1">
-            {/* ------------------------------------------------------ canvas */}
-            <main
-              className={`relative flex min-w-0 flex-1 flex-col lg:flex ${
-                pane === 'graph' ? 'flex' : 'hidden'
-              }`}
-            >
-              {seed && (
-                <SubjectBar
-                  searched={seed}
-                  searchedNode={crawl.nodes.get(seed.id) ?? null}
-                  onRefresh={handleRefreshCrawl}
-                  node={selectedNode}
-                  onSearchFromHere={handleRecenter}
-                  trail={trail}
-                  onReturnToSearched={handleResetSelection}
-                  onJumpTo={(hop) => void handleFocusEntity(hop.id)}
+      <div className="flex min-h-0 flex-1">
+        {/* ------------------------------------------------- settings column */}
+        <aside
+          className={`w-full shrink-0 flex-col border-slate-800 lg:flex lg:border-r
+            ${controlsOpen ? 'lg:w-72' : 'lg:w-44'}
+            ${pane === 'filters' ? 'flex' : 'hidden'}`}
+        >
+          {/* The strip the column closes to. Only from `lg` up: a phone shows
+              the settings as a tab of their own, with the whole screen, so
+              there is nothing there for a strip to save. */}
+          {!controlsOpen && (
+            <div className="hidden min-h-0 flex-1 flex-col overflow-y-auto p-2 lg:flex">
+              <button
+                type="button"
+                onClick={() => setControlsOpen(true)}
+                title="Open the settings column"
+                className="mb-3 flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-[11px]
+                           text-slate-500 transition hover:bg-slate-900 hover:text-slate-300"
+              >
+                <Chevron direction="right" />
+                Settings
+              </button>
+              <ControlPanel settings={settings} onChange={handleSettingsChange} compact />
+            </div>
+          )}
 
-                  committees={subject?.committees ?? null}
-                  received={received}
-                  given={given}
-                  direction={direction}
-                  onDirectionChange={setDirection}
-                  officers={searchedOfficers}
-                  onFindRegistrations={handleFindRegistrations}
-                  registrationsOn={settings.linkMode === 'registration'}
+          <div
+            className={`min-h-0 flex-1 flex-col ${controlsOpen ? 'flex' : 'flex lg:hidden'}`}
+          >
+            <div className="flex shrink-0 border-b border-slate-800">
+              {(['controls', 'saved'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTab(t)}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition
+                    ${
+                      tab === t
+                        ? 'border-b-2 border-indigo-500 text-slate-100'
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                >
+                  {t === 'saved' ? 'Saved searches' : 'Controls'}
+                </button>
+              ))}
+              {/* No counterpart on a phone, where the column is a whole tab and
+                  closing it would leave nothing behind. */}
+              <button
+                type="button"
+                onClick={() => setControlsOpen(false)}
+                title="Close the settings column"
+                className="hidden shrink-0 px-2 text-slate-600 transition hover:text-slate-300
+                           lg:block"
+              >
+                <Chevron direction="left" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {tab === 'controls' ? (
+                <ControlPanel settings={settings} onChange={handleSettingsChange} />
+
+              ) : (
+                <SavedSearches
+                  currentSeedId={seed?.id ?? null}
+                  currentSeedName={seed?.name ?? null}
+                  settings={settings}
+                  getPositions={() => canvasRef.current?.getPositions() ?? {}}
+                  onLoad={(s) => {
+                    setSettings({ ...DEFAULT_SETTINGS, ...(s.params as Partial<CrawlSettings>) });
+                    setRestoredPositions(
+                      (s.nodePositions as Record<string, { x: number; y: number }> | null) ?? null,
+                    );
+                    const saved: EntitySearchHit = {
+                      id: s.seedEntityId,
+                      name: s.seedName ?? 'seed',
+                      kind: s.seedKind ?? 'unknown',
+                      committee_type: null,
+                      status: 'unknown',
+                      city: null,
+                      state_code: null,
+                      industry: null,
+                      total_received: '0',
+
+                      total_given: '0',
+                      in_degree: 0,
+                      out_degree: 0,
+                      is_traversable: true,
+                      score: 1,
+                    };
+                    setControlsOpen(false);
+                    setSeed(saved);
+                  }}
+
                 />
               )}
-
-              <div className="relative min-h-0 flex-1">
-                {!seed ? (
-                  <EmptyState />
-                ) : (
-                  <GraphCanvas
-                    nodes={crawl.nodes}
-                    edges={crawl.edges}
-                    seedId={seed.id}
-                    initialPositions={restoredPositions}
-                    onSelectNode={handleSelectNode}
-                    onExpandNode={handleRecenter}
-                    viewIntent={viewIntent}
-                    selectedId={selectedNode?.id ?? null}
-                    highlightChain={chain}
-                    keepLit={keepLit}
-                    ghost={ghost}
-                    onReady={(h) => {
-                      canvasRef.current = h;
-                    }}
-                  />
-                )}
-
-                {crawl.error && (
-                  <div
-                    className="absolute bottom-4 left-4 rounded border border-red-800 bg-red-950/90
-                               px-3 py-2 text-xs text-red-300"
-                  >
-                    {crawl.error}
-                  </div>
-                )}
-
-                {seed && <ViewControls canvasRef={canvasRef} />}
-                {seed && <Legend />}
-                {exploring && <ResetPill seedName={seed.name} onReset={handleResetSelection} />}
-
-              </div>
-            </main>
-
-            {/* ------------------------------------------------------ detail */}
-            <aside
-              className={`w-full shrink-0 flex-col overflow-hidden border-slate-800 lg:flex lg:w-80
-                lg:border-l ${pane === 'detail' ? 'flex' : 'hidden'}`}
-            >
-              {/* Keyed on the entity so the ledger's paging, filter and scroll
-                  state reset cleanly when the selection changes. */}
-              <NodeDetail
-                key={selectedNode?.id ?? 'none'}
-                node={selectedNode}
-                nodes={crawl.nodes}
-                onFocus={handleFocusEntity}
-                onRecenter={handleRecenter}
-                subject={subject}
-                officers={officers}
-                direction={direction}
-                onDirectionChange={setDirection}
-                exploring={exploring}
-                dateFrom={settings.dateFrom}
-
-                dateTo={settings.dateTo}
-                onDatesChange={(from, to) =>
-                  setSettings((prev) => ({ ...prev, dateFrom: from, dateTo: to }))
-                }
-                cycle={settings.cycle}
-              />
-
-            </aside>
+            </div>
           </div>
-        </div>
+        </aside>
+
+        {/* ------------------------------------------------------ canvas */}
+        <main
+          className={`relative flex min-w-0 flex-1 flex-col lg:flex ${
+            pane === 'graph' ? 'flex' : 'hidden'
+          }`}
+        >
+          {seed && (
+            <SubjectBar
+              searched={seed}
+              searchedNode={crawl.nodes.get(seed.id) ?? null}
+              onRefresh={handleRefreshCrawl}
+              node={selectedNode}
+              onSearchFromHere={handleRecenter}
+              trail={trail}
+              onReturnToSearched={handleResetSelection}
+              onJumpTo={(hop) => void handleFocusEntity(hop.id)}
+
+              committees={subject?.committees ?? null}
+              received={received}
+              given={given}
+              direction={direction}
+              onDirectionChange={setDirection}
+              officers={searchedOfficers}
+              onFindRegistrations={handleFindRegistrations}
+              registrationsOn={settings.linkMode === 'registration'}
+            />
+          )}
+
+          <div className="relative min-h-0 flex-1">
+            {!seed ? (
+              <EmptyState />
+            ) : (
+              <GraphCanvas
+                nodes={crawl.nodes}
+                edges={crawl.edges}
+                seedId={seed.id}
+                initialPositions={restoredPositions}
+                onSelectNode={handleSelectNode}
+                onExpandNode={handleRecenter}
+                viewIntent={viewIntent}
+                selectedId={selectedNode?.id ?? null}
+                highlightChain={chain}
+                keepLit={keepLit}
+                ghost={ghost}
+                onReady={(h) => {
+                  canvasRef.current = h;
+                }}
+              />
+            )}
+
+            {crawl.error && (
+              <div
+                className="absolute bottom-4 left-4 rounded border border-red-800 bg-red-950/90
+                           px-3 py-2 text-xs text-red-300"
+              >
+                {crawl.error}
+              </div>
+            )}
+
+            {seed && <ViewControls canvasRef={canvasRef} />}
+            {seed && <Legend />}
+            {exploring && <ResetPill seedName={seed.name} onReset={handleResetSelection} />}
+
+          </div>
+        </main>
+
+        {/* ------------------------------------------------------ detail */}
+        <aside
+          className={`w-full shrink-0 flex-col overflow-hidden border-slate-800 lg:flex lg:w-80
+            lg:border-l ${pane === 'detail' ? 'flex' : 'hidden'}`}
+        >
+          {/* Keyed on the entity so the ledger's paging, filter and scroll
+              state reset cleanly when the selection changes. */}
+          <NodeDetail
+            key={selectedNode?.id ?? 'none'}
+            node={selectedNode}
+            nodes={crawl.nodes}
+            onFocus={handleFocusEntity}
+            onRecenter={handleRecenter}
+            subject={subject}
+            officers={officers}
+            direction={direction}
+            onDirectionChange={setDirection}
+            exploring={exploring}
+            dateFrom={settings.dateFrom}
+
+            dateTo={settings.dateTo}
+            onDatesChange={(from, to) =>
+              setSettings((prev) => ({ ...prev, dateFrom: from, dateTo: to }))
+            }
+            cycle={settings.cycle}
+          />
+
+        </aside>
       </div>
 
       <MobileTabs pane={pane} onChange={setPane} hasSelection={selectedNode !== null} />
@@ -1017,6 +1056,26 @@ function KindDot({ kind }: { kind: string }) {
       style={{ backgroundColor: kindColor(kind) }}
       aria-hidden
     />
+  );
+}
+
+/** The arrow on the two controls that open and close the settings column. */
+function Chevron({ direction }: { direction: 'left' | 'right' }) {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+      aria-hidden
+    >
+      <polyline points={direction === 'left' ? '15 5 8 12 15 19' : '9 5 16 12 9 19'} />
+    </svg>
   );
 }
 

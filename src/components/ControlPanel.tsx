@@ -15,6 +15,16 @@ interface Props {
   settings: CrawlSettings;
   onChange: (next: CrawlSettings) => void;
   disabled?: boolean;
+  /**
+   * Narrow variant for the collapsed strip beside a running graph.
+   *
+   * Carries the four settings that get changed while reading a graph, in the
+   * width a strip has: depth becomes a pick list, the cycles and link modes
+   * keep their buttons but lose the explanatory line under each one. What it
+   * drops — the two per-edge limits and the node ceiling — is set once before
+   * a crawl and rarely touched again, so it waits for the panel to be opened.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -24,18 +34,26 @@ interface Props {
  * loaded, an unfiltered graph quietly answers "who has ever funded this",
  * which is rarely the question being asked.
  */
-const CYCLE_CHOICES: { value: string | undefined; label: string; hint: string }[] = [
+const CYCLE_CHOICES: {
+  value: string | undefined;
+  label: string;
+  /** What the button says in a strip, where the full label will not fit. */
+  short: string;
+  hint: string;
+}[] = [
   {
     value: CURRENT_CYCLE.id,
     label: `Current (${CURRENT_CYCLE.label})`,
+    short: CURRENT_CYCLE.label,
     hint: `Only money filed for the ${CURRENT_CYCLE.label} election`,
   },
   {
     value: PREVIOUS_CYCLE.id,
     label: `Previous (${PREVIOUS_CYCLE.label})`,
+    short: PREVIOUS_CYCLE.label,
     hint: `Only money filed for the ${PREVIOUS_CYCLE.label} election`,
   },
-  { value: undefined, label: 'All', hint: 'Every cycle loaded, summed together' },
+  { value: undefined, label: 'All', short: 'All', hint: 'Every cycle loaded, summed together' },
 ];
 
 /** Anything reachable from the dropdown rather than the three shortcuts. */
@@ -78,7 +96,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-export default function ControlPanel({ settings, onChange, disabled }: Props) {
+export default function ControlPanel({ settings, onChange, disabled, compact }: Props) {
   const set = <K extends keyof CrawlSettings>(key: K, value: CrawlSettings[K]) =>
     onChange({ ...settings, [key]: value });
 
@@ -87,22 +105,41 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
   const setLinkMode = (mode: LinkMode) => onChange(withLinkMode(settings, mode));
 
   return (
-    <div className="space-y-4">
-      <Field label={`Depth — ${settings.depth} level${settings.depth > 1 ? 's' : ''}`}>
-        <input
-          type="range"
-          min={1}
-          max={6}
-          value={settings.depth}
-          disabled={disabled}
-          onChange={(e) => set('depth', Number(e.target.value))}
-          className="w-full accent-indigo-500"
-        />
-        <div className="flex justify-between text-[10px] text-slate-500">
-          {[1, 2, 3, 4, 5, 6].map((n) => (
-            <span key={n}>{n}</span>
-          ))}
-        </div>
+    <div className={compact ? 'space-y-3' : 'space-y-4'}>
+      <Field label={compact ? 'Depth' : `Depth — ${settings.depth} level${settings.depth > 1 ? 's' : ''}`}>
+        {compact ? (
+          <select
+            value={settings.depth}
+            disabled={disabled}
+            onChange={(e) => set('depth', Number(e.target.value))}
+            className="w-full rounded border border-slate-700 bg-slate-900 px-1.5 py-1
+                       text-[11px] text-slate-200 outline-none focus:border-indigo-500
+                       disabled:opacity-40"
+          >
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <option key={n} value={n}>
+                {n} level{n > 1 ? 's' : ''}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <>
+            <input
+              type="range"
+              min={1}
+              max={6}
+              value={settings.depth}
+              disabled={disabled}
+              onChange={(e) => set('depth', Number(e.target.value))}
+              className="w-full accent-indigo-500"
+            />
+            <div className="flex justify-between text-[10px] text-slate-500">
+              {[1, 2, 3, 4, 5, 6].map((n) => (
+                <span key={n}>{n}</span>
+              ))}
+            </div>
+          </>
+        )}
       </Field>
 
       <Field label="Election cycle">
@@ -120,7 +157,7 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
                   : 'bg-slate-900 text-slate-400 hover:bg-slate-800'
               } disabled:opacity-40`}
             >
-              {c.label}
+              {compact ? c.short : c.label}
             </button>
           ))}
         </div>
@@ -177,7 +214,8 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
               type="button"
               disabled={disabled}
               onClick={() => setLinkMode(m.value)}
-              className={`w-full rounded border px-2 py-2 text-left transition
+              className={`w-full rounded border px-2 text-left transition
+                ${compact ? 'py-1.5' : 'py-2'}
                 ${
                   settings.linkMode === m.value
                     ? 'border-indigo-500 bg-indigo-950/60'
@@ -185,60 +223,66 @@ export default function ControlPanel({ settings, onChange, disabled }: Props) {
                 } disabled:opacity-50`}
             >
               <span className="block text-xs font-medium text-slate-100">{m.label}</span>
-              <span className="mt-0.5 block text-[11px] leading-snug text-slate-400">
-                {m.hint}
-              </span>
+              {!compact && (
+                <span className="mt-0.5 block text-[11px] leading-snug text-slate-400">
+                  {m.hint}
+                </span>
+              )}
             </button>
           ))}
         </div>
       </Field>
 
-      <div className="grid grid-cols-2 gap-2">
-        <Field label="Min $ per edge">
-          <input
-            type="number"
-            min={0}
-            step={1000}
-            value={settings.minAmount ?? ''}
-            disabled={disabled}
-            placeholder="any"
-            onChange={(e) =>
-              set('minAmount', e.target.value === '' ? undefined : Number(e.target.value))
-            }
-            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5
-                       text-sm text-slate-100 outline-none focus:border-indigo-500"
-          />
-        </Field>
-        <Field label="Max per node">
-          <input
-            type="number"
-            min={1}
-            max={200}
-            value={settings.maxPerNode}
-            disabled={disabled}
-            onChange={(e) => set('maxPerNode', Math.max(1, Number(e.target.value)))}
-            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5
-                       text-sm text-slate-100 outline-none focus:border-indigo-500"
-          />
-        </Field>
-      </div>
+      {!compact && (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Min $ per edge">
+              <input
+                type="number"
+                min={0}
+                step={1000}
+                value={settings.minAmount ?? ''}
+                disabled={disabled}
+                placeholder="any"
+                onChange={(e) =>
+                  set('minAmount', e.target.value === '' ? undefined : Number(e.target.value))
+                }
+                className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5
+                           text-sm text-slate-100 outline-none focus:border-indigo-500"
+              />
+            </Field>
+            <Field label="Max per node">
+              <input
+                type="number"
+                min={1}
+                max={200}
+                value={settings.maxPerNode}
+                disabled={disabled}
+                onChange={(e) => set('maxPerNode', Math.max(1, Number(e.target.value)))}
+                className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5
+                           text-sm text-slate-100 outline-none focus:border-indigo-500"
+              />
+            </Field>
+          </div>
 
-      {/* The date range lives beside the ledger in the inspector, next to the
-          rows it is usually being read against. */}
+          {/* The date range lives beside the ledger in the inspector, next to the
+              rows it is usually being read against. */}
 
-      <Field label={`Node ceiling — ${settings.maxNodes}`}>
+          <Field label={`Node ceiling — ${settings.maxNodes}`}>
 
-        <input
-          type="range"
-          min={50}
-          max={3000}
-          step={50}
-          value={settings.maxNodes}
-          disabled={disabled}
-          onChange={(e) => set('maxNodes', Number(e.target.value))}
-          className="w-full accent-indigo-500"
-        />
-      </Field>
+            <input
+              type="range"
+              min={50}
+              max={3000}
+              step={50}
+              value={settings.maxNodes}
+              disabled={disabled}
+              onChange={(e) => set('maxNodes', Number(e.target.value))}
+              className="w-full accent-indigo-500"
+            />
+          </Field>
+        </>
+      )}
     </div>
   );
 }
