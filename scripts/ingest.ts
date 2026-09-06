@@ -12,7 +12,9 @@
  *   pnpm ingest cycle 20261103-GEN               # sweep a whole state election cycle
  *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
- *   pnpm ingest committees                       # registrations + chairs/treasurers
+ *   pnpm ingest committees                       # registrations + chairs/treasurers (active only)
+ *   pnpm ingest committee-details                # chair/treasurer/agent for CLOSED committees
+ *     --status=closed|active|all --refresh --max=N --accounts=70275,83962
  *   pnpm ingest county stjohns                   # sweep a county (current cycle)
  *   pnpm ingest county stjohns --all             # every cycle the portal offers
  *   pnpm ingest counties                         # list supported counties
@@ -54,6 +56,7 @@ import { db } from '@/db';
 import { entities } from '@/db/schema';
 import { sql, eq, and, desc } from 'drizzle-orm';
 import { FlDoeAdapter } from '@/lib/ingest/fl-doe/adapter';
+import type { RegistryCommitteeDetail } from '@/lib/ingest/fl-doe/parse';
 import { FlDoeClient, NAME_MATCH } from '@/lib/ingest/fl-doe/client';
 import {
   ensureFloridaSource,
@@ -151,6 +154,11 @@ async function main() {
         console.log(`  ${c.acctNum}  ${c.name}  (would have joined acct ${c.mergedInto})`);
       }
     }
+    process.exit(0);
+  }
+
+  if (mode === 'committee-details') {
+    await ingestCommitteeDetails(fl, { sourceId, jurisdictionId }, resolver);
     process.exit(0);
   }
 
@@ -745,6 +753,163 @@ async function ingestOrgProfiles(slug?: string) {
     '\n  Done. org_profiles and governance officers updated — no rebuild needed.\n' +
       '  Both tables ship wholesale in the next sync (scripts/sync-to-vps.sh).',
   );
+}
+
+/**
+ * Load registration records one committee at a time, from the detail page.
+ *
+ * `ingest committees` downloads the bulk extract, which is one request for the
+ * whole roster but covers *active* committees only. Everything the state has
+ * closed — 4,298 nodes holding most of a billion dollars of receipts — has no
+ * chair, no treasurer and no address here at all. The per-committee page has
+ * them, and adds the registered agent, which the bulk extract omits for every
+ * committee.
+ *
+ * The cost is one request each, so the run is long and has to survive being
+ * interrupted. It does: a committee whose account already has a registration
+ * and a recorded agent is skipped, which makes a re-run resume rather than
+ * start over. `--refresh` turns that off and re-reads every page.
+ */
+async function ingestCommitteeDetails(
+  fl: FlDoeAdapter,
+  ctx: { sourceId: string; jurisdictionId: string },
+  resolver: EntityResolver,
+) {
+  const want = (flags.status ?? 'closed') as 'closed' | 'active' | 'all';
+  if (!['closed', 'active', 'all'].includes(want)) {
+    console.error('use --status=closed, --status=active or --status=all');
+    process.exit(1);
+  }
+  const refresh = flags.refresh === 'true' || flags.refresh === '';
+  const max = flags.max ? Number(flags.max) : undefined;
+  const only = flags.accounts ? new Set(flags.accounts.split(',').map((a) => a.trim())) : null;
+
+  const runId = await startRun(db, ctx.sourceId, {
+    mode: 'committee-details',
+    status: want,
+    refresh,
+  });
+
+  try {
+    let roster: Array<{ name: string; type: string | null; status: string; acctNum: string }>;
+    if (only) {
+      // Named accounts skip the sweep: the detail page carries the type itself.
+      roster = [...only].map((acctNum) => ({ name: '', type: null, status: 'unknown', acctNum }));
+      console.log(`\n${roster.length} account(s) named on the command line.`);
+    } else {
+      console.log('\nSweeping the committee registry for account numbers…');
+      const all = await fl.sweepCommitteeAccounts((p, found, total) =>
+        console.log(`  ${p}: +${found} (${total} accounts)`),
+      );
+      roster = all.filter((c) => want === 'all' || c.status === want);
+      const counts = all.reduce<Record<string, number>>((acc, c) => {
+        acc[c.status] = (acc[c.status] ?? 0) + 1;
+        return acc;
+      }, {});
+      console.log(
+        `\n${all.length} accounts in the registry ` +
+          `(${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}). ` +
+          `${roster.length} match --status=${want}.`,
+      );
+    }
+
+    // Already done: a registration under this account number that also carries
+    // an agent, which only the detail page can have supplied.
+    if (!refresh && roster.length > 0) {
+      const done = new Set(
+        (
+          await db.execute<{ external_id: string }>(sql`
+            SELECT r.external_id
+              FROM committee_registrations r
+             WHERE r.is_current
+               AND r.external_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM committee_officers o
+                            WHERE o.entity_id = r.entity_id
+                              AND o.role = 'registered_agent')
+          `)
+        ).map((r) => r.external_id),
+      );
+      const before = roster.length;
+      roster = roster.filter((c) => !done.has(c.acctNum));
+      if (before !== roster.length) {
+        console.log(
+          `  ${before - roster.length} already loaded, skipping (use --refresh to re-read).`,
+        );
+      }
+    }
+
+    if (max !== undefined) roster = roster.slice(0, max);
+    if (roster.length === 0) {
+      console.log('  nothing to fetch.');
+      await finishRun(db, runId, { rowsFetched: 0, rowsInserted: 0 });
+      return;
+    }
+
+    const started = Date.now();
+    const totals = { registrations: 0, officers: 0, agents: 0, created: 0, missing: 0, failed: 0 };
+    const failures: string[] = [];
+    const CHUNK = 50;
+
+    for (let i = 0; i < roster.length; i += CHUNK) {
+      const slice = roster.slice(i, i + CHUNK);
+      const records: RegistryCommitteeDetail[] = [];
+
+      for (const c of slice) {
+        try {
+          const detail = await fl.committeeDetail(c.acctNum, c.type);
+          if (!detail) {
+            totals.missing++;
+            continue;
+          }
+          records.push(detail);
+          totals.agents += detail.officers?.some((o) => o.role === 'registered_agent') ? 1 : 0;
+        } catch (err) {
+          totals.failed++;
+          failures.push(`${c.acctNum} ${c.name}: ${String(err).slice(0, 90)}`);
+        }
+      }
+
+      if (records.length > 0) {
+        const r = await ingestCommitteeRegistrations(db, records, ctx, resolver);
+        totals.registrations += r.registrations;
+        totals.officers += r.officers;
+        totals.created += r.entitiesCreated;
+      }
+
+      const done = Math.min(i + CHUNK, roster.length);
+      const rate = (Date.now() - started) / done;
+      const leftMin = Math.round(((roster.length - done) * rate) / 60000);
+      console.log(
+        `  ${done}/${roster.length}  +${totals.registrations} registrations, ` +
+          `+${totals.officers} officer roles, ${totals.agents} with an agent` +
+          `${totals.failed ? `, ${totals.failed} failed` : ''}` +
+          `  (~${leftMin} min left)`,
+      );
+    }
+
+    await finishRun(db, runId, {
+      rowsFetched: roster.length,
+      rowsInserted: totals.registrations,
+    });
+
+    console.log(
+      `\n  ${totals.registrations} registrations, ${totals.officers} officer roles, ` +
+        `${totals.agents} registered agents, ${totals.created} new entities.`,
+    );
+    if (totals.missing > 0) console.log(`  ${totals.missing} accounts returned no committee.`);
+    if (failures.length > 0) {
+      console.log(`  ${failures.length} failed:`);
+      for (const f of failures.slice(0, 20)) console.log(`    ${f}`);
+      if (failures.length > 20) console.log(`    …and ${failures.length - 20} more`);
+    }
+    console.log(
+      '\n  Officers and registrations are not graph edges, so no rebuild is needed.\n' +
+        '  Both tables ship wholesale in the next sync (scripts/sync-to-vps.sh).',
+    );
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
 }
 
 /**

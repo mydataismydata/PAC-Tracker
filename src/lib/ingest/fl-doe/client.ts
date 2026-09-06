@@ -30,6 +30,16 @@ export const FLDOE_ENDPOINTS = {
    * endpoints it takes no query at all.
    */
   committeeList: `${BASE}/committees/extractComList.asp`,
+  /**
+   * One committee's registration record, keyed by account number.
+   *
+   * The only route to a *closed* committee's chair and treasurer: the bulk
+   * extract above lists active committees only, and the name lookup returns
+   * three columns. This page carries the same fields for a committee whatever
+   * its status, plus the registered agent, which the bulk extract omits
+   * entirely. It is a GET with the account number in the query string.
+   */
+  committeeDetail: `${BASE}/committees/ComDetail.asp`,
 } as const;
 
 const REFERERS: Record<keyof typeof FLDOE_ENDPOINTS, string> = {
@@ -37,6 +47,7 @@ const REFERERS: Record<keyof typeof FLDOE_ENDPOINTS, string> = {
   expenditures: `${BASE}/campaign-finance/expenditures/`,
   committeeLookup: `${BASE}/committees/`,
   committeeList: `${BASE}/committees/downloadcomlist.asp`,
+  committeeDetail: `${BASE}/committees/ComLkupByName.asp`,
 };
 
 /**
@@ -123,6 +134,28 @@ export class FlDoeClient {
     endpoint: keyof typeof FLDOE_ENDPOINTS,
     params: Record<string, string | number | undefined>,
   ): Promise<string> {
+    return this.send('POST', endpoint, params);
+  }
+
+  /**
+   * GET a page whose parameters ride in the query string.
+   *
+   * Shares the queue, the delay and the retry policy with `post`, because the
+   * point of both is to stay inside what the state's server tolerates. The
+   * `.asp` pages take GET; the CGI endpoints take POST.
+   */
+  async get(
+    endpoint: keyof typeof FLDOE_ENDPOINTS,
+    params: Record<string, string | number | undefined> = {},
+  ): Promise<string> {
+    return this.send('GET', endpoint, params);
+  }
+
+  private async send(
+    method: 'GET' | 'POST',
+    endpoint: keyof typeof FLDOE_ENDPOINTS,
+    params: Record<string, string | number | undefined>,
+  ): Promise<string> {
     const run = async (): Promise<string> => {
       const elapsed = Date.now() - this.lastRequestAt;
       if (elapsed < this.delayMs) await sleep(this.delayMs - elapsed);
@@ -131,20 +164,27 @@ export class FlDoeClient {
       for (const [k, v] of Object.entries(params)) {
         if (v !== undefined) body.append(k, String(v));
       }
+      const query = body.toString();
+      const url =
+        method === 'GET' && query.length > 0
+          ? `${FLDOE_ENDPOINTS[endpoint]}?${query}`
+          : FLDOE_ENDPOINTS[endpoint];
 
       let lastError: unknown;
       for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
         this.onRequest?.({ endpoint, params: Object.fromEntries(body), attempt });
         try {
-          const res = await fetch(FLDOE_ENDPOINTS[endpoint], {
-            method: 'POST',
+          const res = await fetch(url, {
+            method,
             headers: {
               'User-Agent': this.userAgent,
-              'Content-Type': 'application/x-www-form-urlencoded',
+              ...(method === 'POST'
+                ? { 'Content-Type': 'application/x-www-form-urlencoded' }
+                : {}),
               Referer: REFERERS[endpoint],
               Accept: 'text/html,text/plain,*/*',
             },
-            body,
+            body: method === 'POST' ? body : undefined,
             signal: AbortSignal.timeout(180_000),
           });
           this.lastRequestAt = Date.now();

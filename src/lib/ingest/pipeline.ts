@@ -638,6 +638,46 @@ export async function ingestCommitteeRegistrations(
     .from(officerAliases);
   const canonicalKey = new Map(aliasRows.map((a) => [a.alias, a.canonical]));
 
+  // Every name already on file, indexed by how it reads written out.
+  //
+  // The detail page gives an officer as one string where the bulk extract gives
+  // three columns, and no split of a display name can recover a surname of more
+  // than one word: "Maria De Los Angeles Landrua Rivas" comes back with "Rivas"
+  // alone. Where the same person is already on an active committee, the extract
+  // has already said which words are the surname, and that answer is better
+  // than any guess. The lookup is on the whole name, so it cannot merge two
+  // people who differ anywhere in it.
+  type FiledName = {
+    last: string | null;
+    first: string | null;
+    middle: string | null;
+    key: string;
+  };
+  const filedNames = new Map<string, FiledName>();
+  for (const o of await db
+    .select({
+      fullName: committeeOfficers.fullName,
+      normalizedName: committeeOfficers.normalizedName,
+      last: committeeOfficers.nameLast,
+      first: committeeOfficers.nameFirst,
+      middle: committeeOfficers.nameMiddle,
+    })
+    .from(committeeOfficers)) {
+    const index = officerKey(o.fullName, null);
+    if (!index) continue;
+    // Officers learned from a corporate filing carry a key and a full name but
+    // no split at all. Their key is still the one to match on, so they are
+    // indexed too — a row that does have the parts just wins over them.
+    const held = filedNames.get(index);
+    if (held && !(held.last === null && o.last !== null)) continue;
+    filedNames.set(index, {
+      last: o.last,
+      first: o.first,
+      middle: o.middle,
+      key: o.normalizedName,
+    });
+  }
+
   for (const [i, row] of rows.entries()) {
     // 1. The account number is an identity, so prefer it over any name match.
     const claimed = row.acctNum
@@ -697,6 +737,11 @@ export async function ingestCommitteeRegistrations(
     }
     const resolved = { entityId };
 
+    // The bulk extract lists active committees and nothing else, so a record
+    // from it says nothing about status and active is the only reading. The
+    // detail page states it, and a closed committee has to keep saying so.
+    const status = row.status ?? 'active';
+
     // The registry spelling is authoritative — it is the committee's own — so
     // it replaces a name first learned from a truncated transaction column.
     await db
@@ -704,7 +749,7 @@ export async function ingestCommitteeRegistrations(
       .set({
         kind: row.type === 'PTY' ? 'party' : 'committee',
         committeeType: (row.type as never) ?? null,
-        status: 'active',
+        status,
         isTraversable: true,
         name: row.name,
         updatedAt: new Date(),
@@ -719,7 +764,7 @@ export async function ingestCommitteeRegistrations(
         externalId: row.acctNum,
         committeeType: row.type,
         typeDescription: row.typeDescription,
-        status: 'active',
+        status,
         addr1: row.addr1,
         addr2: row.addr2,
         city: row.city,
@@ -739,7 +784,7 @@ export async function ingestCommitteeRegistrations(
           externalId: row.acctNum,
           committeeType: row.type,
           typeDescription: row.typeDescription,
-          status: 'active',
+          status,
           addr1: row.addr1,
           addr2: row.addr2,
           city: row.city,
@@ -755,19 +800,47 @@ export async function ingestCommitteeRegistrations(
       });
     result.registrations++;
 
-    const officers = [
-      { role: 'chair' as const, last: row.chairLast, first: row.chairFirst, middle: row.chairMiddle },
+    // A detail-page record names the registered agent as well, and gives each
+    // officer their own address, so it replaces the two flat fields outright
+    // rather than adding to them.
+    const filed: Array<{
+      role: 'chair' | 'treasurer' | 'registered_agent';
+      last: string | null;
+      first: string | null;
+      middle: string | null;
+      display?: string;
+      address?: string | null;
+      city?: string | null;
+      state?: string | null;
+      zip?: string | null;
+    }> = row.officers ?? [
+      { role: 'chair', last: row.chairLast, first: row.chairFirst, middle: row.chairMiddle },
       {
-        role: 'treasurer' as const,
+        role: 'treasurer',
         last: row.treasurerLast,
         first: row.treasurerFirst,
         middle: row.treasurerMiddle,
       },
-    ]
+    ];
+
+    const officers = filed
       .map((o) => {
-        const raw = officerKey(o.last, o.first);
+        // Prefer the split this person already carries elsewhere over the one
+        // guessed from their display name, and their key over a derived one.
+        // See `filedNames`; a match there has no parts only when the name came
+        // from a corporate filing, and then the guess is the better split.
+        const onFile = o.display ? filedNames.get(officerKey(o.display, null) ?? '') : undefined;
+        const parts =
+          onFile && onFile.last !== null
+            ? { last: onFile.last, first: onFile.first, middle: onFile.middle }
+            : { last: o.last, first: o.first, middle: o.middle };
+        const raw = onFile?.key ?? officerKey(parts.last, parts.first);
         // The filed spelling stays in `fullName`; only the matching key moves.
-        return { ...o, key: raw === null ? null : (canonicalKey.get(raw) ?? raw) };
+        return {
+          ...o,
+          ...parts,
+          key: raw === null ? null : (canonicalKey.get(raw) ?? raw),
+        };
       })
       .filter((o): o is typeof o & { key: string } => o.key !== null);
 
@@ -793,6 +866,19 @@ export async function ingestCommitteeRegistrations(
     result.officersSuperseded += superseded.length;
 
     for (const o of officers) {
+      // Only a detail-page record carries an officer's own address. A bulk
+      // extract row has no opinion on it, so it leaves whatever is stored
+      // alone rather than blanking it on the next run.
+      const ownAddress =
+        o.display === undefined
+          ? {}
+          : {
+              address: o.address ?? null,
+              city: o.city ?? null,
+              stateCode: o.state ?? null,
+              zip: o.zip ?? null,
+            };
+
       await db
         .insert(committeeOfficers)
         .values({
@@ -802,8 +888,9 @@ export async function ingestCommitteeRegistrations(
           nameLast: o.last,
           nameFirst: o.first,
           nameMiddle: o.middle,
-          fullName: [o.first, o.middle, o.last].filter(Boolean).join(' '),
+          fullName: o.display ?? [o.first, o.middle, o.last].filter(Boolean).join(' '),
           normalizedName: o.key,
+          ...ownAddress,
           observedAt: new Date(),
           updatedAt: new Date(),
         })
@@ -819,7 +906,8 @@ export async function ingestCommitteeRegistrations(
             nameLast: o.last,
             nameFirst: o.first,
             nameMiddle: o.middle,
-            fullName: [o.first, o.middle, o.last].filter(Boolean).join(' '),
+            fullName: o.display ?? [o.first, o.middle, o.last].filter(Boolean).join(' '),
+            ...ownAddress,
             observedAt: new Date(),
             updatedAt: new Date(),
           },
