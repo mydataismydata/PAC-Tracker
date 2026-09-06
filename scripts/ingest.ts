@@ -813,8 +813,11 @@ async function ingestCommitteeDetails(
       );
     }
 
-    // Already done: a registration under this account number that also carries
-    // an agent, which only the detail page can have supplied.
+    // Already done: a registration under this account number carrying something
+    // only the detail page supplies — an agent, or an address against an
+    // officer. Neither survives a committee that filed nobody as its agent and
+    // gave no officer an address, so a later full run re-reads those ~90 pages.
+    // That is cheap next to inventing a column to record the visit.
     if (!refresh && roster.length > 0) {
       const done = new Set(
         (
@@ -825,7 +828,7 @@ async function ingestCommitteeDetails(
                AND r.external_id IS NOT NULL
                AND EXISTS (SELECT 1 FROM committee_officers o
                             WHERE o.entity_id = r.entity_id
-                              AND o.role = 'registered_agent')
+                              AND (o.role = 'registered_agent' OR o.address IS NOT NULL))
           `)
         ).map((r) => r.external_id),
       );

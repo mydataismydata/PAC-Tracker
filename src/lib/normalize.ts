@@ -616,7 +616,19 @@ const NAME_TITLES = new Set(['DR', 'MR', 'MRS', 'MS', 'MISS']);
  * Designated" has to stay one string or it becomes a person called Designated.
  */
 const NAME_PLACEHOLDER =
-  /^(no\s+\S+\s+designated|not\s+designated|none\s+designated|vacant|none|n\/?a|tbd|to\s+be\s+determined|unknown)$/i;
+  /^(no\s+\S+\s+designated|not\s+designated|none\s+designated|none|vacant|n\/?a|not\s+applicable|tbd|to\s+be\s+determined|unknown|pending)$/i;
+
+/**
+ * Does this officer field name nobody?
+ *
+ * A committee with no chair files the word rather than an empty cell, and 231
+ * of them file "None" for the registered agent. Stored as a person, that is a
+ * 231-committee hub in registration links and a name in the panel — a network
+ * made out of a blank. The absence of the row is the honest record.
+ */
+export function isOfficerPlaceholder(raw: string | null | undefined): boolean {
+  return NAME_PLACEHOLDER.test((raw ?? '').replace(/\s+/g, ' ').trim());
+}
 
 /**
  * Split a name written in reading order into the parts the state keeps apart.
