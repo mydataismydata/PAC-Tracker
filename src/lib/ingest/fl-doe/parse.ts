@@ -357,7 +357,12 @@ export interface RegistryCommittee {
    * itself survives in `statusText`.
    */
   status: 'active' | 'closed' | 'unknown';
-  /** The status exactly as printed, which `committee_registrations` keeps. */
+  /**
+   * The printed status, lower-cased, which `committee_registrations` keeps.
+   *
+   * Case is dropped because nothing reads the column for display, and one
+   * casing means a later query cannot miss a row for having the wrong one.
+   */
   statusText: string | null;
   /**
    * The state's account number, lifted from the row's own link.
@@ -402,7 +407,7 @@ export function parseCommitteeRegistryHtml(html: string): RegistryCommittee[] {
       name,
       type: type.toUpperCase(),
       status: registrationStatus(status),
-      statusText: status || null,
+      statusText: status.toLowerCase() || null,
       acctNum: raw[0].match(/ComDetail\.asp\?account=(\d+)/i)?.[1] ?? null,
     });
   }
@@ -479,7 +484,7 @@ export interface RegistryCommitteeDetail {
    * active.
    */
   status?: 'active' | 'closed' | 'unknown';
-  /** The status word exactly as the detail page printed it. */
+  /** The status word the detail page printed, lower-cased. */
   statusText?: string | null;
   /**
    * Every officer the detail page names, the registered agent included.
@@ -726,7 +731,7 @@ export function parseCommitteeDetailHtml(
     treasurerFirst: treasurer?.first ?? null,
     treasurerMiddle: treasurer?.middle ?? null,
     status: registrationStatus(statusText),
-    statusText: statusText || null,
+    statusText: statusText.toLowerCase() || null,
     officers,
   };
 }
