@@ -337,7 +337,13 @@ export class EntityResolver {
       .where(
         and(
           eq(entityAliases.normalizedAlias, normalized),
-          sql`${entityAliases.confidence} >= ${AUTO_LINK_THRESHOLD}`,
+          // Cast to `real` on both sides. The column is `real`, so a score
+          // written at exactly the threshold is stored as float32 and reads
+          // back as 0.87999999523, which loses to the float64 literal 0.88 —
+          // an alias accepted when it was written is then silently ignored
+          // ever after. 324 rows sat in that gap, "STRIPE LLC" against Stripe
+          // among them. Comparing at the column's own precision closes it.
+          sql`${entityAliases.confidence} >= ${AUTO_LINK_THRESHOLD}::real`,
         ),
       )
       .orderBy(sql`${entityAliases.confidence} DESC`)
