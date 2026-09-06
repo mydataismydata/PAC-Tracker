@@ -18,6 +18,7 @@ import {
   parseExpenditureTsv,
   parseCommitteeRegistryHtml,
   parseCommitteeListTsv,
+  parseCommitteeDetailHtml,
   type RawContributionRow,
   type RegistryCommittee,
   type RegistryCommitteeDetail,
@@ -715,6 +716,26 @@ export class FlDoeAdapter {
   }
 
   /**
+   * One committee's registration record, by account number.
+   *
+   * The route to a closed committee's officers. `committeeList` covers active
+   * committees only, and `committeesByPrefix` returns three columns, so for
+   * everything the state has already closed this page is the only source. It
+   * also carries the registered agent, which the bulk extract omits for every
+   * committee, active ones included.
+   *
+   * Returns null when the account number resolves to no committee — the page
+   * answers 200 with an empty shell rather than a 404.
+   */
+  async committeeDetail(
+    acctNum: string,
+    typeCode?: string | null,
+  ): Promise<RegistryCommitteeDetail | null> {
+    const html = await this.client.get('committeeDetail', { account: acctNum });
+    return parseCommitteeDetailHtml(html, { acctNum, typeCode });
+  }
+
+  /**
    * Every active committee's registration record, in one request.
    *
    * Worth preferring over `sweepCommitteeRegistry` where it applies: that one
@@ -732,6 +753,32 @@ export class FlDoeAdapter {
       console.warn(`committee list: skipped ${skipped} unnamed row(s)`);
     }
     return rows;
+  }
+
+  /**
+   * Full registry sweep keyed by account number rather than by name.
+   *
+   * `sweepCommitteeRegistry` keeps one row per name and prefers the active one,
+   * which is right for deciding whether a name is a committee. It is wrong for
+   * collecting registration records: a name reused after a committee closed is
+   * two accounts with two sets of officers, and keying by name discards one of
+   * them. Rows the results page gave no link for carry no account number and
+   * are dropped, since there is nothing to fetch them with.
+   */
+  async sweepCommitteeAccounts(
+    onProgress?: (prefix: string, found: number, total: number) => void,
+  ): Promise<Array<RegistryCommittee & { acctNum: string }>> {
+    const prefixes = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'];
+    const seen = new Map<string, RegistryCommittee & { acctNum: string }>();
+
+    for (const p of prefixes) {
+      const found = await this.committeesByPrefix(p);
+      for (const c of found) {
+        if (c.acctNum) seen.set(c.acctNum, { ...c, acctNum: c.acctNum });
+      }
+      onProgress?.(p, found.length, seen.size);
+    }
+    return [...seen.values()];
   }
 
   /** Full registry sweep across the alphabet and digits. */

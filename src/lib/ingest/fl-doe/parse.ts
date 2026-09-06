@@ -7,7 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { splitTypeTag, looksTruncated } from '@/lib/normalize';
+import { splitTypeTag, looksTruncated, splitPersonName } from '@/lib/normalize';
 import type { RawTransactionRow } from '../types';
 
 /** Column header emitted by `contrib.exe` with `queryformat=2`. */
@@ -349,6 +349,15 @@ export interface RegistryCommittee {
   name: string;
   type: string | null;
   status: 'active' | 'closed' | 'unknown';
+  /**
+   * The state's account number, lifted from the row's own link.
+   *
+   * Each name in the results links to `ComDetail.asp?account=N`, and that
+   * number is the only handle on a closed committee's registration record —
+   * the bulk extract that carries account numbers covers active committees
+   * only. Null when the row has no link, which the header rows do not.
+   */
+  acctNum: string | null;
 }
 
 /**
@@ -366,9 +375,11 @@ export function parseCommitteeRegistryHtml(html: string): RegistryCommittee[] {
   let rowMatch: RegExpExecArray | null;
   while ((rowMatch = rowRe.exec(html)) !== null) {
     const cells: string[] = [];
+    const raw: string[] = [];
     let cellMatch: RegExpExecArray | null;
     cellRe.lastIndex = 0;
     while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) {
+      raw.push(cellMatch[1]);
       cells.push(decodeHtml(cellMatch[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim());
     }
     if (cells.length < 3) continue;
@@ -386,6 +397,7 @@ export function parseCommitteeRegistryHtml(html: string): RegistryCommittee[] {
           : status.toLowerCase() === 'closed'
             ? 'closed'
             : 'unknown',
+      acctNum: raw[0].match(/ComDetail\.asp\?account=(\d+)/i)?.[1] ?? null,
     });
   }
   return out;
@@ -412,6 +424,27 @@ export const COMMITTEE_LIST_HEADER = [
   'TrsNameMiddle',
 ] as const;
 
+/**
+ * One officer as the detail page gives them: a name and, for the treasurer and
+ * the agent, their own address.
+ *
+ * The bulk extract has no equivalent — it carries a chair and a treasurer in
+ * fixed columns and nothing else — so this rides alongside those fields rather
+ * than replacing them.
+ */
+export interface RegistryOfficer {
+  role: 'chair' | 'treasurer' | 'registered_agent';
+  last: string | null;
+  first: string | null;
+  middle: string | null;
+  /** The name exactly as filed, before any split into parts. */
+  display: string;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+}
+
 /** A committee's registration record from the bulk extract. */
 export interface RegistryCommitteeDetail {
   /** The state's own account number — the identifier the exports lack. */
@@ -432,6 +465,21 @@ export interface RegistryCommitteeDetail {
   treasurerLast: string | null;
   treasurerFirst: string | null;
   treasurerMiddle: string | null;
+  /**
+   * Registration status, when the record came from the detail page.
+   *
+   * The bulk extract lists active committees only and so says nothing about
+   * status; a record from it leaves this undefined and the caller assumes
+   * active.
+   */
+  status?: 'active' | 'closed' | 'unknown';
+  /**
+   * Every officer the detail page names, the registered agent included.
+   *
+   * Present only on records read from that page. When it is set it supersedes
+   * the flat chair and treasurer fields, which cannot carry a third role.
+   */
+  officers?: RegistryOfficer[];
 }
 
 /**
@@ -494,6 +542,174 @@ export function parseCommitteeListTsv(text: string): {
   }
 
   return { rows, skipped };
+}
+
+/**
+ * Committee type description to the code the exports use.
+ *
+ * The detail page spells the type out where every other feed gives the three
+ * letters. A caller that already knows the code from the registry row should
+ * pass that instead; this covers a detail page read on its own, and leaves an
+ * unrecognized description as null rather than guessing.
+ */
+const TYPE_CODE_BY_DESCRIPTION: Record<string, string> = {
+  'political committee': 'PAC',
+  'committee of continuous existence': 'CCE',
+  'electioneering communications organization': 'ECO',
+  'electioneering communication organization': 'ECO',
+  'independent expenditure organization': 'IXO',
+  'political party': 'PTY',
+  'political party executive committee': 'PTY',
+  'political party affiliated committee': 'PAP',
+};
+
+/** Roles the detail page labels, in the order it prints them. */
+const DETAIL_OFFICER_ROLES: Array<{ label: string; role: RegistryOfficer['role'] }> = [
+  { label: 'chairperson', role: 'chair' },
+  { label: 'treasurer', role: 'treasurer' },
+  { label: 'deputy treasurer', role: 'treasurer' },
+  { label: 'registered agent', role: 'registered_agent' },
+];
+
+/**
+ * Read one committee's registration record from `ComDetail.asp`.
+ *
+ * This is the only page the state serves for a *closed* committee's chair and
+ * treasurer: the bulk extract covers active committees only, and the name
+ * lookup returns three columns. It also carries the registered agent, which no
+ * other state feed publishes.
+ *
+ * The markup is a label-and-value table — `<b>Treasurer:</b>` in one cell, the
+ * name and address in the next — so the fields are read by their labels rather
+ * than by position. Positional reading would be worse here than in the TSV: the
+ * rows a committee has depend on which officers it filed.
+ *
+ * `typeCode` comes from the registry row that supplied the account number,
+ * because that row gives the three-letter code directly.
+ */
+export function parseCommitteeDetailHtml(
+  html: string,
+  opts: { acctNum: string; typeCode?: string | null },
+): RegistryCommitteeDetail | null {
+  const clean = (s: string): string =>
+    decodeHtml(s.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+  const nullIfBlank = (s: string | undefined): string | null => {
+    const v = (s ?? '').trim();
+    return v.length > 0 ? v : null;
+  };
+
+  // The committee's own name is the one heading printed in the accent colour.
+  const heading = html.match(/<font[^>]*size=\+1[^>]*>\s*<b>([\s\S]*?)<\/b>/i);
+  const name = clean(heading?.[1] ?? '');
+  if (!name) return null;
+
+  // label -> the value cell's lines, split on the <br> the page uses for them.
+  const fields = new Map<string, string[]>();
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  const cellRe = /<t[dh][^>]*>([\s\S]*?)(?=<\/t[dh]>|<t[dh][^>]|$)/gi;
+  let rowMatch: RegExpExecArray | null;
+  while ((rowMatch = rowRe.exec(html)) !== null) {
+    const cells: string[] = [];
+    let cellMatch: RegExpExecArray | null;
+    cellRe.lastIndex = 0;
+    while ((cellMatch = cellRe.exec(rowMatch[1])) !== null) cells.push(cellMatch[1]);
+    if (cells.length < 2) continue;
+
+    const label = clean(cells[0]).replace(/:\s*$/, '').toLowerCase();
+    if (!label) continue;
+    const lines = cells[1]
+      .split(/<br\s*\/?>/i)
+      .map(clean)
+      .filter((l) => l.length > 0);
+    if (!fields.has(label)) fields.set(label, lines);
+  }
+
+  // "Tampa, FL 33606" — the last address line, wherever the street ran to.
+  const splitCityLine = (line: string | undefined) => {
+    const m = (line ?? '').match(/^(.*?),\s*([A-Za-z]{2})\.?\s*([0-9][0-9-]{3,9})?$/);
+    if (!m) return { city: null, state: null, zip: null };
+    return {
+      city: nullIfBlank(m[1]),
+      state: m[2].toUpperCase(),
+      zip: nullIfBlank(m[3]),
+    };
+  };
+
+  const addressBlock = (lines: string[]) => {
+    const cityIdx = lines.findIndex((l) => /,\s*[A-Za-z]{2}\.?\s*[0-9-]*$/.test(l));
+    if (cityIdx < 0) {
+      return {
+        addr1: nullIfBlank(lines[0]),
+        addr2: nullIfBlank(lines[1]),
+        city: null,
+        state: null,
+        zip: null,
+      };
+    }
+    return {
+      addr1: nullIfBlank(lines[0]),
+      addr2: cityIdx > 1 ? nullIfBlank(lines[1]) : null,
+      ...splitCityLine(lines[cityIdx]),
+    };
+  };
+
+  const mailing = addressBlock(fields.get('address') ?? []);
+  const typeDescription = nullIfBlank(fields.get('type')?.[0]);
+  const statusText = (fields.get('status')?.[0] ?? '').toLowerCase();
+
+  const officers: RegistryOfficer[] = [];
+  for (const { label, role } of DETAIL_OFFICER_ROLES) {
+    const lines = fields.get(label);
+    const display = nullIfBlank(lines?.[0]);
+    if (!display) continue;
+    // A committee that filed nobody prints a placeholder rather than an empty
+    // cell, and the state's own extract stores that placeholder as a name.
+    const parts = splitPersonName(display);
+    const own = addressBlock(lines!.slice(1));
+    officers.push({
+      role,
+      last: parts.last,
+      first: parts.first,
+      middle: parts.middle,
+      display,
+      address: own.addr1,
+      city: own.city,
+      state: own.state,
+      zip: own.zip,
+    });
+  }
+
+  const chair = officers.find((o) => o.role === 'chair');
+  const treasurer = officers.find((o) => o.role === 'treasurer');
+
+  return {
+    acctNum: opts.acctNum,
+    name,
+    type:
+      opts.typeCode ??
+      TYPE_CODE_BY_DESCRIPTION[(typeDescription ?? '').toLowerCase()] ??
+      null,
+    typeDescription,
+    addr1: mailing.addr1,
+    addr2: mailing.addr2,
+    city: mailing.city,
+    state: mailing.state,
+    zip: mailing.zip,
+    county: null, // the detail page does not print it; the bulk extract does
+    phone: nullIfBlank(fields.get('phone')?.[0]),
+    chairLast: chair?.last ?? null,
+    chairFirst: chair?.first ?? null,
+    chairMiddle: chair?.middle ?? null,
+    treasurerLast: treasurer?.last ?? null,
+    treasurerFirst: treasurer?.first ?? null,
+    treasurerMiddle: treasurer?.middle ?? null,
+    status: statusText.startsWith('active')
+      ? 'active'
+      : statusText.startsWith('closed')
+        ? 'closed'
+        : 'unknown',
+    officers,
+  };
 }
 
 /**

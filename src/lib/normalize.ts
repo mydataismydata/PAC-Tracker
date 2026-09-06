@@ -598,3 +598,83 @@ export function officerKey(
   if (!l && !f) return null;
   return [l, f].filter(Boolean).join(' ');
 }
+
+/** Words the state files with the surname rather than as a name of their own. */
+const NAME_SUFFIXES = new Set([
+  'JR', 'SR', 'II', 'III', 'IV', 'V',
+  'MD', 'DDS', 'DMD', 'PHD', 'ESQ', 'CPA', 'DVM', 'RN', 'JD', 'MBA', 'RPH', 'DPM',
+]);
+
+/** Courtesy titles, which lead a name and are not part of it. */
+const NAME_TITLES = new Set(['DR', 'MR', 'MRS', 'MS', 'MISS']);
+
+/**
+ * What a filing says when the post is empty.
+ *
+ * The state stores these in the name column rather than leaving it blank, and
+ * its own extract keeps the whole phrase as the surname — so "No Chairman
+ * Designated" has to stay one string or it becomes a person called Designated.
+ */
+const NAME_PLACEHOLDER =
+  /^(no\s+\S+\s+designated|not\s+designated|none\s+designated|vacant|none|n\/?a|tbd|to\s+be\s+determined|unknown)$/i;
+
+/**
+ * Split a name written in reading order into the parts the state keeps apart.
+ *
+ * The bulk committee extract files last, first and middle as three columns; the
+ * per-committee detail page gives one string, "Charles K. Windes Jr.". Both end
+ * up in the same officer key, so the split has to land on the last name the
+ * extract would have filed. That includes any suffix, because the extract puts
+ * it there: its `ChrNameLast` column holds "Windes Jr." and "Welton III".
+ *
+ * Two shapes defeat any split of a display string. A surname of more than one
+ * word cannot be told apart from a middle name, so "Maria De Los Angeles
+ * Landrua Rivas" comes back with "Rivas" alone as the surname. An organization
+ * serving as registered agent has no given name at all, and is kept whole. A
+ * caller that can match the string against a name already on file should do
+ * that first and use this only as the fallback.
+ */
+export function splitPersonName(raw: string): {
+  first: string | null;
+  middle: string | null;
+  last: string | null;
+} {
+  const empty = { first: null, middle: null, last: null };
+  const s = (raw ?? '').replace(/\s+/g, ' ').trim();
+  if (s.length === 0) return empty;
+
+  const fold = (t: string) => t.toUpperCase().replace(/[^A-Z0-9]+/g, '');
+
+  // A firm acting as agent, or a phrase standing in for an officer nobody
+  // filed, is one string and not a person. Either way there is nothing to split.
+  const shape = classifyName(s);
+  if (shape === 'organization' || shape === 'committee' || NAME_PLACEHOLDER.test(s)) {
+    return { first: null, middle: null, last: s };
+  }
+
+  // "Watkins, Nancy H." is already in the extract's own order.
+  const comma = s.match(/^([^,]+),\s*(.+)$/);
+  if (comma && !NAME_SUFFIXES.has(fold(comma[2].split(' ')[0]))) {
+    const given = comma[2].split(' ');
+    return {
+      first: given[0] ?? null,
+      middle: given.slice(1).join(' ') || null,
+      last: comma[1].trim(),
+    };
+  }
+
+  const parts = s.replace(/,/g, ' ').replace(/\s+/g, ' ').trim().split(' ');
+  if (parts.length > 1 && NAME_TITLES.has(fold(parts[0]))) parts.shift();
+  if (parts.length === 0) return empty;
+  if (parts.length === 1) return { first: null, middle: null, last: parts[0] };
+
+  // Walk back over trailing suffixes; what remains beneath them is the surname.
+  let tail = parts.length - 1;
+  while (tail > 1 && NAME_SUFFIXES.has(fold(parts[tail]))) tail--;
+
+  return {
+    first: parts[0],
+    middle: parts.slice(1, tail).join(' ') || null,
+    last: parts.slice(tail).join(' '),
+  };
+}
