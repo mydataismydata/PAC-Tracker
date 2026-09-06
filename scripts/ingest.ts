@@ -91,6 +91,7 @@ import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
 import { cycleForYear } from '@/lib/cycles';
+import { isOfficerPlaceholder } from '@/lib/normalize';
 import { EntityResolver } from '@/lib/ingest/resolve';
 
 const argv = process.argv.slice(2);
@@ -865,7 +866,13 @@ async function ingestCommitteeDetails(
             continue;
           }
           records.push(detail);
-          totals.agents += detail.officers?.some((o) => o.role === 'registered_agent') ? 1 : 0;
+          // Counted the way the pipeline stores them: a committee that filed
+          // "None" as its agent named nobody and does not count as having one.
+          totals.agents += detail.officers?.some(
+            (o) => o.role === 'registered_agent' && !isOfficerPlaceholder(o.display),
+          )
+            ? 1
+            : 0;
         } catch (err) {
           totals.failed++;
           failures.push(`${c.acctNum} ${c.name}: ${String(err).slice(0, 90)}`);
