@@ -36,10 +36,15 @@ export interface Person {
 
 /** The Sunbiz-only facts, kept by hand because Sunbiz has no machine route. */
 interface SunbizOverlay {
-  /** e.g. "Florida Not-For-Profit Corporation". Not a federal 990 concept. */
-  corpType: string;
+  /**
+   * e.g. "Florida Not-For-Profit Corporation". Not a federal 990 concept, and
+   * optional: an org whose Sunbiz record nobody has read yet has no answer
+   * here, and inventing one would put a corporate fact on the page that no
+   * filing supports.
+   */
+  corpType?: string;
   docNumber?: string;
-  status: string;
+  status?: string;
   filedDate?: string;
   registeredAgent?: Person;
   directors: Person[];
@@ -139,6 +144,89 @@ export const TRACKED_ORGS: TrackedOrg[] = [
       is527: false,
       donorsRestricted: true,
       note: 'Registered agent Richard E. Coates at 115 East Park Avenue, Suite 1. Directors are Florida Chamber of Commerce officers.',
+    },
+  },
+
+  /* ------------------------------------------------------------------------
+   * Found by tracing the funding origins of the 145 committees William
+   * Stafford Jones chairs or keeps the books for. Each is a 501(c)(4) that
+   * put money into that network, and each is here on its IRS record alone:
+   * the Sunbiz half — document number, registered agent, board, corporate
+   * type — has not been read yet, so those fields are absent rather than
+   * guessed. Filling them in is what turns a name into a link to the rest of
+   * the network, because a shared registered agent is the strongest tie there
+   * is here.
+   * ---------------------------------------------------------------------- */
+  {
+    slug: 'florida-consumer-awareness-fund',
+    entityId: 'bdbf3a5f-8606-46e6-a247-e555fa7e0c7e',
+    ein: '45-4338410',
+    name: 'Florida Consumer Awareness Fund',
+    sunbiz: {
+      directors: [],
+      is527: false,
+      donorsRestricted: true,
+      note: 'Tallahassee. $185,363 traced into the Jones committees, $82,045 of it given directly. Sunbiz record not yet read.',
+    },
+  },
+  {
+    slug: 'foundation-americas-families',
+    entityId: '4da98169-666c-4a33-bcb9-c9185c9ac211',
+    ein: '41-2165945',
+    name: "Foundation for America's Families",
+    sunbiz: {
+      directors: [],
+      is527: false,
+      donorsRestricted: true,
+      note: 'West Palm Beach. $117,643 traced, of which $45,000 straight to Florida Jobs Alliance on 2020-12-14. Sunbiz record not yet read.',
+    },
+  },
+  {
+    slug: 'american-promise',
+    entityId: '78d07b82-b5ba-4fd2-9aa2-4bfb7f4187ff',
+    ein: '46-3098708',
+    name: 'The American Promise, Inc.',
+    sunbiz: {
+      directors: [],
+      is527: false,
+      donorsRestricted: true,
+      note: 'Tallahassee. $33,557 traced, all of it through other committees rather than direct. Sunbiz record not yet read.',
+    },
+  },
+  {
+    slug: 'arda-roc',
+    entityId: '61b34355-ab9a-4546-b727-ad2d539dc667',
+    ein: '46-1457252',
+    name: 'ARDA-Resort Owners Coalition',
+    sunbiz: {
+      directors: [],
+      is527: false,
+      donorsRestricted: true,
+      note: 'Washington DC — the timeshare industry\u2019s advocacy arm. $32,077 traced, $8,000 direct. Not a Florida corporation, so there is no Sunbiz record to read.',
+    },
+  },
+  {
+    slug: 'concord-fund',
+    entityId: '6790ec66-cc35-42d2-ac7c-9ee0fdfe077b',
+    ein: '20-2303252',
+    name: 'The Concord Fund',
+    sunbiz: {
+      directors: [],
+      is527: false,
+      donorsRestricted: true,
+      note: 'Vienna, Virginia. $9,552 traced, reached the network through other committees. Not a Florida corporation.',
+    },
+  },
+  {
+    slug: 'save-our-society-from-drugs',
+    entityId: '46549081-c324-4f0d-b5da-ce1a4060b599',
+    ein: '59-3470019',
+    name: 'Save Our Society From Drugs',
+    sunbiz: {
+      directors: [],
+      is527: false,
+      donorsRestricted: true,
+      note: 'St Petersburg. $7,725 traced, reached the network through other committees. Sunbiz record not yet read.',
     },
   },
 ];
@@ -296,12 +384,12 @@ export function buildProfile(
 
   return {
     entityId: org.entityId,
-    corpType: s.corpType,
+    corpType: s.corpType ?? null,
     taxStatus: irsTaxStatus ?? s.taxStatus ?? null,
     is527: s.is527,
     ein: org.ein,
     docNumber: sunbiz?.docNumber ?? s.docNumber ?? null,
-    status: sunbiz ? statusLabel(sunbiz.status) : s.status,
+    status: sunbiz ? statusLabel(sunbiz.status) : (s.status ?? null),
     filedDate: sunbiz?.fileDate ?? s.filedDate ?? null,
     address: s.address ?? (resp ? addressFrom990(resp.organization) : null),
     registeredAgent: sunbiz?.registeredAgent?.display ?? s.registeredAgent?.display ?? null,
