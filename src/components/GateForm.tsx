@@ -111,14 +111,16 @@ export default function GateForm({ mode, next }: { mode: 'signin' | 'change'; ne
 
   return (
     <form onSubmit={signIn} className="mt-6 space-y-3">
+      {/* Deliberately not type="email": an account name may be a plain
+          username, and the browser would refuse to submit one. */}
       <input
-        type="email"
+        type="text"
         autoComplete="username"
         autoFocus
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        placeholder="Email"
-        aria-label="Email"
+        placeholder="Email or username"
+        aria-label="Email or username"
         className={field}
       />
       <input

@@ -6,6 +6,9 @@
  *   pnpm user password john@smith.com [password]
  *   pnpm user remove john@smith.com
  *
+ * The name can be an email address or a plain username — `newsroom`, say. The
+ * app never mails an account holder, so nothing depends on it being routable.
+ *
  * Omit the password and one is generated and printed. Both `add` and `password`
  * mark it temporary: the person is made to choose their own the first time they
  * sign in, so the one you read out over the phone stops working immediately.
@@ -27,11 +30,26 @@ function die(message: string): never {
   process.exit(1);
 }
 
-function requireEmail(raw: string | undefined): string {
+/**
+ * The name someone signs in with.
+ *
+ * An email address is the usual choice and stays the suggestion, but nothing
+ * here needs one: the app sends no mail to an account holder, and a password
+ * is handed over by whoever runs the instance. So this checks only what would
+ * break — an empty name, whitespace inside one, or a control character, none
+ * of which anyone can type into the sign-in box and match. The request form
+ * under /api/gate/request still demands a real address, because that one is
+ * handed to the mailer as a reply-to.
+ */
+function requireAccount(raw: string | undefined): string {
   if (!raw) die('Which account? e.g. pnpm user add john@smith.com');
-  const email = normalizeEmail(raw);
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) die(`"${raw}" is not an email address.`);
-  return email;
+  const name = normalizeEmail(raw);
+  if (name.length < 3) die(`"${raw}" is too short — three characters or more.`);
+  if (name.length > 200) die(`"${raw}" is too long — 200 characters at most.`);
+  if (/[\s\u0000-\u001f\u007f]/.test(name)) {
+    die(`"${raw}" cannot contain spaces or control characters.`);
+  }
+  return name;
 }
 
 function announce(email: string, password: string, verb: string): void {
@@ -61,7 +79,7 @@ async function main() {
     }
 
     case 'add': {
-      const email = requireEmail(emailArg);
+      const email = requireAccount(emailArg);
       if (await findUser(email)) die(`${email} already has an account.`);
       const password = passwordArg || suggestPassword();
       await addUser(email, password);
@@ -70,7 +88,7 @@ async function main() {
     }
 
     case 'password': {
-      const email = requireEmail(emailArg);
+      const email = requireAccount(emailArg);
       const password = passwordArg || suggestPassword();
       if (!(await resetPassword(email, password))) die(`No account for ${email}.`);
       announce(email, password, 'Reset');
@@ -78,14 +96,14 @@ async function main() {
     }
 
     case 'remove': {
-      const email = requireEmail(emailArg);
+      const email = requireAccount(emailArg);
       if (!(await removeUser(email))) die(`No account for ${email}.`);
       console.log(`Removed ${email}. Their sessions stop working immediately.`);
       break;
     }
 
     default:
-      die('Usage: pnpm user <list|add|password|remove> [email] [password]');
+      die('Usage: pnpm user <list|add|password|remove> [email or username] [password]');
   }
 }
 
