@@ -201,6 +201,50 @@ export async function ensureIrsSource(
 }
 
 /**
+ * The source and jurisdiction a federal candidate's filings belong to.
+ *
+ * One source per candidate, so a single committee can be purged and reloaded
+ * without disturbing the others — the same reason the 8872 loader keys its
+ * source by organization slug rather than sharing one.
+ */
+export async function ensureFecSource(
+  db: Db,
+  candidate: { slug: string; name: string; committeeId: string; office: string },
+): Promise<{ jurisdictionId: string; sourceId: string }> {
+  const [j] = await db
+    .insert(jurisdictions)
+    .values({
+      code: 'US-FEC',
+      name: 'United States (federal candidates)',
+      level: 'federal',
+      state: 'US',
+    })
+    .onConflictDoUpdate({
+      target: jurisdictions.code,
+      set: { name: 'United States (federal candidates)' },
+    })
+    .returning({ id: jurisdictions.id });
+
+  const [s] = await db
+    .insert(sources)
+    .values({
+      key: `fec-${candidate.slug}`,
+      name: `${candidate.name} — FEC`,
+      url: 'https://api.open.fec.gov/v1/',
+      jurisdictionId: j.id,
+      notes:
+        `Receipts and disbursements of ${candidate.name} (${candidate.committeeId}, ` +
+        `${candidate.office}), from the FEC. Florida sees only what this committee gives ` +
+        'to a state or county filer, never what it raises. National pool: the money is ' +
+        'raised nationally and spent federally, so the committee is an injection point.',
+    })
+    .onConflictDoUpdate({ target: sources.key, set: { jurisdictionId: j.id } })
+    .returning({ id: sources.id });
+
+  return { jurisdictionId: j.id, sourceId: s.id };
+}
+
+/**
  * Whether a row is money the graph does not track: interest a bank paid a
  * committee, or a committee parking its own funds in an interest-bearing
  * vehicle. Neither is political money — nobody contributed it and it reached

@@ -19,6 +19,8 @@
  *   pnpm ingest county stjohns --all             # every cycle the portal offers
  *   pnpm ingest counties                         # list supported counties
  *   pnpm ingest irs rslc                         # a national 527's funders (IRS 8872)
+ *   pnpm ingest fec fine                         # a federal candidate's committee (FEC)
+ *     --cycles=2024,2026 --min=200 --schedules=A|B|AB
  *   pnpm ingest orgs                             # refresh dark-money org profiles (IRS 990 via ProPublica + Sunbiz SFTP feed)
  *   pnpm ingest orgs eif                          # just one, by slug
  *   pnpm ingest orgs --sunbiz-refresh            # force a fresh download of the quarterly feed
@@ -62,6 +64,7 @@ import {
   ensureFloridaSource,
   ensureCountySource,
   ensureIrsSource,
+  ensureFecSource,
   ingestContributionRows,
   ingestTransactionRows,
   ingestCommitteeRegistrations,
@@ -82,6 +85,8 @@ import {
 } from '@/lib/ingest/pipeline';
 
 import { Irs8872Adapter, TRACKED_ORGS, findOrg } from '@/lib/ingest/irs-8872/adapter';
+import { FecAdapter, TRACKED_CANDIDATES, findCandidate } from '@/lib/ingest/fec/adapter';
+import { FecClient } from '@/lib/ingest/fec/client';
 import { IrsPodClient } from '@/lib/ingest/irs-8872/client';
 import { Propublica990Client, type Propublica990Response } from '@/lib/ingest/org-990/client';
 import { TRACKED_ORGS as ORG_PROFILE_ORGS, findTrackedOrg, buildProfile } from '@/lib/ingest/org-990/adapter';
@@ -91,7 +96,7 @@ import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
 import { cycleForYear } from '@/lib/cycles';
-import { isOfficerPlaceholder } from '@/lib/normalize';
+import { isOfficerPlaceholder, normalizeName } from '@/lib/normalize';
 import { EntityResolver } from '@/lib/ingest/resolve';
 
 const argv = process.argv.slice(2);
@@ -237,6 +242,11 @@ async function main() {
 
   if (mode === 'irs') {
     await ingestIrsOrg(term || 'rslc');
+    process.exit(0);
+  }
+
+  if (mode === 'fec') {
+    await ingestFecCandidate(term || 'fine');
     process.exit(0);
   }
 
@@ -683,6 +693,98 @@ async function ingestIrsOrg(slug: string) {
   console.log(
     `\n  ${filings} filings, ${totalRows} rows, ${totalInserted} new transactions, ` +
       `${totalCreated} new entities`,
+  );
+  console.log('\nRebuilding rollups…');
+  const counts = await rebuildAll(db);
+  console.log(`  ${counts.edges} edges over ${counts.entities} entities`);
+}
+
+/**
+ * Load one federal candidate's committee from the FEC.
+ *
+ * Receipts and disbursements both, cycle by cycle, written as each schedule
+ * completes so a long sweep is never buffered whole. The committee is marked
+ * an injection point at the end for the same reason the RSLC is: its money is
+ * raised nationally and spent federally, so a Florida share of it is not a
+ * representative slice of anything.
+ */
+async function ingestFecCandidate(slug: string) {
+  const candidate = findCandidate(slug);
+  if (!candidate) {
+    console.error(
+      `unknown candidate "${slug}". Known: ${TRACKED_CANDIDATES.map((c) => c.slug).join(', ')}`,
+    );
+    process.exit(1);
+  }
+
+  const cycles = flags.cycles
+    ? flags.cycles.split(',').map((c) => Number(c.trim())).filter(Number.isFinite)
+    : undefined;
+  const schedules = flags.schedules
+    ? ([...flags.schedules.toUpperCase()].filter((c) => c === 'A' || c === 'B') as ('A' | 'B')[])
+    : undefined;
+  const minAmount = flags.min ? Number(flags.min) : undefined;
+
+  const { sourceId, jurisdictionId } = await ensureFecSource(db, candidate);
+  const adapter = new FecAdapter(new FecClient());
+  const resolver = new EntityResolver(db);
+
+  const runId = await startRun(db, sourceId, {
+    candidate: candidate.slug,
+    committee: candidate.committeeId,
+    cycles: (cycles ?? candidate.cycles).join(','),
+    minAmount,
+  });
+
+  console.log(`\n${candidate.name}  (${candidate.committeeId}, ${candidate.office})`);
+  console.log(`cycles ${(cycles ?? candidate.cycles).join(', ')}` +
+    `${minAmount ? `, receipts >= ${fmt(minAmount)}` : ''}\n`);
+
+  let totalRows = 0;
+  let totalInserted = 0;
+  let totalCreated = 0;
+
+  try {
+    for await (const { cycle, schedule, rows } of adapter.sweep(candidate, {
+      cycles,
+      schedules,
+      minAmount,
+      onProgress: (m) => process.stdout.write(`\r  ${m.padEnd(60)}`),
+    })) {
+      process.stdout.write('\n');
+      const res = await ingestTransactionRows(db, rows, { sourceId, jurisdictionId, resolver });
+      totalRows += rows.length;
+      totalInserted += res.rowsInserted;
+      totalCreated += res.entitiesCreated;
+      const sum = rows.reduce((a, r) => a + Number(r.amount), 0);
+      console.log(
+        `  ${cycle} schedule ${schedule}: ${String(rows.length).padStart(5)} rows ` +
+          `${fmt(sum).padStart(13)} -> +${res.rowsInserted} txns, +${res.entitiesCreated} nodes` +
+          `${res.rowsExcluded ? `, ${res.rowsExcluded} excluded` : ''}`,
+      );
+    }
+    await finishRun(db, runId, { rowsFetched: totalRows, rowsInserted: totalInserted });
+  } catch (err) {
+    await finishRun(db, runId, { error: String(err) });
+    throw err;
+  }
+
+  const marked = await db.execute<{ id: string; name: string }>(sql`
+    UPDATE entities SET is_injection_point = true, is_traversable = true
+    WHERE id IN (
+      SELECT DISTINCT t.from_entity_id FROM transactions t
+      WHERE t.source_id = ${sourceId} AND t.from_entity_id IS NOT NULL
+      UNION
+      SELECT DISTINCT t.to_entity_id FROM transactions t
+      WHERE t.source_id = ${sourceId} AND t.to_entity_id IS NOT NULL
+    )
+      AND normalized_name = ${normalizeName(candidate.name)}
+    RETURNING id, name
+  `);
+  for (const m of marked) console.log(`\n  marked injection point: ${m.name}`);
+
+  console.log(
+    `\n  ${totalRows} rows, ${totalInserted} new transactions, ${totalCreated} new entities`,
   );
   console.log('\nRebuilding rollups…');
   const counts = await rebuildAll(db);
