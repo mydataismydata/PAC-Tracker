@@ -94,6 +94,8 @@ type EntityRow = {
   id: string;
   name: string;
   kind: string;
+  /** Needed by set-kind, which repairs the flag even when the kind matches. */
+  isTraversable: boolean;
 };
 
 /**
@@ -122,7 +124,7 @@ async function resolve(
 ): Promise<EntityRow | 'tombstoned' | null> {
   if (sel.id) {
     const [row] = await db.execute<EntityRow>(
-      sql`SELECT id, name, kind::text AS kind FROM entities WHERE id = ${sel.id}`,
+      sql`SELECT id, name, kind::text AS kind, is_traversable AS "isTraversable" FROM entities WHERE id = ${sel.id}`,
     );
     if (row) {
       // The assertion passes on the display name, on a spelling the entry
@@ -161,7 +163,7 @@ async function resolve(
 
   if (sel.acct) {
     const rows = await db.execute<EntityRow>(sql`
-      SELECT e.id, e.name, e.kind::text AS kind
+      SELECT e.id, e.name, e.kind::text AS kind, e.is_traversable AS "isTraversable"
         FROM committee_registrations r JOIN entities e ON e.id = r.entity_id
        WHERE r.external_id = ${sel.acct} AND r.is_current
     `);
@@ -171,7 +173,7 @@ async function resolve(
 
   if (sel.name) {
     const rows = await db.execute<EntityRow>(sql`
-      SELECT id, name, kind::text AS kind FROM entities
+      SELECT id, name, kind::text AS kind, is_traversable AS "isTraversable" FROM entities
        WHERE normalized_name = ${normalizeName(sel.name)}
     `);
     if (rows.length > 1) {
@@ -234,7 +236,7 @@ async function runSplit(e: Extract<Entry, { op: 'split' }>): Promise<Outcome> {
 
   // Converge on an existing target, so replaying never mints a second copy.
   const existing = await db.execute<EntityRow>(sql`
-    SELECT id, name, kind::text AS kind FROM entities
+    SELECT id, name, kind::text AS kind, is_traversable AS "isTraversable" FROM entities
      WHERE normalized_name = ${normalizeName(e.name)} AND upper(city) = upper(${e.city})
   `);
   const verb = existing.length > 0 ? `move onto existing "${existing[0].name}"` : `create "${e.name}"`;
@@ -415,13 +417,16 @@ async function runSetKind(e: Extract<Entry, { op: 'set-kind' }>): Promise<Outcom
   if (!row) {
     return { status: 'error', detail: `entity ${show(e.entity)} not found` };
   }
-  if (row.kind === e.kind) {
+  const wantTraversable = ['committee', 'party', 'candidate'].includes(e.kind);
+  if (row.kind === e.kind && (row.isTraversable || !wantTraversable)) {
     return { status: 'applied', detail: `"${row.name}" is already ${e.kind}` };
   }
   if (!APPLY) {
     return { status: 'pending', detail: `would re-kind "${row.name}" ${row.kind} -> ${e.kind}` };
   }
-  // A kind that can receive-and-forward money should be crawlable too. The
+  // A kind that can receive-and-forward money should be crawlable too — and an
+  // entry whose kind already matches still lands here when the flag does not,
+  // so a node created untraversable by an earlier split is repaired. The
   // industry label was derived from the old kind, so it is re-derived from the
   // new one — a committee stops reading as a "Candidate committee".
   const traversable = ['committee', 'party', 'candidate'].includes(e.kind);
