@@ -17,6 +17,7 @@ import SavedSearches from '@/components/SavedSearches';
 import AccountButton from '@/components/AccountButton';
 import { useCrawl } from '@/lib/graph/useCrawl';
 import { useOfficers, useOfficerSubject, type EntityOfficer } from '@/lib/graph/useOfficers';
+import { parseOfficerKey } from '@/lib/graph/officers';
 import type { LedgerDirection } from '@/lib/graph/useLedger';
 import {
   DEFAULT_SETTINGS,
@@ -254,6 +255,16 @@ export default function Home() {
    * close over a callback that is rebuilt whenever the graph changes.
    */
   const resetRef = useRef<() => void>(() => {});
+  /**
+   * Who the panel should open on once the crawl this link describes has drawn.
+   *
+   * A selection cannot simply be restored alongside the seed. The effect that
+   * starts a crawl drops any selection that is not the seed itself, because the
+   * node usually does not exist in the new graph — so a selection set at
+   * hydration would be cleared a tick later. Held here instead and spent when
+   * the crawl finishes, the same way `pendingFocusId` defers a zoom.
+   */
+  const pendingSelectId = useRef<string | null>(null);
   const startCrawl = crawl.start;
 
   /**
@@ -283,6 +294,7 @@ export default function Home() {
           if (!biggest) return;
           const e = await fetch(`/api/entities/${biggest}`);
           if (e.ok) {
+            pendingSelectId.current = biggest;
             setControlsOpen(false);
             setSeed((await e.json()).entity);
           }
@@ -309,6 +321,11 @@ export default function Home() {
       maxPerNode: q.has('maxPerNode') ? Number(q.get('maxPerNode')) : prev.maxPerNode,
       maxNodes: q.has('maxNodes') ? Number(q.get('maxNodes')) : prev.maxNodes,
     }));
+
+    // Open the panel on whatever the sharer had open, and on the seed when the
+    // link names nobody — picking an entity from search selects it too, so a
+    // link that did not would arrive with the panel blank.
+    pendingSelectId.current = q.get('selected') || seedId;
 
     // The link carries only an id, so fetch the entity to label the header.
     void (async () => {
@@ -356,6 +373,25 @@ export default function Home() {
     q.set('cycle', settings.cycle ?? '');
     window.history.replaceState(null, '', `?${q}`);
   }, [seed, settings, startCrawl]);
+
+  /**
+   * Keep `?selected=` in step with whoever the panel is open on.
+   *
+   * Kept out of the crawl effect above, which reruns only when the seed or a
+   * setting changes. Selecting a node changes neither, so a click would never
+   * reach the address bar — and folding the selection in there would either
+   * miss it or restart the crawl on every click.
+   *
+   * The seed is left unnamed: a restored link opens on it anyway, so writing it
+   * out would lengthen every URL the reader copies and say nothing.
+   */
+  useEffect(() => {
+    if (!seed) return;
+    const q = new URLSearchParams(window.location.search);
+    if (selected && selected.id !== seed.id) q.set('selected', selected.id);
+    else q.delete('selected');
+    window.history.replaceState(null, '', `?${q}`);
+  }, [seed, selected]);
 
   /**
    * Prefer the crawl's copy of the selected node over the one that seeded it.
@@ -605,6 +641,38 @@ export default function Home() {
       level: -1,
     };
   }, []);
+
+  /**
+   * Open the panel on whoever a shared link named, once its crawl has drawn.
+   *
+   * Three shapes of subject arrive here. A tile the crawl drew is taken from
+   * the crawl, so its totals match the cycle on screen. An officer hub the
+   * crawl did not draw — the link was saved in registration mode and reopened
+   * on money, say — is rebuilt from its own id, which carries the role and the
+   * name; the real figures then arrive from `useOfficerSubject`. Anything else
+   * is an entity the graph capped away, and is fetched.
+   */
+  useEffect(() => {
+    if (!crawlDone) return;
+    const wanted = pendingSelectId.current;
+    if (!wanted) return;
+    pendingSelectId.current = null;
+
+    const drawn = crawl.nodes.get(wanted);
+    if (drawn) {
+      setSelected(drawn);
+      return;
+    }
+    const parts = parseOfficerKey(wanted);
+    if (isOfficerNode(wanted) && parts) {
+      setSelected(officerHubNode(wanted, parts.normalizedName, parts.role));
+      return;
+    }
+    void (async () => {
+      const node = await fetchNode(wanted);
+      if (node) setSelected(node);
+    })();
+  }, [crawlDone, crawl.nodes, fetchNode]);
 
   /**
    * Open a name the panel offered, and show how it connects to what was open.
