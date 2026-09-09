@@ -2252,9 +2252,12 @@ export async function splitEntity(
         zip: fields.zip ?? null,
         occupation: fields.occupation ?? null,
         industry: classifyIndustry(fields.occupation ?? null, fields.name, fields.kind),
-        // A contributor starts terminal; refreshTraversability promotes it if
-        // it turns out to receive money too.
-        isTraversable: false,
+        // A kind that can receive and forward money is crawlable from the
+        // start. Waiting for refreshTraversability only works for a node that
+        // receives: a committee split out because it *gave* would never
+        // qualify and would sit in the graph as a leaf, which is the whole
+        // failure this op exists to correct.
+        isTraversable: ['committee', 'party', 'candidate'].includes(fields.kind),
       })
       .returning({ id: entities.id });
 
