@@ -303,6 +303,11 @@ export default function Home() {
       // An explicit `cycle=` of empty string means "all cycles", which is
       // different from the parameter being absent.
       cycle: q.has('cycle') ? q.get('cycle') || undefined : prev.cycle,
+      // Both caps travel too. Without them a shared registration crawl opens
+      // at the money default of 25 per node and shows a quarter of a
+      // co-registration network while looking complete.
+      maxPerNode: q.has('maxPerNode') ? Number(q.get('maxPerNode')) : prev.maxPerNode,
+      maxNodes: q.has('maxNodes') ? Number(q.get('maxNodes')) : prev.maxNodes,
     }));
 
     // The link carries only an id, so fetch the entity to label the header.
@@ -344,6 +349,8 @@ export default function Home() {
       depth: String(settings.depth),
       direction: settings.direction,
       linkMode: settings.linkMode,
+      maxPerNode: String(settings.maxPerNode),
+      maxNodes: String(settings.maxNodes),
     });
     if (settings.minAmount != null) q.set('minAmount', String(settings.minAmount));
     q.set('cycle', settings.cycle ?? '');
