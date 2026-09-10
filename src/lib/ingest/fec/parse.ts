@@ -75,6 +75,30 @@ function rowHash(subId: string): string {
 }
 
 /**
+ * True for a line that is the candidate's own capital, not a contribution.
+ *
+ * A candidate may lend a campaign money and be repaid out of what it raises
+ * later. Both halves move real dollars, and neither is a donation: the loan is
+ * a liability the committee owes, and the repayment is that debt being settled.
+ *
+ * Counting the inflow as giving is not a rounding error. Randy Fine lent his
+ * committee $950,000 across three unsecured, interest-free loans in 2025, none
+ * of it repaid — and booked as contributions those three rows made him the
+ * largest donor in his own file, ahead of every PAC and every person. A
+ * funding-origins trace would then credit him as the source of a quarter of
+ * that campaign's money, which the filing does not say and the data cannot
+ * support: a candidate's personal funds have no disclosure trail at all.
+ *
+ * The loans themselves are on Schedule C, which records the source, whether
+ * they were secured, and what is still outstanding. That is where a loan
+ * belongs, not in a graph of who gave what to whom.
+ */
+function isCandidateCapital(typeCode: string | null): boolean {
+  const code = (typeCode ?? '').toUpperCase();
+  return code.includes('LOAN');
+}
+
+/**
  * True for a line that restates money itemized elsewhere in the same report.
  *
  * The FEC flags these with a memo code. They exist so a reader can see the
@@ -95,6 +119,7 @@ export interface FilerContext {
 
 export function scheduleAToRow(r: ScheduleARow, ctx: FilerContext): RawTransactionRow | null {
   if (isMemo(r.memo_code)) return null;
+  if (isCandidateCapital(r.receipt_type_desc)) return null;
   const name = r.contributor_name?.trim();
   if (!name || r.contribution_receipt_amount == null) return null;
 
@@ -126,6 +151,9 @@ export function scheduleAToRow(r: ScheduleARow, ctx: FilerContext): RawTransacti
 
 export function scheduleBToRow(r: ScheduleBRow, ctx: FilerContext): RawTransactionRow | null {
   if (isMemo(r.memo_code)) return null;
+  // The other half of the same thing: a repayment is debt being settled, not
+  // the committee funding anyone.
+  if (isCandidateCapital(r.disbursement_type_desc)) return null;
   const name = r.recipient_name?.trim();
   if (!name || r.disbursement_amount == null) return null;
 
