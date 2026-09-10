@@ -21,6 +21,7 @@ import {
   type ScheduleBRow,
 } from './parse';
 import type { RawTransactionRow } from '../types';
+import { cycleForYear } from '@/lib/cycles';
 
 /**
  * Candidates worth loading, with the committee their money actually moves
@@ -76,7 +77,17 @@ export class FecAdapter {
     const schedules = opts.schedules ?? (['A', 'B'] as const);
 
     for (const cycle of cycles) {
-      const ctx = { filerName: candidate.name, electionCycle: `fec-${cycle}` };
+      // Keyed to the Florida cycle for the same election, not a namespace of
+      // its own. An FEC two-year transaction period *is* an election cycle —
+      // the 2026 period runs from January 2025 to December 2026, the same
+      // election `20261103-GEN` covers — so the two are one cycle under two
+      // names. The 8872 loader namespaces because an IRS filing period is a
+      // quarter ending on an arbitrary date and genuinely is not a cycle;
+      // copying that here hid every federal dollar from the cycle filter, and
+      // a committee with $2.7M in showed $0 for 2026.
+      const key = cycleForYear(cycle)?.id;
+      if (!key) throw new Error(`no election cycle known for ${cycle} — add it to cycles.ts`);
+      const ctx = { filerName: candidate.name, electionCycle: key };
 
       if (schedules.includes('A')) {
         const rows: RawTransactionRow[] = [];
