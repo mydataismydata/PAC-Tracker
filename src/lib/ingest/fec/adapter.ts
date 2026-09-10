@@ -98,7 +98,7 @@ export class FecAdapter {
           else memos++;
         }
         opts.onProgress?.(
-          `${cycle} receipts: ${rows.length} rows${memos ? `, ${memos} memo lines skipped` : ''}`,
+          `${cycle} receipts: ${rows.length} rows${memos ? `, ${memos} rows skipped as memo or candidate loan` : ''}`,
         );
         yield { cycle, schedule: 'A', rows };
       }
@@ -124,7 +124,7 @@ export class FecAdapter {
           else memos++;
         }
         opts.onProgress?.(
-          `${cycle} disbursements: ${rows.length} rows${memos ? `, ${memos} memo lines skipped` : ''}`,
+          `${cycle} disbursements: ${rows.length} rows${memos ? `, ${memos} rows skipped as memo or candidate loan` : ''}`,
         );
         yield { cycle, schedule: 'B', rows };
       }
