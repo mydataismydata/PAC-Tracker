@@ -783,6 +783,43 @@ async function ingestFecCandidate(slug: string) {
   `);
   for (const m of marked) console.log(`\n  marked injection point: ${m.name}`);
 
+  // The federal PACs that funded this committee are endpoints too.
+  //
+  // Each one files its own receipts with the FEC and we do not load them, so a
+  // trace reaching one finds nothing upstream and books the whole amount as
+  // unresolved. For Randy Fine that was $755,126 across 106 committees — 27% of
+  // his funding filed under a bar that reads as "we do not know", when in fact
+  // every one of them is a named committee with public quarterly filings.
+  //
+  // An injection point says the true thing instead: the money entered here, the
+  // committee is named, and how much of its pool reached this race is not
+  // something the disclosure supports estimating. That is the same treatment
+  // the RSLC gets, and for the same reason — a national PAC gives across dozens
+  // of races, so pro-rating its donors into one of them would manufacture a
+  // figure that would then sit beside observed transfers looking just as solid.
+  //
+  // Scoped by having no receipts of our own: a Florida committee that also
+  // gives federally has its upstream loaded and must stay a conduit, and if
+  // these are ever loaded the flag can come off.
+  const pools = await db.execute<{ id: string; name: string }>(sql`
+    UPDATE entities e SET is_injection_point = true, is_traversable = true
+    WHERE e.kind = 'committee'
+      AND NOT e.is_injection_point
+      AND e.id IN (
+        SELECT DISTINCT t.from_entity_id FROM transactions t
+        WHERE t.source_id = ${sourceId}
+          AND t.direction = 'contribution'
+          AND t.from_entity_id IS NOT NULL
+      )
+      AND NOT EXISTS (SELECT 1 FROM transactions r WHERE r.to_entity_id = e.id)
+    RETURNING e.id, e.name
+  `);
+  if (pools.length > 0) {
+    console.log(`  marked ${pools.length} federal PACs as endpoints, largest first:`);
+    for (const m of pools.slice(0, 5)) console.log(`    ${m.name}`);
+    if (pools.length > 5) console.log(`    … and ${pools.length - 5} more`);
+  }
+
   console.log(
     `\n  ${totalRows} rows, ${totalInserted} new transactions, ${totalCreated} new entities`,
   );
