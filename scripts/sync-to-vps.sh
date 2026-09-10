@@ -100,7 +100,13 @@ TXN_SET=$(setclause transactions)
 
   # Reference tables are tiny; upsert them so a newly added county source or
   # jurisdiction reaches the far side before anything referencing it does.
-  for t in sources jurisdictions; do
+  #
+  # Jurisdictions first: `sources.jurisdiction_id` points at them, so emitting
+  # sources first fails the foreign key the moment a source arrives with a
+  # jurisdiction the far side has never seen. That stayed hidden while every
+  # new source reused a jurisdiction the last full dump already carried, and
+  # broke on the first genuinely new one — US-FEC, for the federal loader.
+  for t in jurisdictions sources; do
     docker exec -i pactracker-db psql -U pactracker -d "$DB" -tAc \
       "SELECT format('INSERT INTO $t SELECT (%L::$t).* ON CONFLICT (id) DO NOTHING;', x) FROM $t x"
   done
