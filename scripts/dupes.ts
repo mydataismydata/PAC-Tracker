@@ -16,8 +16,9 @@
  * twice, and the names far enough apart that the 0.88 alias gate never joined
  * them.
  *
- * The report comes in two halves, because a coincidence means different things
- * depending on which way the two rows face.
+ * The report comes in three parts. The first two pivot on the donor: two nodes
+ * paying the same recipient on the same day for the same amount. What a
+ * coincidence means there depends on which way the two rows face.
  *
  *   Counted twice   The two rows face opposite ways — one expenditure against
  *                   one contribution. That is one transfer reported from both
@@ -28,6 +29,27 @@
  *                   sometimes it is one donor filed under two spellings, and
  *                   sometimes it is two affiliated donors who always give
  *                   together. Only a human can tell those apart.
+ *
+ * The third part pivots on the recipient instead, and catches what the first
+ * two cannot see at all.
+ *
+ *   Split filings   One payer, one amount, days apart, an expenditure against a
+ *                   contribution — and the two rows land on *different*
+ *                   recipient nodes. The payer named the account one way and
+ *                   the recipient named it another, so resolution built two
+ *                   nodes and `collapseMirrors`, which needs one pair of nodes
+ *                   to work on, never saw a pair at all.
+ *
+ * JAX Good Government gave Lindsey Brock $1,000 on 2023-04-06 by the state's
+ * expenditure file and $1,000 on 2023-04-11 by Duval's contribution file. One
+ * landed on "Lindsey Brock Campaign", the other on "BROCK LINDSEY". Same money,
+ * two nodes, counted twice. The two spellings score 0.80 against each other —
+ * blocking keys agree, word order and the word "campaign" do not — and the
+ * auto-link gate is 0.88, so they were never joined.
+ *
+ * That half looks past an exact date on purpose. A payer and a recipient book
+ * the same transfer days apart as a matter of course, so it uses the same
+ * asymmetric window `collapseMirrors` does.
  *
  * Two committees can register under one name, and Florida lets them. When both
  * nodes in a pair carry their own account number the report says so, because
@@ -42,7 +64,9 @@
  *   pnpm dupes --min=250           # widen the net (default 1000)
  *   pnpm dupes --limit=60
  *   pnpm dupes --lockstep          # only the same-direction half
- *   pnpm dupes --jsonl             # merge ops for the counted-twice half
+ *   pnpm dupes --split             # only the split-filings half
+ *   pnpm dupes --split-min=1000    # that half's own floor (default 100)
+ *   pnpm dupes --jsonl             # merge ops for whichever halves are shown
  */
 
 import { sql } from 'drizzle-orm';
@@ -68,6 +92,35 @@ const LIMIT = flag('limit', 30);
 const FLOOR = flag('floor', 0.6);
 const AS_JSONL = args.includes('--jsonl');
 const ONLY_LOCKSTEP = args.includes('--lockstep');
+const ONLY_SPLIT = args.includes('--split');
+
+/**
+ * How far apart a payer and a recipient may date the same transfer.
+ *
+ * Lifted from `MIRROR_WINDOW` in the ingest pipeline, and asymmetric for the
+ * reason measured there: a recipient booking the payer's check may be dated
+ * well after it, the payer only a little after the recipient.
+ */
+const RECIPIENT_LAG = flag('recipient-lag', 60);
+const PAYER_LAG = flag('payer-lag', 14);
+
+/** Below this two recipient names are a coincidence, not two spellings of one. */
+const SPLIT_NAME_FLOOR = flag('split-name', 0.55);
+
+/**
+ * The split half's own floor, and far lower than the donor half's.
+ *
+ * There, a low amount is noise: fifty people write $500 checks at one dinner
+ * and none of it says anything about any two of them. Here the pair has to
+ * agree on a name before it is reported at all, so a small transfer is as good
+ * evidence as a large one — and small is where this bug lives. Every JAX Good
+ * Government payment to Lindsey Brock but one was $500, and a $1,000 floor saw
+ * a single pair where there were twenty-five.
+ *
+ * It costs almost nothing to look: dropping the floor from $1,000 to $100
+ * takes the scan from one second to three.
+ */
+const SPLIT_MIN_AMOUNT = flag('split-min', 100);
 
 interface PairRow {
   e1: string;
@@ -92,7 +145,38 @@ interface PairRow {
 
 type Scored = PairRow & { coverage: number; name: number; score: number; mirror: number };
 
+/**
+ * One transfer that landed on two different recipient nodes.
+ *
+ * `paid` is where the payer's expenditure went; `got` is where the recipient's
+ * own contribution landed. They should be the same node and are not.
+ */
+interface SplitRow {
+  paid: string;
+  got: string;
+  paidName: string;
+  gotName: string;
+  paidKind: string;
+  gotKind: string;
+  paidAcct: string | null;
+  gotAcct: string | null;
+  paidTotal: string;
+  gotTotal: string;
+  coincidences: number;
+  payers: number;
+  dollars: string;
+  crossSource: boolean;
+}
+
+type ScoredSplit = SplitRow & { name: number; score: number };
+
 async function main() {
+  if (ONLY_SPLIT) {
+    await reportSplits();
+    await client.end();
+    return;
+  }
+
   console.log(
     `Scanning transfers of $${MIN_AMOUNT.toLocaleString()} and up, ignoring any date ` +
       `where more than ${MAX_DONORS} donors gave a recipient the same amount…\n`,
@@ -118,6 +202,7 @@ async function main() {
 
   if (AS_JSONL) {
     for (const s of twice.filter(mergeable).slice(0, LIMIT)) console.log(mergeOp(s));
+    await reportSplits();
     await client.end();
     return;
   }
@@ -148,10 +233,106 @@ async function main() {
   for (const s of lockstep.slice(0, LIMIT)) show(s, `$${money(s.dollars)} in step`);
   if (lockstep.length > LIMIT) console.log(`  … ${lockstep.length - LIMIT} more\n`);
 
+  await reportSplits();
+
   console.log('Confirm a pair, then add a merge to corrections/corrections.jsonl.');
-  console.log('`pnpm dupes --jsonl` writes the counted-twice half in that format.');
+  console.log('`pnpm dupes --jsonl` writes the merge ops in that format.');
 
   await client.end();
+}
+
+/**
+ * The half that pivots on the recipient: one transfer, two recipient nodes.
+ *
+ * Printed after the others because it is the newest and the least certain per
+ * row — two committees really can be named alike — but it is also where the
+ * biggest single sums are, so it is never hidden behind a flag.
+ */
+async function reportSplits(): Promise<void> {
+  const rows = await splits();
+  const scored: ScoredSplit[] = rows
+    .map((r) => {
+      const name = nameScore(r.paidName, r.gotName);
+      return { ...r, name, score: splitConfidence(r, name) };
+    })
+    .filter((s) => s.name >= SPLIT_NAME_FLOOR)
+    .sort((a, b) => Number(b.dollars) - Number(a.dollars));
+
+  const mergeable = (s: ScoredSplit) =>
+    !(s.paidAcct && s.gotAcct && s.paidAcct !== s.gotAcct);
+
+  if (AS_JSONL) {
+    for (const s of scored.filter(mergeable).slice(0, LIMIT)) console.log(splitMergeOp(s));
+    return;
+  }
+
+  const sum = (xs: ScoredSplit[]) => money(xs.reduce((a, b) => a + Number(b.dollars), 0));
+  const collide = scored.filter((s) => !mergeable(s));
+  console.log(
+    `SPLIT FILINGS — ${scored.length} pairs where one transfer landed on two nodes, ` +
+      `$${sum(scored)} counted twice.`,
+  );
+  console.log(
+    `  ${scored.length - collide.length} to merge ($${sum(scored.filter(mergeable))}); ` +
+      `${collide.length} are two registered committees ($${sum(collide)}), ` +
+      `where the rows need repointing instead.\n`,
+  );
+
+  for (const s of scored.slice(0, LIMIT)) {
+    const conf = s.score >= 0.8 ? 'almost certain' : s.score >= 0.7 ? 'likely' : 'possible';
+    console.log(`  ${conf.padEnd(14)} $${money(s.dollars)} doubled`);
+    console.log(`    payer filed to   ${s.paidName}  [${s.paidKind}, holds $${money(s.paidTotal)}]`);
+    console.log(`    recipient filed  ${s.gotName}  [${s.gotKind}, holds $${money(s.gotTotal)}]`);
+    console.log(
+      `    ${s.coincidences} transfer(s) from ${s.payers} payer(s); name ${s.name.toFixed(2)}` +
+        (s.crossSource ? '; the two filings came from different feeds' : ''),
+    );
+    if (!mergeable(s)) {
+      console.log(
+        `    !! both are registered: accounts ${s.paidAcct} and ${s.gotAcct}. Two real ` +
+          `committees — repoint the rows, do not merge.`,
+      );
+    }
+    console.log('');
+  }
+  if (scored.length > LIMIT) console.log(`  … ${scored.length - LIMIT} more\n`);
+}
+
+/**
+ * Spelling carries most of the weight here, because the money cannot.
+ *
+ * In the donor-pivot halves two nodes moving in lockstep is itself the
+ * evidence. Here the two rows face opposite ways by construction, so the shape
+ * proves only that somebody was paid — the claim that these are one account
+ * rests on the names, on how often it happens, and on how many unrelated payers
+ * filed it the same way. Two feeds disagreeing about the spelling is a further
+ * point in favour: it is the signature of the state and a county describing one
+ * account.
+ */
+function splitConfidence(r: SplitRow, name: number): number {
+  const repeat = Math.min(r.coincidences / 4, 1);
+  const breadth = Math.min(r.payers / 3, 1);
+  const corroborated = r.crossSource ? 0.1 : 0;
+  return Math.min(1, 0.45 * name + 0.25 * repeat + 0.2 * breadth + corroborated);
+}
+
+/**
+ * The recipient's own filing wins, as everywhere else in the pipeline.
+ *
+ * A committee describing the money it received is a better authority on its own
+ * name than the payer writing a check to it.
+ */
+function splitMergeOp(s: ScoredSplit): string {
+  return JSON.stringify({
+    op: 'merge',
+    keep: { id: s.got, name: s.gotName },
+    lose: [{ id: s.paid, name: s.paidName }],
+    date: new Date().toISOString().slice(0, 10),
+    note:
+      `${s.coincidences} transfer(s) from ${s.payers} payer(s) filed by the payer as an ` +
+      `expenditure to "${s.paidName}" and by the recipient as a contribution to ` +
+      `"${s.gotName}", same amounts within the mirror window; $${money(s.dollars)} counted twice.`,
+  });
 }
 
 /** Display names for the sample recipients, in one round trip. */
@@ -362,6 +543,78 @@ async function pairs(): Promise<PairRow[]> {
       JOIN activity ay ON ay.id = p.e2
       ORDER BY p.dollars DESC
     `)) as unknown as PairRow[];
+  });
+}
+
+/**
+ * Every transfer whose two filings landed on two different recipient nodes.
+ *
+ * Staged like `pairs`, and for the same reason. The bucket is narrow on
+ * purpose: a (payer, amount) that carries both directions and reaches more
+ * than one node is the only shape worth pairing, and finding it is a single
+ * grouped scan. Everything after that works on 17,000 rows rather than six
+ * million.
+ */
+async function splits(): Promise<SplitRow[]> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      CREATE TEMP TABLE sbucket ON COMMIT DROP AS
+      SELECT from_entity_id, amount
+      FROM transactions
+      WHERE from_entity_id IS NOT NULL AND to_entity_id IS NOT NULL AND txn_date IS NOT NULL
+        AND amount >= ${SPLIT_MIN_AMOUNT} AND from_entity_id <> to_entity_id
+      GROUP BY 1, 2
+      HAVING bool_or(direction = 'expenditure') AND bool_or(direction = 'contribution')
+         AND count(DISTINCT to_entity_id) BETWEEN 2 AND ${MAX_DONORS + 4}
+    `);
+    await tx.execute(sql`CREATE INDEX ON sbucket (from_entity_id, amount)`);
+
+    // One row per node per bucket: a filer that reported the same transfer
+    // twice must not count twice toward the coincidence.
+    await tx.execute(sql`
+      CREATE TEMP TABLE sleg ON COMMIT DROP AS
+      SELECT DISTINCT t.from_entity_id, t.to_entity_id, t.amount, t.txn_date,
+                      t.direction, t.source_id
+      FROM transactions t
+      JOIN sbucket b ON b.from_entity_id = t.from_entity_id AND b.amount = t.amount
+      WHERE t.txn_date IS NOT NULL AND t.to_entity_id IS NOT NULL
+    `);
+
+    await tx.execute(sql`
+      CREATE TEMP TABLE ssplit ON COMMIT DROP AS
+      SELECT p.to_entity_id AS paid, g.to_entity_id AS got,
+             count(*)::int AS coincidences,
+             count(DISTINCT p.from_entity_id)::int AS payers,
+             sum(p.amount) AS dollars,
+             bool_or(p.source_id IS DISTINCT FROM g.source_id) AS cross_source
+      FROM sleg p
+      JOIN sleg g
+        ON g.from_entity_id = p.from_entity_id AND g.amount = p.amount
+       AND p.direction = 'expenditure' AND g.direction = 'contribution'
+       AND g.txn_date BETWEEN p.txn_date - ${PAYER_LAG}::int AND p.txn_date + ${RECIPIENT_LAG}::int
+      WHERE p.to_entity_id <> g.to_entity_id
+      GROUP BY 1, 2
+    `);
+
+    return (await tx.execute(sql`
+      SELECT s.paid, s.got,
+             x.name AS "paidName", y.name AS "gotName",
+             x.kind::text AS "paidKind", y.kind::text AS "gotKind",
+             x.total_received AS "paidTotal", y.total_received AS "gotTotal",
+             s.coincidences, s.payers, s.dollars, s.cross_source AS "crossSource",
+             (SELECT r.external_id FROM committee_registrations r
+               WHERE r.entity_id = s.paid AND r.is_current LIMIT 1) AS "paidAcct",
+             (SELECT r.external_id FROM committee_registrations r
+               WHERE r.entity_id = s.got AND r.is_current LIMIT 1) AS "gotAcct"
+      FROM ssplit s
+      JOIN entities x ON x.id = s.paid
+      JOIN entities y ON y.id = s.got
+      -- Cheap first cut. The real name test runs in TypeScript, which can see
+      -- word order and acronyms that trigram similarity alone cannot.
+      WHERE similarity(x.normalized_name, y.normalized_name) >= 0.3
+         OR x.normalized_name % y.normalized_name
+      ORDER BY s.dollars DESC
+    `)) as unknown as SplitRow[];
   });
 }
 
