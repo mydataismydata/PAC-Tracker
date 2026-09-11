@@ -64,10 +64,11 @@ export async function generateMetadata({ params }: Pick<Params, 'params'>): Prom
  * Every committee this person is named on, with what it raised and what it
  * paid out.
  *
- * A single column above the donor and payment lists, because it is the thing
- * that makes the two columns below it mean something: they are the sum of
- * these rows, and a reader who cannot see what went into the sum cannot judge
- * it.
+ * Last on the page, and full width. It is the evidence behind everything
+ * above it — the donors and the payments are the sum of these rows — but an
+ * operator with 229 committees makes it 229 rows, and a reader who has to
+ * scroll past all of them to reach the findings will not reach the findings.
+ * So the answers come first and the working is underneath them.
  */
 function Committees({ person }: { person: PersonNetwork }) {
   return (
@@ -231,8 +232,6 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
         </p>
       )}
 
-      <Committees person={person} />
-
       <MoneyColumns
         ids={person.entityIds}
         subject={person.name}
@@ -240,6 +239,8 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
         cycle={cycle}
         paymentsHint="Everyone these committees paid, pooled and largest first. A vendor paid by several of them is one row."
       />
+
+      <Committees person={person} />
 
       <div className="mt-10 max-w-2xl">
         <SectionHeading>Look up a committee</SectionHeading>
