@@ -58,6 +58,16 @@ export interface CommitteeSubject {
   countyName: string | null;
   /** The filing office's own identifier, which is what tells two same-named committees apart. */
   accountNumber: string | null;
+  /**
+   * Registrations this committee has held and closed.
+   *
+   * Non-zero where one operation has re-registered — Florida abolished
+   * Committees of Continuous Existence in 2013 and the operations behind them
+   * came back as political committees. Worth saying out loud, because the
+   * officers below cover every registration on file and a closed one brings
+   * its own chair.
+   */
+  priorRegistrations: number;
   totalReceived: string;
   totalGiven: string;
   inDegree: number;
@@ -78,6 +88,7 @@ interface Row extends Record<string, unknown> {
   state_code: string | null;
   county_name: string | null;
   account_number: string | null;
+  prior_registrations: number;
   total_received: string;
   total_given: string;
   in_degree: number;
@@ -99,6 +110,7 @@ function toSubject(r: Row): CommitteeSubject {
     stateCode: r.state_code,
     countyName: r.county_name,
     accountNumber: r.account_number,
+    priorRegistrations: r.prior_registrations,
     totalReceived: r.total_received,
     totalGiven: r.total_given,
     inDegree: r.in_degree,
@@ -122,9 +134,20 @@ const DETAIL = sql`
     SELECT r.external_id, r.type_description, r.county_name
       FROM committee_registrations r
      WHERE r.entity_id = e.id
-     ORDER BY r.is_current DESC, r.observed_at DESC
+     -- One committee can hold several registrations: an operation that ran a
+     -- Committee of Continuous Existence and now runs a political committee
+     -- keeps both once the two nodes are folded together. The live one is what
+     -- the committee is today, so an open registration outranks a closed one
+     -- however recently the closed one was read.
+     ORDER BY r.is_current DESC,
+              (lower(coalesce(r.status, '')) = 'closed') ASC,
+              r.observed_at DESC
      LIMIT 1
   ) reg ON true
+  LEFT JOIN LATERAL (
+    SELECT count(*)::int AS n FROM committee_registrations r2
+     WHERE r2.entity_id = e.id AND NOT r2.is_current
+  ) old ON true
   LEFT JOIN LATERAL (
     SELECT min(t.txn_date)::text AS first_date, max(t.txn_date)::text AS last_date
       FROM transactions t
@@ -138,6 +161,7 @@ const COLUMNS = sql`
   e.total_received::text AS total_received, e.total_given::text AS total_given,
   e.in_degree, e.out_degree,
   reg.external_id AS account_number, reg.type_description, reg.county_name,
+  old.n AS prior_registrations,
   span.first_date, span.last_date
 `;
 
