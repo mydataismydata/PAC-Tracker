@@ -20,7 +20,6 @@ import {
 } from '@/lib/graph/committee';
 import { officersForEntity, rolePhrase, type EntityOfficer } from '@/lib/graph/officers';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
-import CommitteeSearch from '@/components/CommitteeSearch';
 import { Money, MoneyColumns, SectionHeading, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
@@ -126,11 +125,8 @@ async function NotFound({ slug }: { slug: string }) {
       <p className="mt-2 max-w-prose text-sm leading-relaxed text-slate-400">
         Nothing in the database is registered as{' '}
         <span className="text-slate-200">{slug.replace(/[-_]+/g, ' ')}</span>. Committee names on
-        mail are often shortened, so try searching for part of it.
+        mail are often shortened, so search for part of it above.
       </p>
-      <div className="mt-5">
-        <CommitteeSearch autoFocus />
-      </div>
       {near.length > 0 && (
         <section className="mt-8">
           <SectionHeading>Closest names on file</SectionHeading>
@@ -252,13 +248,6 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
         cycle={cycle}
         paymentsHint="Everyone this committee paid, largest first. Mail vendors, consultants and transfers to other committees all appear here."
       />
-
-      <div className="mt-10 max-w-2xl">
-        <SectionHeading>Look up another committee</SectionHeading>
-        <div className="mt-2">
-          <CommitteeSearch />
-        </div>
-      </div>
 
       <p className="mt-8 text-xs leading-relaxed text-slate-600">
         Figures are as filed with the Florida Division of Elections and the county supervisors of
