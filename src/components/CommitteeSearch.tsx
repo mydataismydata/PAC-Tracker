@@ -11,6 +11,10 @@
  * — the link pins the committee's id, because the reader has already answered
  * that question by picking a row out of the list. Where it is not, the link is
  * the bare slug, which is the URL worth sharing.
+ *
+ * Never takes focus on its own. It lives in the masthead on every page, and a
+ * box that grabs the caret on load would scroll a phone to the top and open
+ * the keyboard over the report somebody just asked for.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -18,7 +22,7 @@ import { useRouter } from 'next/navigation';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
 import { committeeHref, type CommitteeHit } from '@/lib/graph/committee';
 
-export default function CommitteeSearch({ autoFocus = false }: { autoFocus?: boolean }) {
+export default function CommitteeSearch() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<CommitteeHit[]>([]);
@@ -99,7 +103,6 @@ export default function CommitteeSearch({ autoFocus = false }: { autoFocus?: boo
       <input
         id="kym-search"
         type="search"
-        autoFocus={autoFocus}
         autoComplete="off"
         role="combobox"
         aria-expanded={open && visible.length > 0}
@@ -122,14 +125,14 @@ export default function CommitteeSearch({ autoFocus = false }: { autoFocus?: boo
             setOpen(false);
           }
         }}
-        placeholder="Search committees — type the name on the mailer"
-        className="w-full rounded-md border border-slate-700 bg-slate-900 px-4 py-3 text-base
+        placeholder="Search committees"
+        className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm
                    text-slate-100 placeholder-slate-500 outline-none
                    focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
       />
       {loading && (
         <div
-          className="absolute right-4 top-3.5 h-5 w-5 animate-spin rounded-full
+          className="absolute right-3 top-2.5 h-4 w-4 animate-spin rounded-full
                      border-2 border-slate-600 border-t-indigo-400"
         />
       )}
@@ -138,7 +141,7 @@ export default function CommitteeSearch({ autoFocus = false }: { autoFocus?: boo
         <ul
           id="kym-search-results"
           role="listbox"
-          className="absolute z-30 mt-1 max-h-96 w-full overflow-auto rounded-md border
+          className="absolute z-50 mt-1 max-h-96 w-full overflow-auto rounded-md border
                      border-slate-700 bg-slate-900 shadow-xl"
         >
           {visible.map((r, i) => (
@@ -169,8 +172,10 @@ export default function CommitteeSearch({ autoFocus = false }: { autoFocus?: boo
       )}
 
       {/* Said out loud rather than left as an empty box, which reads as broken. */}
+      {/* Positioned like the dropdown it replaces, so a miss does not shove the
+          page down by a line every time somebody mistypes. */}
       {!loading && answered === query.trim() && visible.length === 0 && (
-        <p className="mt-2 text-sm text-slate-500">
+        <p className="absolute z-50 mt-1 w-full rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-500">
           No committee on file matches that. Try fewer words from the name.
         </p>
       )}

@@ -33,7 +33,6 @@ import {
   type PersonNetwork,
 } from '@/lib/graph/officers';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
-import CommitteeSearch from '@/components/CommitteeSearch';
 import { Money, MoneyColumns, SectionHeading, Shown, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
@@ -187,11 +186,8 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
         <h2 className="text-xl font-semibold text-slate-100">Nobody on file under that name</h2>
         <p className="mt-2 max-w-prose text-sm leading-relaxed text-slate-400">
           Only the people a committee currently reports to its filing office have a page here.
-          Start from a committee instead.
+          Start from a committee instead, using the search above.
         </p>
-        <div className="mt-5">
-          <CommitteeSearch autoFocus />
-        </div>
       </main>
     );
   }
@@ -256,13 +252,6 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
       />
 
       <Committees person={person} />
-
-      <div className="mt-10 max-w-2xl">
-        <SectionHeading>Look up a committee</SectionHeading>
-        <div className="mt-2">
-          <CommitteeSearch />
-        </div>
-      </div>
 
       <p className="mt-8 text-xs leading-relaxed text-slate-600">
         Officers are as currently reported to the Florida Division of Elections and the county

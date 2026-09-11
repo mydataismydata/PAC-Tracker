@@ -2,18 +2,18 @@
  * Know Your Mailer — the way in.
  *
  * A political mailer has to name whoever paid for it, and that disclaimer is
- * usually the only fact its recipient has. This page takes that name and opens
- * the committee's report: who funded it, and what it spent the money on.
+ * usually the only fact its recipient has. The masthead's search takes that
+ * name and opens the committee's report: who funded it, and what it spent the
+ * money on.
  *
- * The list below the box is not decoration. A landing page whose only content
- * is an empty field shows a reader nothing about what is behind it, and plenty
- * of people arrive without a specific name in hand.
+ * The list here is not decoration. A landing page whose only content is an
+ * empty search field shows a reader nothing about what is behind it, and
+ * plenty of people arrive without a specific name in hand.
  */
 
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { db } from '@/db';
-import CommitteeSearch from '@/components/CommitteeSearch';
 import { busiestCommittees, committeeHref } from '@/lib/graph/committee';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
 
@@ -31,13 +31,9 @@ export default async function KymLandingPage() {
   return (
     <main className="mt-8 max-w-3xl">
       <p className="max-w-prose text-sm leading-relaxed text-slate-400">
-        Every political mailer has to name whoever paid for it. Type that name below to see who
+        Every political mailer has to name whoever paid for it. Search that name above to see who
         funded the committee behind it, and what it spent the money on.
       </p>
-
-      <div className="mt-5">
-        <CommitteeSearch autoFocus />
-      </div>
 
       <section className="mt-10">
         <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
