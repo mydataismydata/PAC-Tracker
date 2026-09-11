@@ -984,6 +984,15 @@ export async function ingestCommitteeRegistrations(
  * window is asymmetric — the recipient may be dated well after the payer, the
  * payer only a little after the recipient. Both are overridable per run.
  */
+/**
+ * How many times `rebuildAll` will sweep for mirrors before giving up.
+ *
+ * Each pass is strictly smaller than the last and the sweep converges in two
+ * on the current data, so this is a guard against a pathological case rather
+ * than a working limit.
+ */
+export const MIRROR_PASSES = 10;
+
 export const MIRROR_WINDOW = {
   /** Days the recipient's date may trail the payer's. */
   recipientLag: 60,
@@ -1058,6 +1067,11 @@ export async function collapseMirrors(
         HAVING bool_or(x.direction = 'contribution')
            AND bool_or(x.direction = 'expenditure')
       )
+    -- Ordered because the matching below is greedy, and greedy depends on the
+    -- order it sees. Without this, two databases holding identical rows can
+    -- return them in different orders, match different pairs, and end up with
+    -- different totals — which is exactly what a production copy did.
+    ORDER BY t.from_entity_id, t.to_entity_id, t.amount, t.txn_date, t.id
   `);
 
   type Contrib = { amount: number; date: number | null; used: boolean };
@@ -1313,7 +1327,25 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
   // A payer's expenditure and the recipient's contribution for the same transfer
   // are one edge, not two; left in, they double it and both endpoints' totals.
   // Collapse them before the rollups are built off the transaction table.
-  const mirrors = await collapseMirrors(db);
+  //
+  // Repeated to a fixed point, because one pass does not finish the job. The
+  // matching inside is greedy: every expenditure takes the nearest contribution
+  // still unused, and a nearest-first choice can strand a later expenditure
+  // whose only partner has just been taken. Over the reduced set the next pass
+  // finds those. Two passes settled a 143-merge batch; the loop stops as soon
+  // as a pass deletes nothing.
+  //
+  // Left at one pass, the count depended on how many times rebuild happened to
+  // have been run — so a machine that ran it twice and a machine that ran it
+  // once disagreed by real dollars.
+  const mirrors = { deleted: 0, pairs: 0, dollars: 0 };
+  for (let pass = 1; pass <= MIRROR_PASSES; pass++) {
+    const round = await collapseMirrors(db);
+    mirrors.deleted += round.deleted;
+    mirrors.pairs += round.pairs;
+    mirrors.dollars += round.dollars;
+    if (round.deleted === 0) break;
+  }
   if (mirrors.deleted > 0) {
     console.log(
       `  collapsed ${mirrors.deleted} mirror expenditures across ${mirrors.pairs} committee pairs`,
