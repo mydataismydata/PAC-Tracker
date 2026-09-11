@@ -198,7 +198,7 @@ export interface CommitteeHit {
  * Carries the id only where the name alone would be ambiguous, so the common
  * case stays `/kym/keep-florida-great`.
  */
-export function committeeHref(hit: CommitteeHit): string {
+export function committeeHref(hit: { id: string; slug: string; sharesName: boolean }): string {
   return hit.sharesName ? `/kym/${hit.slug}?id=${hit.id}` : `/kym/${hit.slug}`;
 }
 
