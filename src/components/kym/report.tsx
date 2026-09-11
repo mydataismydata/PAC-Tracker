@@ -17,8 +17,7 @@
 import { Suspense } from 'react';
 import { db } from '@/db';
 import { ledger, type LedgerSourceRow } from '@/lib/graph/ledger';
-import type { TraceResult } from '@/lib/graph/trace';
-import { cachedTrace } from '@/lib/graph/traceCache';
+import { cachedTrace, type TraceDigest } from '@/lib/graph/traceCache';
 import { formatMoney, formatMoneyFull } from '@/lib/graph/types';
 
 /**
@@ -36,6 +35,14 @@ const DEAD_ENDS = 10;
 
 /** How far the trace chases a chain, and the floor below which a strand is dropped. */
 const TRACE = { maxDepth: 12, minDollars: 100, dateOrdered: true };
+
+/**
+ * What the cache is asked to keep of a walk.
+ *
+ * The row caps above, handed over rather than assumed, so the cached digest
+ * holds exactly what this file renders and the two cannot fall out of step.
+ */
+const KEEP = { sources: LIST_ROWS, unresolved: DEAD_ENDS };
 
 /**
  * Three tones, and they are three different kinds of money.
@@ -141,11 +148,9 @@ export function Note({ children }: { children: React.ReactNode }) {
  * covering a quarter of the money reads as a complete answer unless what it
  * leaves out is on the screen beside it.
  */
-function Coverage({ result }: { result: TraceResult }) {
-  const traced = result.sources.reduce((a, b) => a + b.amount, 0);
+function Coverage({ result }: { result: TraceDigest }) {
   const viaPools = result.injectionPoints.reduce((a, b) => a + b.amount, 0);
-  const unresolved = result.unresolved.reduce((a, b) => a + b.amount, 0);
-  const pct = (n: number) => (result.seed.total > 0 ? (n / result.seed.total) * 100 : 0);
+  const pct = (n: number) => (result.seedTotal > 0 ? (n / result.seedTotal) * 100 : 0);
 
   /**
    * Label and figure sit above the bar rather than either side of it.
@@ -171,9 +176,9 @@ function Coverage({ result }: { result: TraceResult }) {
 
   return (
     <div className="mt-2 space-y-2 rounded border border-slate-800 p-3">
-      {bar('Traced', traced, 'bg-emerald-500')}
+      {bar('Traced', result.sources.amount, 'bg-emerald-500')}
       {bar('National pool', viaPools, 'bg-sky-500')}
-      {bar('Trail ends', unresolved, 'bg-slate-500')}
+      {bar('Trail ends', result.unresolved.amount, 'bg-slate-500')}
       {bar('Long tail', result.dispersed, 'bg-slate-700')}
       <p className="pt-1 text-[11px] leading-relaxed text-slate-600">
         Money in an account is fungible, so a committee that took $1M and passed on $100K passed on
@@ -200,9 +205,9 @@ async function Donors({
   subject: string;
   cycle?: string;
 }) {
-  const result = await cachedTrace(db, ids, { ...TRACE, cycle });
+  const result = await cachedTrace(db, ids, { ...TRACE, cycle }, KEEP);
 
-  if (result.sources.length === 0 && result.injectionPoints.length === 0) {
+  if (result.sources.count === 0 && result.injectionPoints.length === 0) {
     return (
       <Note>
         No originating donors found. Every path back ends at a committee with no recorded money
@@ -216,12 +221,12 @@ async function Donors({
       <Coverage result={result} />
 
       <Shown
-        shown={Math.min(result.sources.length, LIST_ROWS)}
-        total={result.sources.length}
-        amount={result.sources.reduce((a, b) => a + b.amount, 0)}
+        shown={result.sources.rows.length}
+        total={result.sources.count}
+        amount={result.sources.amount}
       />
       <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
-        {result.sources.slice(0, LIST_ROWS).map((s) => (
+        {result.sources.rows.map((s) => (
           <li key={s.id} className="flex items-start gap-3 px-4 py-2.5">
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm text-slate-200">{s.name}</span>
@@ -275,7 +280,7 @@ async function Donors({
         </div>
       ))}
 
-      {result.unresolved.length > 0 && (
+      {result.unresolved.count > 0 && (
         <div className="mt-4">
           <p className="text-[11px] uppercase tracking-wide text-slate-500">Trail ends here</p>
           <p className="mt-1 text-xs text-slate-600">
@@ -284,12 +289,12 @@ async function Donors({
           {/* Shorter than the donor list on purpose. This is a statement about
               the limits of the data, and ten rows make it as well as fifty. */}
           <Shown
-            shown={Math.min(result.unresolved.length, DEAD_ENDS)}
-            total={result.unresolved.length}
-            amount={result.unresolved.reduce((a, b) => a + b.amount, 0)}
+            shown={result.unresolved.rows.length}
+            total={result.unresolved.count}
+            amount={result.unresolved.amount}
           />
           <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
-            {result.unresolved.slice(0, DEAD_ENDS).map((s) => (
+            {result.unresolved.rows.map((s) => (
               <li key={s.id} className="flex items-baseline gap-3 px-4 py-2">
                 <span className="min-w-0 flex-1 truncate text-sm text-slate-300">{s.name}</span>
                 <span className="shrink-0 font-mono text-sm tabular-nums text-slate-400">
