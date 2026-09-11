@@ -1,9 +1,15 @@
 /**
  * Sign-in gate for the graph explorer.
  *
- * Two audiences share one host. The sponsor summaries under /person and their
- * JSON under /api/people are public records served in milliseconds, so they
- * stay open. Everything else crawls the whole database and stays closed.
+ * Two audiences share one host. The sponsor summaries under /person, the
+ * committee reports under /kym, and the JSON behind both are public records
+ * served in seconds, so they stay open. Everything else crawls the whole
+ * database and stays closed.
+ *
+ * /api/entities/search is deliberately not on that list even though /kym needs
+ * a search box. It answers for every entity, private individuals who gave $50
+ * and have a home address on file included. /api/kym/search answers the same
+ * question for committees only, and is the public one.
  *
  * Runs on the Node runtime because reading a session means looking the account
  * up in Postgres.
@@ -15,7 +21,7 @@ import { GATE_COOKIE, readSession } from '@/lib/gate';
 export const config = {
   runtime: 'nodejs',
   matcher: [
-    '/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|person(?:/|$)|api/people(?:/|$)|gate(?:/|$)|api/gate(?:/|$)).*)',
+    '/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|person(?:/|$)|api/people(?:/|$)|kym(?:/|$)|api/kym(?:/|$)|gate(?:/|$)|api/gate(?:/|$)).*)',
   ],
 };
 
