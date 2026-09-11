@@ -15,7 +15,8 @@
     "corrections": "tsx --env-file-if-exists=.env scripts/corrections.ts",
     "probe:voterfocus": "tsx --env-file-if-exists=.env scripts/probe-voterfocus.ts",
     "trace": "tsx scripts/trace.ts",
-    "user": "tsx --env-file-if-exists=.env scripts/user.ts"
+    "user": "tsx --env-file-if-exists=.env scripts/user.ts",
+    "dupes": "tsx --env-file-if-exists=.env scripts/dupes.ts"
   },
   "dependencies": {
     "cytoscape": "^3.34.0",
