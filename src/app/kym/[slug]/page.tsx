@@ -174,21 +174,30 @@ function Coverage({ result }: { result: TraceResult }) {
   const unresolved = result.unresolved.reduce((a, b) => a + b.amount, 0);
   const pct = (n: number) => (result.seed.total > 0 ? (n / result.seed.total) * 100 : 0);
 
+  /**
+   * Label and figure sit above the bar rather than either side of it.
+   *
+   * This lives in one of two columns, so its width is roughly half the page
+   * and unknown in advance. Fixed-width gutters for a label and a dollar
+   * amount would leave the bar itself a stub at the sizes that matter.
+   */
   const bar = (label: string, value: number, className: string) =>
     value <= 0 ? null : (
-      <div key={label} className="flex items-center gap-2">
-        <span className="w-24 shrink-0 text-[11px] text-slate-500">{label}</span>
-        <div className="h-1.5 flex-1 overflow-hidden rounded bg-slate-800">
+      <div key={label}>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[11px] text-slate-500">{label}</span>
+          <span className="text-[11px] tabular-nums text-slate-400">
+            {formatMoney(value)} · {pct(value).toFixed(0)}%
+          </span>
+        </div>
+        <div className="mt-0.5 h-1.5 overflow-hidden rounded bg-slate-800">
           <div className={`h-full ${className}`} style={{ width: `${pct(value)}%` }} />
         </div>
-        <span className="w-28 shrink-0 text-right text-[11px] tabular-nums text-slate-400">
-          {formatMoney(value)} · {pct(value).toFixed(0)}%
-        </span>
       </div>
     );
 
   return (
-    <div className="mt-2 space-y-1.5 rounded border border-slate-800 p-3">
+    <div className="mt-2 space-y-2 rounded border border-slate-800 p-3">
       {bar('Traced', traced, 'bg-emerald-500')}
       {bar('National pool', viaPools, 'bg-sky-500')}
       {bar('Trail ends', unresolved, 'bg-slate-500')}
@@ -373,7 +382,7 @@ function Skeleton({ label }: { label: string }) {
 async function NotFound({ slug }: { slug: string }) {
   const near = await searchCommittees(db, slug.replace(/[-_]+/g, ' '), 8);
   return (
-    <main className="mt-8">
+    <main className="mt-8 max-w-3xl">
       <h2 className="text-xl font-semibold text-slate-100">No committee files under that name</h2>
       <p className="mt-2 max-w-prose text-sm leading-relaxed text-slate-400">
         Nothing in the database is registered as{' '}
@@ -417,7 +426,7 @@ async function NotFound({ slug }: { slug: string }) {
  */
 function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] }) {
   return (
-    <main className="mt-8">
+    <main className="mt-8 max-w-3xl">
       <h2 className="text-xl font-semibold text-slate-100">
         {matches.length} committees file under this name
       </h2>
@@ -471,7 +480,7 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
       <h2 className="text-2xl font-semibold tracking-tight text-slate-100 sm:text-3xl">
         {subject.name}
       </h2>
-      <p className="mt-1 text-sm text-slate-400">{identity.join(' · ')}</p>
+      <p className="mt-1 max-w-3xl text-sm text-slate-400">{identity.join(' · ')}</p>
       {subject.firstDate && subject.lastDate && (
         <p className="mt-0.5 text-xs text-slate-600">
           Filings on file from {subject.firstDate} to {subject.lastDate}.
@@ -480,7 +489,7 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
 
       {/* Stacks on a narrow phone. Two columns cannot hold a nine-figure sum
           beside another one, and a statewide committee produces those. */}
-      <div className="mt-6 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1">
+      <div className="mt-6 grid max-w-2xl grid-cols-2 gap-3 max-[400px]:grid-cols-1">
         <Tile label="Raised" value={subject.totalReceived} tone="in">
           from {subject.inDegree.toLocaleString()} contributor
           {subject.inDegree === 1 ? '' : 's'}
@@ -490,29 +499,40 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
         </Tile>
       </div>
 
-      <section className="mt-8">
-        <SectionHeading>Donors · {scope}</SectionHeading>
-        <p className="mt-1 text-xs text-slate-600">
-          Followed past committee-to-committee transfers to whoever originated the money, not
-          whoever wrote the check.
-        </p>
-        <Suspense fallback={<Skeleton label="Following the money…" />}>
-          <Donors subject={subject} cycle={cycle} />
-        </Suspense>
+      {/* Money in on the left, money out on the right, so the two halves of
+          the question can be read against each other.
+
+          min-w-0 on the columns is load-bearing: a grid item's automatic
+          minimum size is its content's min-content width, so without it a
+          column refuses to shrink below the longest donor name and the amounts
+          end up off-screen. items-start keeps each column its own height —
+          the donor side runs longer, and stretching the shorter one to match
+          would hang its border in empty space. */}
+      <section className="mt-8 grid items-start gap-8 md:grid-cols-2">
+        <div className="min-w-0">
+          <SectionHeading>Donors · {scope}</SectionHeading>
+          <p className="mt-1 text-xs text-slate-600">
+            Followed past committee-to-committee transfers to whoever originated the money, not
+            whoever wrote the check.
+          </p>
+          <Suspense fallback={<Skeleton label="Following the money…" />}>
+            <Donors subject={subject} cycle={cycle} />
+          </Suspense>
+        </div>
+
+        <div className="min-w-0">
+          <SectionHeading>Payments out · {scope}</SectionHeading>
+          <p className="mt-1 text-xs text-slate-600">
+            Everyone this committee paid, largest first. Mail vendors, consultants and transfers to
+            other committees all appear here.
+          </p>
+          <Suspense fallback={<Skeleton label="Reading the ledger…" />}>
+            <Payments subject={subject} cycle={cycle} />
+          </Suspense>
+        </div>
       </section>
 
-      <section className="mt-8">
-        <SectionHeading>Payments out · {scope}</SectionHeading>
-        <p className="mt-1 text-xs text-slate-600">
-          Everyone this committee paid, largest first. Mail vendors, consultants and transfers to
-          other committees all appear here.
-        </p>
-        <Suspense fallback={<Skeleton label="Reading the ledger…" />}>
-          <Payments subject={subject} cycle={cycle} />
-        </Suspense>
-      </section>
-
-      <div className="mt-8">
+      <div className="mt-10 max-w-2xl">
         <SectionHeading>Look up another committee</SectionHeading>
         <div className="mt-2">
           <CommitteeSearch />
