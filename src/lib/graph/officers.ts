@@ -334,3 +334,45 @@ export async function personNetwork(
     totalGiven: list.reduce((a, c) => a + Number(c.totalGiven), 0).toFixed(2),
   };
 }
+
+export interface InternalFlow {
+  /** Money that moved from one committee in the set to another in the same set. */
+  amount: string;
+  transfers: number;
+  /** How many of them paid, and how many were paid. */
+  payers: number;
+  payees: number;
+}
+
+/**
+ * What a network moves inside itself.
+ *
+ * The number that separates one operation from a roster of unrelated clients.
+ * A treasurer-for-hire's committees never pay each other; an operation's do,
+ * constantly. Filed in full by both sides, it is money that never entered or
+ * left the network, so adding it to a headline total counts it twice — and
+ * reporting the total without it hides the mechanism entirely.
+ *
+ * Following it back to whoever paid in from outside is what `trace` does. The
+ * transfers below are the thing it has to see through.
+ */
+export async function internalFlow(db: Db, entityIds: string[]): Promise<InternalFlow> {
+  const empty = { amount: '0', transfers: 0, payers: 0, payees: 0 };
+  if (entityIds.length < 2) return empty;
+
+  const rows = await db.execute<{
+    amount: string;
+    transfers: number;
+    payers: number;
+    payees: number;
+  }>(sql`
+    SELECT COALESCE(sum(t.amount), 0)::text     AS amount,
+           count(*)::int                        AS transfers,
+           count(DISTINCT t.from_entity_id)::int AS payers,
+           count(DISTINCT t.to_entity_id)::int   AS payees
+      FROM transactions t
+     WHERE t.from_entity_id = ANY(${sql.param(entityIds)}::uuid[])
+       AND t.to_entity_id   = ANY(${sql.param(entityIds)}::uuid[])
+  `);
+  return rows[0] ?? empty;
+}

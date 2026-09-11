@@ -10,6 +10,13 @@
  * filings hold more than one — the chair of a committee is very often also its
  * treasurer — and a page per role would hand a reader two pages for one person
  * with the same committees listed on both.
+ *
+ * A large network is the subject here, not an obstacle to one. The busiest
+ * operator in the data runs 229 committees that paid each other $56M across
+ * 1,300 transfers, and every one of those transfers puts another name between
+ * a donor and where their money ended up. The page states that figure outright
+ * and traces the whole set, because the pooled origins of a network are
+ * exactly what the internal shuffle is arranged to obscure.
  */
 
 import Link from 'next/link';
@@ -17,38 +24,19 @@ import type { Metadata } from 'next';
 import { db } from '@/db';
 import { committeeHref } from '@/lib/graph/committee';
 import {
+  internalFlow,
   personNetwork,
   roleLabel,
   rolePhrase,
   slugToOfficerName,
+  type InternalFlow,
   type PersonNetwork,
 } from '@/lib/graph/officers';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
 import CommitteeSearch from '@/components/CommitteeSearch';
-import { Money, MoneyColumns, Note, SectionHeading, Shown, Tile } from '@/components/kym/report';
+import { Money, MoneyColumns, SectionHeading, Shown, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
-
-/**
- * How many committees a person can hold before the pooled trace stops meaning
- * anything.
- *
- * Tracing the origins of one network answers a question. Tracing the origins
- * of every committee that happens to share a filing agent answers none: the
- * busiest name in the data is on 229 of them, spanning $155M raised by people
- * who have nothing to do with each other. The committee list stays, so a
- * reader can open any single one of them and get a real answer there.
- */
-const TRACEABLE = 25;
-
-/**
- * Rows in the committee list.
- *
- * Everyone with a handful of committees sees all of them; only the filing
- * agents hit this, and two hundred rows of theirs is a wall rather than a
- * list. The caption carries the full count and the full total either way.
- */
-const LIST_ROWS = 50;
 
 /** Filed spellings named outright before the rest are counted instead. */
 const SPELLINGS = 4;
@@ -85,8 +73,11 @@ function Committees({ person }: { person: PersonNetwork }) {
   return (
     <section className="mt-8">
       <SectionHeading>Named on {person.committees.length.toLocaleString()} filings</SectionHeading>
+      {/* Every committee, never a slice. The size of the network is the
+          finding, and a list that stops at fifty makes the reader take the
+          rest on trust. */}
       <Shown
-        shown={Math.min(person.committees.length, LIST_ROWS)}
+        shown={person.committees.length}
         total={person.committees.length}
         amount={Number(person.totalReceived)}
       />
@@ -98,7 +89,7 @@ function Committees({ person }: { person: PersonNetwork }) {
         <span className="w-32 shrink-0 text-right">Paid out</span>
       </div>
       <ul className="divide-y divide-slate-900 rounded border border-slate-800 sm:mt-0">
-        {person.committees.slice(0, LIST_ROWS).map((c) => {
+        {person.committees.map((c) => {
           const label = (
             <>
               <span className="block truncate text-sm text-slate-200">{c.name}</span>
@@ -151,6 +142,25 @@ function Committees({ person }: { person: PersonNetwork }) {
   );
 }
 
+/**
+ * What the committees under one person paid each other.
+ *
+ * Given the same weight as the money in and the money out, because for a
+ * network of any size it is the figure that explains the other two. It is
+ * shown as a share of what was raised as well as a sum: $56M means little
+ * until it is 36% of everything that came in.
+ */
+function Shuffle({ flow, raised }: { flow: InternalFlow; raised: string }) {
+  const share = Number(raised) > 0 ? (Number(flow.amount) / Number(raised)) * 100 : 0;
+  return (
+    <Tile label="Moved between them" value={flow.amount} tone="self">
+      {flow.transfers.toLocaleString()} transfer{flow.transfers === 1 ? '' : 's'} among{' '}
+      {flow.payers.toLocaleString()} of these committees
+      {share >= 1 && ` · ${share.toFixed(0)}% of what they raised`}
+    </Tile>
+  );
+}
+
 export default async function KymPersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   const { cycle } = await searchParams;
@@ -174,7 +184,7 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
   const roles = person.roles
     .map((r) => `${roleLabel(r.role)} of ${r.committees.toLocaleString()}`)
     .join(' · ');
-  const tooBroad = person.committees.length > TRACEABLE;
+  const inside = await internalFlow(db, person.entityIds);
 
   return (
     <main className="mt-8">
@@ -193,7 +203,14 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
         </p>
       )}
 
-      <div className="mt-6 grid max-w-2xl grid-cols-2 gap-3 max-[400px]:grid-cols-1">
+      {/* Three tiles when the group moves money inside itself, two when it
+          does not. Stacks below 400px, where two nine-figure sums will not sit
+          side by side. */}
+      <div
+        className={`mt-6 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1 ${
+          Number(inside.amount) > 0 ? 'max-w-4xl sm:grid-cols-3' : 'max-w-2xl'
+        }`}
+      >
         <Tile label="Raised" value={person.totalReceived} tone="in">
           across {person.committees.length.toLocaleString()} filing
           {person.committees.length === 1 ? '' : 's'}
@@ -201,7 +218,18 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
         <Tile label="Paid out" value={person.totalGiven} tone="out">
           {scope}
         </Tile>
+        {Number(inside.amount) > 0 && <Shuffle flow={inside} raised={person.totalReceived} />}
       </div>
+
+      {Number(inside.amount) > 0 && (
+        <p className="mt-3 max-w-3xl text-xs leading-relaxed text-slate-500">
+          Money moving between committees under the same person is real money, but it neither
+          entered nor left the group. Each transfer puts another committee name between a donor and
+          whatever the money finally paid for, so the filed contributor list at the far end names a
+          committee rather than anybody who gave. The donor column below follows those transfers
+          back to whoever paid in from outside.
+        </p>
+      )}
 
       <Committees person={person} />
 
@@ -211,15 +239,6 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
         scope={scope}
         cycle={cycle}
         paymentsHint="Everyone these committees paid, pooled and largest first. A vendor paid by several of them is one row."
-        originsInstead={
-          tooBroad ? (
-            <Note>
-              {person.name} is named on {person.committees.length.toLocaleString()} committees. That
-              many is a filing practice rather than a network, and the pooled origins of all of them
-              would describe nobody. Open a single committee above to trace its money.
-            </Note>
-          ) : undefined
-        }
       />
 
       <div className="mt-10 max-w-2xl">

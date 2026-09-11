@@ -17,7 +17,8 @@
 import { Suspense } from 'react';
 import { db } from '@/db';
 import { ledger, type LedgerSourceRow } from '@/lib/graph/ledger';
-import { trace, type TraceResult } from '@/lib/graph/trace';
+import type { TraceResult } from '@/lib/graph/trace';
+import { cachedTrace } from '@/lib/graph/traceCache';
 import { formatMoney, formatMoneyFull } from '@/lib/graph/types';
 
 /**
@@ -36,10 +37,28 @@ const DEAD_ENDS = 10;
 /** How far the trace chases a chain, and the floor below which a strand is dropped. */
 const TRACE = { maxDepth: 12, minDollars: 100, dateOrdered: true };
 
-export function Money({ value, tone }: { value: string | number; tone: 'in' | 'out' | 'flat' }) {
-  const color =
-    tone === 'in' ? 'text-emerald-400' : tone === 'out' ? 'text-amber-400' : 'text-slate-400';
-  return <span className={`font-mono tabular-nums ${color}`}>{formatMoneyFull(value)}</span>;
+/**
+ * Three tones, and they are three different kinds of money.
+ *
+ * In and out are the obvious pair. `self` is money that moved between
+ * committees in the same set — real, but it neither entered nor left, so it
+ * must not read as either. It shares its color with the rows the payments list
+ * marks the same way, so the headline figure and its constituent rows are
+ * visibly the same fact.
+ */
+export type Tone = 'in' | 'out' | 'self' | 'flat';
+
+const TONE_TEXT: Record<Tone, string> = {
+  in: 'text-emerald-400',
+  out: 'text-amber-400',
+  self: 'text-indigo-300',
+  flat: 'text-slate-400',
+};
+
+export function Money({ value, tone }: { value: string | number; tone: Tone }) {
+  return (
+    <span className={`font-mono tabular-nums ${TONE_TEXT[tone]}`}>{formatMoneyFull(value)}</span>
+  );
 }
 
 /**
@@ -49,6 +68,13 @@ export function Money({ value, tone }: { value: string | number; tone: 'in' | 'o
  * $196,500 and $125,502,148 need different treatment in the same box, and only
  * one of them is knowable from a breakpoint.
  */
+const TILE_FRAME: Record<Tone, string> = {
+  in: 'border-emerald-900 bg-emerald-950/30',
+  out: 'border-slate-800 bg-slate-900/40',
+  self: 'border-indigo-900 bg-indigo-950/30',
+  flat: 'border-slate-800 bg-slate-900/40',
+};
+
 export function Tile({
   label,
   value,
@@ -57,7 +83,7 @@ export function Tile({
 }: {
   label: string;
   value: string;
-  tone: 'in' | 'out';
+  tone: Tone;
   children: React.ReactNode;
 }) {
   const text = formatMoneyFull(value);
@@ -65,20 +91,12 @@ export function Tile({
     text.length > 11 ? 'text-lg sm:text-2xl' : text.length > 8 ? 'text-xl sm:text-2xl' : 'text-2xl';
 
   return (
-    <div
-      className={`min-w-0 rounded border p-4 ${
-        tone === 'in' ? 'border-emerald-900 bg-emerald-950/30' : 'border-slate-800 bg-slate-900/40'
-      }`}
-    >
+    <div className={`min-w-0 rounded border p-4 ${TILE_FRAME[tone]}`}>
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div
-        className={`mt-1 font-mono font-semibold tabular-nums ${size} ${
-          tone === 'in' ? 'text-emerald-400' : 'text-amber-400'
-        }`}
-      >
+      <div className={`mt-1 font-mono font-semibold tabular-nums ${size} ${TONE_TEXT[tone]}`}>
         {text}
       </div>
-      <div className="mt-1 text-xs text-slate-500">{children}</div>
+      <div className="mt-1 text-xs leading-relaxed text-slate-500">{children}</div>
     </div>
   );
 }
@@ -182,7 +200,7 @@ async function Donors({
   subject: string;
   cycle?: string;
 }) {
-  const result = await trace(db, ids, { ...TRACE, cycle });
+  const result = await cachedTrace(db, ids, { ...TRACE, cycle });
 
   if (result.sources.length === 0 && result.injectionPoints.length === 0) {
     return (
