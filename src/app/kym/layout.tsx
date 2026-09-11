@@ -11,11 +11,16 @@ import Link from 'next/link';
  * viewport with overflow-hidden, because the graph explorer owns its own
  * scrolling. These are ordinary documents and have to scroll themselves, or
  * everything below the fold is unreachable.
+ *
+ * The container is wider than a reading measure because a committee report
+ * sets the donors against the payments in two columns, and two lists of names
+ * and dollar amounts need the room. Prose inside it is constrained where it
+ * appears, so nothing here is set at a line length nobody can read.
  */
 export default function KymLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="h-dvh overflow-y-auto bg-slate-950">
-      <div className="mx-auto max-w-3xl px-5 py-8 text-slate-100 sm:py-10">
+      <div className="mx-auto max-w-5xl px-5 py-8 text-slate-100 sm:py-10">
         <header>
           <Link href="/kym" className="inline-block">
             <h1 className="text-2xl font-semibold tracking-tight text-slate-100 sm:text-3xl">

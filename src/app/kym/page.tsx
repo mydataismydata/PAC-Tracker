@@ -29,7 +29,7 @@ export default async function KymLandingPage() {
   const busiest = await busiestCommittees(db, 10);
 
   return (
-    <main className="mt-8">
+    <main className="mt-8 max-w-3xl">
       <p className="max-w-prose text-sm leading-relaxed text-slate-400">
         Every political mailer has to name whoever paid for it. Type that name below to see who
         funded the committee behind it, and what it spent the money on.
