@@ -82,6 +82,21 @@ function Committees({ person }: { person: PersonNetwork }) {
         total={person.committees.length}
         amount={Number(person.totalReceived)}
       />
+      {/* A name registered twice is worth noticing on its own, and at this
+          scale it is also the way into the namer. */}
+      {person.distinctNames < person.committees.length && (
+        <p className="mt-0.5 text-xs text-slate-600">
+          Under{' '}
+          <Link
+            href={`/kym/namer?who=${person.slug}`}
+            className="underline decoration-slate-800 underline-offset-2 hover:text-indigo-300"
+          >
+            {person.distinctNames.toLocaleString()} distinct names
+          </Link>
+          , so {(person.committees.length - person.distinctNames).toLocaleString()} of them repeat a
+          name already in the list.
+        </p>
+      )}
       {/* Column headers, so the two figures on every row are named once
           rather than guessed at or explained underneath. */}
       <div className="mt-2 hidden items-baseline gap-4 px-4 pb-1 text-[11px] uppercase tracking-wide text-slate-500 sm:flex">

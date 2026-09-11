@@ -229,6 +229,13 @@ export interface PersonNetwork {
   roles: { role: string; committees: number }[];
   entityIds: string[];
   committees: PersonCommittee[];
+  /**
+   * How many of the committee names are different from one another.
+   *
+   * Below the committee count when the same name has been registered twice,
+   * which at scale it routinely has.
+   */
+  distinctNames: number;
   totalReceived: string;
   totalGiven: string;
 }
@@ -263,9 +270,11 @@ export async function personNetwork(
     total_received: string;
     total_given: string;
     shares_name: boolean;
+    normalized_name: string;
   }>(sql`
     SELECT o.entity_id, o.full_name, o.role::text AS role,
-           e.name, e.kind::text AS kind, e.committee_type::text AS committee_type,
+           e.name, e.normalized_name, e.kind::text AS kind,
+           e.committee_type::text AS committee_type,
            e.status::text AS status, e.city, e.state_code,
            e.total_received::text AS total_received,
            e.total_given::text    AS total_given,
@@ -287,9 +296,11 @@ export async function personNetwork(
   const committees = new Map<string, PersonCommittee>();
   const roleCounts = new Map<string, Set<string>>();
   const spellingCounts = new Map<string, number>();
+  const committeeNames = new Set<string>();
 
   for (const r of rows) {
     spellingCounts.set(r.full_name, (spellingCounts.get(r.full_name) ?? 0) + 1);
+    committeeNames.add(r.normalized_name);
 
     if (!roleCounts.has(r.role)) roleCounts.set(r.role, new Set());
     roleCounts.get(r.role)!.add(r.entity_id);
@@ -330,6 +341,7 @@ export async function personNetwork(
       .sort((a, b) => b.committees - a.committees),
     entityIds: list.map((c) => c.id),
     committees: list,
+    distinctNames: committeeNames.size,
     totalReceived: list.reduce((a, c) => a + Number(c.totalReceived), 0).toFixed(2),
     totalGiven: list.reduce((a, c) => a + Number(c.totalGiven), 0).toFixed(2),
   };
@@ -375,4 +387,52 @@ export async function internalFlow(db: Db, entityIds: string[]): Promise<Interna
        AND t.to_entity_id   = ANY(${sql.param(entityIds)}::uuid[])
   `);
   return rows[0] ?? empty;
+}
+
+export interface VocabularyWord {
+  /** The spelling the most committees used, so the casing is real. */
+  word: string;
+  committees: number;
+}
+
+/**
+ * The words one operator names their committees with, most used first.
+ *
+ * Drawn from the display names rather than the normalized ones, so the
+ * apostrophes and the capitals survive — these are meant to be read back, not
+ * matched on. Structural suffixes are dropped; "Committee" is not one of them,
+ * because here it is a content word doing the same job as "Fund" or "Alliance".
+ */
+export async function nameVocabulary(
+  db: Db,
+  entityIds: string[],
+  minCommittees = 2,
+): Promise<VocabularyWord[]> {
+  if (entityIds.length === 0) return [];
+
+  const rows = await db.execute<{ word: string; committees: number }>(sql`
+    WITH token AS (
+      SELECT e.id, t.word
+        FROM entities e,
+             LATERAL regexp_split_to_table(
+               regexp_replace(e.name, '[^A-Za-z0-9'']+', ' ', 'g'), ' '
+             ) AS t(word)
+       WHERE e.id = ANY(${sql.param(entityIds)}::uuid[])
+         AND length(t.word) > 1
+         AND upper(t.word) NOT IN (
+           'OF','FOR','THE','AND','TO','IN','ON','INC','LLC','PAC','PC','CO','CCE','ECO'
+         )
+    ),
+    spelled AS (
+      SELECT upper(word) AS key, word, count(DISTINCT id)::int AS n
+        FROM token GROUP BY 1, 2
+    )
+    SELECT (array_agg(word ORDER BY n DESC, word))[1] AS word,
+           sum(n)::int AS committees
+      FROM spelled
+     GROUP BY key
+    HAVING sum(n) >= ${minCommittees}
+     ORDER BY 2 DESC, 1
+  `);
+  return rows;
 }
