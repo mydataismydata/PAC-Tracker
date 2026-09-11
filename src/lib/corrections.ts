@@ -49,14 +49,18 @@ export type CorrectionEntry =
   | {
       /**
        * Move a subset of one entity's rows onto another, picked by the feed
-       * they came from, the raw name on the row, and/or the payer's city.
+       * they came from, the raw name on the row, the payer's city, and/or the
+       * election cycle the row is filed under. The cycle is what separates one
+       * candidacy from the next when the filed spelling does not: donors wrote
+       * "BYRON DONALDS CAMPAIGN" for his 2018 state House run and again for
+       * the 2026 governor run.
        * `to` is an existing entity ({id,name}) or one to converge on or
        * create by name ({name,kind}). Aliases follow the rows unless
        * `alias` is false.
        */
       op: 'split-rows';
       from: Selector;
-      where: { source?: string; raw?: string; city?: string };
+      where: { source?: string; raw?: string; city?: string; cycle?: string };
       to: Selector & { kind?: EntityKind };
       alias?: boolean;
       date?: string;
