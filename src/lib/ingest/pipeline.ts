@@ -2356,6 +2356,26 @@ export async function mergeEntities(
       await tx.execute(sql`
         UPDATE transactions SET to_entity_id = ${keepId} WHERE to_entity_id = ${loserId}
       `);
+      // Two registered committees can be one operation, and folding them has
+      // to survive the rule that an entity holds one live registration per
+      // filing office. Florida abolished Committees of Continuous Existence in
+      // 2013 and the operations behind them re-registered as political
+      // committees, so the pair is a closed record and a live one: JaxBiz is
+      // account 43549 closed and account 60995 active, same address, same
+      // phone, same treasurer.
+      //
+      // The loser's registration is kept as history and demoted out of the
+      // way. Deleting it would throw away the account number that proves the
+      // two were ever separate, which is the evidence for the merge.
+      await tx.execute(sql`
+        UPDATE committee_registrations r SET is_current = false
+         WHERE r.entity_id = ${loserId} AND r.is_current
+           AND EXISTS (
+             SELECT 1 FROM committee_registrations k
+              WHERE k.entity_id = ${keepId} AND k.is_current
+                AND k.source_id IS NOT DISTINCT FROM r.source_id
+           )
+      `);
       await tx.execute(sql`
         UPDATE committee_registrations SET entity_id = ${keepId} WHERE entity_id = ${loserId}
       `);

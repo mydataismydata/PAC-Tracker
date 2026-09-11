@@ -78,7 +78,13 @@ export async function generateMetadata({ params, searchParams }: Params): Promis
  * on the row that tells the reader which they are looking at. It counts every
  * role, because that is what the page behind the link shows.
  */
-function Registration({ officers }: { officers: EntityOfficer[] }) {
+function Registration({
+  officers,
+  spansRegistrations,
+}: {
+  officers: EntityOfficer[];
+  spansRegistrations: boolean;
+}) {
   const people = new Map<string, { officer: EntityOfficer; roles: string[] }>();
   for (const o of officers) {
     const held = people.get(o.normalizedName);
@@ -89,6 +95,14 @@ function Registration({ officers }: { officers: EntityOfficer[] }) {
   return (
     <section className="mt-8">
       <SectionHeading>On the registration</SectionHeading>
+      {/* Two people in one role is not a contradiction here: a committee that
+          re-registered keeps the officers of the registration it closed. */}
+      {spansRegistrations && (
+        <p className="mt-1 text-xs text-slate-600">
+          Covers every registration this committee has held, so a role can name more than one
+          person.
+        </p>
+      )}
       <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
         {[...people.values()].map(({ officer, roles }) => (
           <li
@@ -213,6 +227,9 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
     subject.city ? `${subject.city}, ${subject.stateCode ?? ''}`.trim() : null,
     subject.accountNumber ? `account ${subject.accountNumber}` : null,
     subject.status === 'closed' ? 'closed' : null,
+    subject.priorRegistrations > 0
+      ? `${subject.priorRegistrations} earlier registration${subject.priorRegistrations === 1 ? '' : 's'} on file`
+      : null,
   ].filter(Boolean);
 
   return (
@@ -239,7 +256,9 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
         </Tile>
       </div>
 
-      {officers.length > 0 && <Registration officers={officers} />}
+      {officers.length > 0 && (
+        <Registration officers={officers} spansRegistrations={subject.priorRegistrations > 0} />
+      )}
 
       <MoneyColumns
         ids={[subject.id]}
