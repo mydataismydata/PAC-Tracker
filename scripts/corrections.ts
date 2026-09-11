@@ -23,7 +23,8 @@
  *   {"op":"split","from":SEL,"city":"GOLDEN BEACH","name":"New Name",
  *    "kind":"individual","occupation":"...","date":"...","note":"..."}
  *   {"op":"split-rows","from":SEL,"where":{"source":"voterfocus-duval",
- *    "raw":"Republican Executive Committee","city":"..."},"to":SEL|{"name":"...","kind":"party"},
+ *    "raw":"Republican Executive Committee","city":"...","cycle":"20181106-GEN"},
+ *    "to":SEL|{"name":"...","kind":"party"},
  *    "alias":false,"date":"...","note":"..."}
  *   {"op":"set-kind","entity":SEL,"kind":"committee","date":"...","note":"..."}
  *   {"op":"alias","entity":SEL,"alias":"Spelling As Filed","jurisdiction":"FL-DUVAL",
@@ -46,12 +47,17 @@
  * the ids differ, which is why every selector should carry the name too.
  *
  * `split-rows` reattributes a subset of one entity's rows: those from one
- * feed (`source` is a sources.key), carrying one raw spelling, and/or filed
- * from one city. The target is an existing entity, or a name to converge on
- * or create. The raw spellings of the moved rows become aliases of the
- * target — keyed to the feed's county when the name is a bare local office —
- * and leave the source entity once no row there carries them; `"alias":false`
- * skips that when the spelling is too generic to pin anywhere.
+ * feed (`source` is a sources.key), carrying one raw spelling, filed from one
+ * city, and/or filed under one election cycle. The cycle is what separates one
+ * candidacy from the next when the spelling does not — donors wrote "BYRON
+ * DONALDS CAMPAIGN" for the 2018 state House run and again for the 2026
+ * governor run, so only `election_cycle` tells those two apart. The target is
+ * an existing entity, or a name to converge on or create. The raw spellings of
+ * the moved rows become aliases of the target — keyed to the feed's county
+ * when the name is a bare local office — and leave the source entity once no
+ * row there carries them. `"alias":false` skips that, either when the spelling
+ * is too generic to pin anywhere or when it belongs to the entity the rows are
+ * leaving rather than the one they join.
  *
  * `rename` with `"detach":true` also moves the entity's matching identity to
  * the new spelling and drops the old one, so a bare name ("Democratic
@@ -278,8 +284,11 @@ async function runSplitRows(e: Extract<Entry, { op: 'split-rows' }>): Promise<Ou
   if (!from) return { status: 'error', detail: `source entity ${show(e.from)} not found` };
 
   const w = e.where ?? {};
-  if (!w.source && !w.raw && !w.city) {
-    return { status: 'error', detail: 'split-rows needs a source, a raw name, or a city to pick rows by' };
+  if (!w.source && !w.raw && !w.city && !w.cycle) {
+    return {
+      status: 'error',
+      detail: 'split-rows needs a source, a raw name, a city, or a cycle to pick rows by',
+    };
   }
   let sourceId: string | null = null;
   let county: string | null = null;
@@ -295,6 +304,8 @@ async function runSplitRows(e: Extract<Entry, { op: 'split-rows' }>): Promise<Ou
     county = s.code && s.code.startsWith('FL-') ? s.code : null;
   }
   const sourceFilter = sourceId ? sql`AND t.source_id = ${sourceId}` : sql``;
+  // The cycle sits on the row, not on either side of it, so it narrows both.
+  const cycleFilter = w.cycle ? sql`AND t.election_cycle = ${w.cycle}` : sql``;
   // The city lives on the payer side only, so a city filter picks payer rows.
   const fromSide = sql`t.from_entity_id = ${from.id}
     ${w.raw ? sql`AND upper(t.raw_from_name) = upper(${w.raw})` : sql``}
@@ -308,12 +319,13 @@ async function runSplitRows(e: Extract<Entry, { op: 'split-rows' }>): Promise<Ou
            CASE WHEN t.from_entity_id = ${from.id} THEN t.raw_from_name ELSE t.raw_to_name END AS raw,
            t.amount
       FROM transactions t
-     WHERE ((${fromSide}) OR (${toSide})) ${sourceFilter}
+     WHERE ((${fromSide}) OR (${toSide})) ${sourceFilter} ${cycleFilter}
   `);
   const picked = [
     w.source ? `from ${w.source}` : null,
     w.raw ? `filed as "${w.raw}"` : null,
     w.city ? `from ${w.city}` : null,
+    w.cycle ? `filed under ${w.cycle}` : null,
   ]
     .filter(Boolean)
     .join(', ');
