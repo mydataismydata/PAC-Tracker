@@ -8,6 +8,7 @@
  * page shares, so the two cannot drift apart.
  */
 
+import Image from 'next/image';
 import Link from 'next/link';
 import type { Metadata } from 'next';
 import { db } from '@/db';
@@ -19,7 +20,9 @@ import {
   type CommitteeSubject,
 } from '@/lib/graph/committee';
 import { officersForEntity, rolePhrase, type EntityOfficer } from '@/lib/graph/officers';
+import { OFFICE_LABELS } from '@/lib/graph/person';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
+import { RING_ONE, RING_TWO_EACH } from '@/lib/kym/snapshot';
 import { Money, MoneyColumns, SectionHeading, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
@@ -55,6 +58,26 @@ async function resolve(p: Params): Promise<{
 
   const matches = await committeesBySlug(db, slug);
   return { slug, cycle, subject: matches.length === 1 ? matches[0] : null, matches };
+}
+
+/**
+ * A candidate account, read off its filed name.
+ *
+ * The state files a campaign account as `Donalds, Byron (REP)(GOV)`: surname,
+ * given name, party, office. That is enough to say what the account is for
+ * and to link back to the person, whose page holds every account they have.
+ */
+function candidacy(subject: CommitteeSubject): {
+  line: string;
+  person: { last: string; first: string } | null;
+} | null {
+  if (subject.kind !== 'candidate') return null;
+  const codes = subject.name.match(/\(([A-Z]{2,4})\)\s*\(([A-Z]{2,4})\)\s*$/);
+  const office = codes ? (OFFICE_LABELS[codes[2]] ?? codes[2]) : null;
+  const line = office ? `Campaign account for ${office}${codes ? ` (${codes[1]})` : ''}` : 'Campaign account';
+  const name = subject.name.match(/^([^,(]+),\s*([A-Za-z'-]+)/);
+  const person = name ? { last: name[1].trim(), first: name[2] } : null;
+  return { line, person };
 }
 
 export async function generateMetadata({ params, searchParams }: Params): Promise<Metadata> {
@@ -177,11 +200,11 @@ function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] 
   return (
     <main className="mt-8 max-w-3xl">
       <h2 className="text-xl font-semibold text-slate-100">
-        {matches.length} committees file under this name
+        {matches.length} filings under this name
       </h2>
       <p className="mt-2 max-w-prose text-sm leading-relaxed text-slate-400">
-        They are separate registrations with separate money, and the state lets them share a name.
-        Pick the one you mean.
+        They are separate accounts with separate money. A committee can share its name with
+        another, and a candidate opens one account per office sought. Pick the one you mean.
       </p>
       <ul className="mt-5 divide-y divide-slate-900 rounded border border-slate-800">
         {matches.map((c) => (
@@ -209,6 +232,54 @@ function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] 
   );
 }
 
+/**
+ * The neighborhood as a picture, for taking away.
+ *
+ * Drawn by `/api/kym/snapshot`, which caches the file, so the page emits the
+ * tag and nothing more; a first draw takes a few seconds and the page must
+ * not wait on it. Sized as a square here because the drawn picture nearly is
+ * one, and the browser corrects the height once it has the file.
+ */
+function Snapshot({
+  subject,
+  cycle,
+  scope,
+}: {
+  subject: CommitteeSubject;
+  cycle?: string;
+  scope: string;
+}) {
+  const src = `/api/kym/snapshot/${subject.id}${cycle ? `?cycle=${encodeURIComponent(cycle)}` : ''}`;
+  const what = subject.kind === 'candidate' ? 'campaign' : 'committee';
+  return (
+    <section className="mt-10">
+      <SectionHeading>Two hops out · {scope}</SectionHeading>
+      <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-600">
+        Who this {what} paid or was paid by, and who they paid or were paid by: the {RING_ONE}{' '}
+        that moved the most money with it, and the {RING_TWO_EACH} that moved the most with each
+        of those. Only direct links are drawn, which means both ends went on to move money
+        themselves. Donors who only give are left out, so the chain stays readable. Open the
+        picture to save it.
+      </p>
+      <a
+        href={src}
+        target="_blank"
+        rel="noopener"
+        className="mt-3 block max-w-3xl overflow-hidden rounded border border-slate-800 bg-slate-950 hover:border-slate-700"
+      >
+        <Image
+          src={src}
+          alt={`${subject.name}: money to and from other committees, two hops out`}
+          width={1600}
+          height={1600}
+          unoptimized
+          className="h-auto w-full"
+        />
+      </a>
+    </section>
+  );
+}
+
 export default async function KymCommitteePage({ params, searchParams }: Params) {
   const { slug, cycle, subject, matches } = await resolve({ params, searchParams });
 
@@ -222,8 +293,9 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
 
   const officers = await officersForEntity(db, subject.id);
   const scope = cycle ? `${cycle.slice(0, 4)} cycle` : 'all cycles on file';
+  const campaign = candidacy(subject);
   const identity = [
-    kindLabel({ kind: subject.kind, committeeType: subject.committeeType }),
+    campaign?.line ?? kindLabel({ kind: subject.kind, committeeType: subject.committeeType }),
     subject.city ? `${subject.city}, ${subject.stateCode ?? ''}`.trim() : null,
     subject.accountNumber ? `account ${subject.accountNumber}` : null,
     subject.status === 'closed' ? 'closed' : null,
@@ -241,6 +313,20 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
       {subject.firstDate && subject.lastDate && (
         <p className="mt-0.5 text-xs text-slate-600">
           Filings on file from {subject.firstDate} to {subject.lastDate}.
+        </p>
+      )}
+      {/* One account is a fraction of a politician's money. Say so, and point
+          at the whole. */}
+      {campaign?.person && (
+        <p className="mt-2 text-sm text-slate-400">
+          One of this candidate&rsquo;s accounts.{' '}
+          <Link
+            href={`/person/${encodeURIComponent(campaign.person.last)}/${encodeURIComponent(campaign.person.first)}`}
+            className="text-indigo-300 underline-offset-2 hover:underline"
+          >
+            See every filing in their name
+          </Link>
+          .
         </p>
       )}
 
@@ -265,8 +351,14 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
         subject={subject.name}
         scope={scope}
         cycle={cycle}
-        paymentsHint="Everyone this committee paid, largest first. Mail vendors, consultants and transfers to other committees all appear here."
+        paymentsHint={
+          campaign
+            ? 'Everyone this campaign paid, largest first. Mail vendors, consultants and refunds all appear here.'
+            : 'Everyone this committee paid, largest first. Mail vendors, consultants and transfers to other committees all appear here.'
+        }
       />
+
+      <Snapshot subject={subject} cycle={cycle} scope={scope} />
 
       <p className="mt-8 text-xs leading-relaxed text-slate-600">
         Figures are as filed with the Florida Division of Elections and the county supervisors of
