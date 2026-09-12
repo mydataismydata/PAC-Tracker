@@ -87,13 +87,16 @@ let stamp: { value: string; at: number } | null = null;
 /**
  * The latest write to anything a trace reads.
  *
+ * Shared with the snapshot cache in `src/lib/kym/snapshot.ts`, which draws
+ * from the same two tables and goes stale for the same reasons.
+ *
  * `transactions.updated_at` is indexed, so its maximum is instant. The one on
  * `entities` is not, and costs about 80ms — which is why the answer stands for
  * a minute. Both are needed: money moving is a write to the first, and a kind
  * changing from committee to organization is a write only to the second, yet
  * it decides whether the trace treats that entity as a conduit or as a source.
  */
-async function dataStamp(db: Db): Promise<string> {
+export async function dataStamp(db: Db): Promise<string> {
   const now = Date.now();
   if (stamp && now - stamp.at <= STAMP_TTL_MS) return stamp.value;
 
