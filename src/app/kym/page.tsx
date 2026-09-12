@@ -29,13 +29,16 @@ export default async function KymLandingPage() {
   const busiest = await busiestCommittees(db, 10);
 
   return (
-    <main className="mt-8 max-w-3xl">
-      <p className="max-w-prose text-sm leading-relaxed text-slate-400">
+    <main className="mt-8">
+      {/* The page's whole argument, and a break in the middle of it reads as
+          two half-thoughts. `one-line` keeps it on one, shrinking the type
+          instead of wrapping. See globals.css. */}
+      <p className="one-line leading-relaxed text-slate-400">
         Every political mailer has to name whoever paid for it. Search that name above to see who
-        funded the committee behind it, and what it spent the money on.
+        really paid for it, and where that money went.
       </p>
 
-      <section className="mt-10">
+      <section className="mt-10 max-w-3xl">
         <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
           Biggest spenders on file
         </h2>
@@ -65,7 +68,7 @@ export default async function KymLandingPage() {
         </ul>
       </section>
 
-      <p className="mt-8 text-xs leading-relaxed text-slate-600">
+      <p className="mt-8 max-w-3xl text-xs leading-relaxed text-slate-600">
         Figures are as filed with the Florida Division of Elections and the county supervisors of
         elections, and may be amended.
       </p>
