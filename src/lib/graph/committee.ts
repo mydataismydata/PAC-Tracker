@@ -25,8 +25,19 @@ import { normalizeName } from '@/lib/normalize';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
-/** What can pay for a mailer. Candidates and donors are out of scope here. */
+/** What can pay for a mailer, and what the search box offers. Donors are out of scope here. */
 const KINDS = sql`('committee', 'party')`;
+
+/**
+ * What a report can be run on, which is wider than what the search offers.
+ *
+ * A politician's page lists their campaign accounts beside their committee,
+ * and a reader who opens one wants the same two columns either way. Candidate
+ * accounts are therefore addressable by id and by slug, while the search box
+ * and the landing page keep to committees: a mailer never names a campaign
+ * account, and offering thousands of them would bury the committees.
+ */
+const SUBJECT_KINDS = sql`('committee', 'party', 'candidate')`;
 
 /** `Keep Florida Great` → `keep-florida-great`. */
 export function committeeSlug(name: string): string {
@@ -178,7 +189,7 @@ export async function committeesBySlug(db: Db, slug: string): Promise<CommitteeS
   const rows = await db.execute<Row>(sql`
     SELECT ${COLUMNS}
       FROM entities e ${DETAIL}
-     WHERE e.kind IN ${KINDS} AND e.normalized_name = ${needle}
+     WHERE e.kind IN ${SUBJECT_KINDS} AND e.normalized_name = ${needle}
      ORDER BY e.total_received DESC, e.name
   `);
   return rows.map(toSubject);
@@ -189,7 +200,7 @@ export async function committeeById(db: Db, id: string): Promise<CommitteeSubjec
   const rows = await db.execute<Row>(sql`
     SELECT ${COLUMNS}
       FROM entities e ${DETAIL}
-     WHERE e.id = ${id}::uuid AND e.kind IN ${KINDS}
+     WHERE e.id = ${id}::uuid AND e.kind IN ${SUBJECT_KINDS}
   `);
   return rows.length > 0 ? toSubject(rows[0]) : null;
 }
