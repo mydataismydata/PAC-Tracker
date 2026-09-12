@@ -11,6 +11,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { db } from '@/db';
+import { committeeSlug } from '@/lib/graph/committee';
 import { resolvePerson } from '@/lib/graph/person';
 import { ledger, type LedgerResult, type LedgerSourceRow } from '@/lib/graph/ledger';
 import { formatMoneyFull } from '@/lib/graph/types';
@@ -202,8 +203,12 @@ export default async function PersonPage({ params, searchParams }: Params) {
                 <span className="font-mono text-[10px] uppercase tracking-wide text-slate-600 sm:w-16 sm:shrink-0">
                   {p.kind}
                 </span>
+                {/* Each filing opens as its own report: the donors and payments
+                    of that one account, without the graph explorer and
+                    without a sign-in. The id is pinned because a candidate
+                    files under the same name once per office sought. */}
                 <Link
-                  href={`/?seed=${p.id}&cycle=${cycleParam}`}
+                  href={`/kym/${committeeSlug(p.name)}?id=${p.id}${cycle ? `&cycle=${cycle}` : ''}`}
                   className="mt-0.5 block truncate text-sm text-slate-200 underline-offset-2 hover:text-indigo-300 hover:underline sm:mt-0 sm:min-w-0 sm:flex-1"
                 >
                   {p.name}
