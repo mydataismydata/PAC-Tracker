@@ -52,6 +52,13 @@ ENV NODE_ENV=production \
 
 RUN addgroup -g 1001 -S nodejs && adduser -u 1001 -S nextjs -G nodejs
 
+# Traces and pictures that are expensive to make and cheap to keep. The
+# compose file mounts a named volume here so they outlive the container; the
+# directory has to exist in the image, owned by the app user, for the volume
+# to inherit that ownership on first mount.
+ENV PT_CACHE_DIR=/app/.cache
+RUN mkdir -p /app/.cache && chown nextjs:nodejs /app/.cache
+
 # `standalone` already contains the traced node_modules and server.js; static
 # assets and public/ are not traced and have to be copied alongside it.
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./

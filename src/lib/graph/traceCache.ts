@@ -32,8 +32,10 @@
  * out, because none of it can ever be asked for again.
  */
 
+import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { db as Database } from '@/db';
+import * as disk from '@/lib/cache/disk';
 import { trace, type InjectionPoint, type TraceOptions, type TracedSource } from '@/lib/graph/trace';
 
 type Db = typeof Database;
@@ -46,6 +48,10 @@ const MAX_ENTRIES = 500;
 
 /** How often the database is asked whether anything has changed. */
 const STAMP_TTL_MS = 60 * 1000;
+
+const NS = 'traces';
+/** Disk the digests may take. At 12–17KB each this is thousands of them. */
+const LIMITS = { ttlMs: TTL_MS, maxBytes: 64 * 1024 * 1024 };
 
 /** A list the report shows the top of, with the whole of it summed and counted. */
 export interface DigestList {
@@ -153,6 +159,20 @@ export async function cachedTrace(
   }
 
   evict();
+
+  // A previous process may have already answered this.
+  const file = createHash('sha1').update(key).digest('hex');
+  const kept = await disk.read(NS, file, 'json').catch(() => null);
+  if (kept) {
+    try {
+      const digest = JSON.parse(kept.toString('utf8')) as TraceDigest;
+      held.set(key, { at: Date.now(), digest: Promise.resolve(digest) });
+      return digest;
+    } catch {
+      // A torn or foreign file. Walk the graph as if it were not there.
+    }
+  }
+
   const digest = trace(db, ids, opts)
     .then((r) => ({
       seedTotal: r.seed.total,
@@ -172,6 +192,10 @@ export async function cachedTrace(
       },
       injectionPoints: r.injectionPoints,
     }))
+    .then((d) => {
+      void disk.write(NS, file, 'json', JSON.stringify(d), LIMITS);
+      return d;
+    })
     // A failed walk must not be remembered, or one transient database error
     // would keep answering for the next week.
     .catch((err) => {
