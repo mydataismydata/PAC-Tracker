@@ -27,17 +27,16 @@
  *
  * A picture costs a dozen queries and two seconds of drawing, and it is
  * 100–400KB. Holding a week of those in memory on a small box is the thing to
- * avoid, so they go to disk under the temp directory, capped by age and by
- * total size. The name of the file carries the same data stamp the trace
- * cache uses, so a correction landing makes every old picture unreachable
- * rather than merely old; the sweep then removes them by age.
+ * avoid, so they go to the disk store in `src/lib/cache/disk.ts`, which
+ * survives a restart of the container, capped by age and by total size. The
+ * name of the file carries the same data stamp the trace cache uses, so a
+ * correction landing makes every old picture unreachable rather than merely
+ * old; the sweep then removes them by age.
  */
 
 import { createHash } from 'node:crypto';
-import { promises as fs } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import type { db as Database } from '@/db';
+import * as disk from '@/lib/cache/disk';
 import { crawlAll, type GraphEdge, type GraphNode } from '@/lib/graph/crawl';
 import { dataStamp } from '@/lib/graph/traceCache';
 
@@ -322,12 +321,11 @@ export const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_BYTES = 256 * 1024 * 1024;
 /** Pictures drawn at once. Each render holds a canvas of a few megapixels while it works. */
 const MAX_RENDERS = 2;
-const SWEEP_EVERY_MS = 10 * 60 * 1000;
 
-const DIR = path.join(os.tmpdir(), 'pactracker-snapshots');
+const NS = 'snapshots';
+const LIMITS = { ttlMs: TTL_MS, maxBytes: MAX_BYTES };
 
 const inflight = new Map<string, Promise<Uint8Array<ArrayBuffer>>>();
-let sweptAt = 0;
 
 /**
  * What names a picture: the subject, the period, the data behind it and the
@@ -365,75 +363,24 @@ async function withSlot<T>(work: () => Promise<T>): Promise<T> {
  * The picture under this key, drawn if it has to be.
  *
  * Reads through to `render` at most once per key however many readers ask at
- * the same moment. The file is written beside its final name and renamed into
- * place, so a reader never sees half of one.
+ * the same moment.
  */
 export async function cachedSnapshot(
   key: string,
   render: () => Promise<Uint8Array<ArrayBuffer>>,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const file = path.join(DIR, `${key}.png`);
-
-  try {
-    const held = await fs.readFile(file);
-    // A read counts as use, so the sweep removes what nobody looks at first.
-    const now = new Date();
-    void fs.utimes(file, now, now).catch(() => undefined);
-    return new Uint8Array(held);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
+  const held = await disk.read(NS, key, 'png');
+  if (held) return new Uint8Array(held);
 
   const pending = inflight.get(key);
   if (pending) return pending;
 
   const job = (async () => {
     const png = await withSlot(render);
-    try {
-      await fs.mkdir(DIR, { recursive: true });
-      const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-      await fs.writeFile(tmp, png);
-      await fs.rename(tmp, file);
-      void sweep();
-    } catch {
-      // Cache only. A full disk costs a redraw next time, not an error now.
-    }
+    await disk.write(NS, key, 'png', png, LIMITS);
     return png;
   })().finally(() => inflight.delete(key));
 
   inflight.set(key, job);
   return job;
-}
-
-/** Drop pictures past their age, then the least recently read until under the cap. */
-async function sweep(): Promise<void> {
-  const now = Date.now();
-  if (now - sweptAt < SWEEP_EVERY_MS) return;
-  sweptAt = now;
-
-  try {
-    const names = await fs.readdir(DIR);
-    const files: { file: string; size: number; used: number }[] = [];
-    for (const name of names) {
-      const file = path.join(DIR, name);
-      const st = await fs.stat(file).catch(() => null);
-      if (!st?.isFile()) continue;
-      const stale = now - st.mtimeMs > TTL_MS || (name.endsWith('.tmp') && now - st.mtimeMs > 60_000);
-      if (stale) {
-        await fs.unlink(file).catch(() => undefined);
-        continue;
-      }
-      files.push({ file, size: st.size, used: st.mtimeMs });
-    }
-
-    let total = files.reduce((a, f) => a + f.size, 0);
-    files.sort((a, b) => a.used - b.used);
-    for (const f of files) {
-      if (total <= MAX_BYTES) break;
-      await fs.unlink(f.file).catch(() => undefined);
-      total -= f.size;
-    }
-  } catch {
-    // The directory may not exist yet, or may have gone. Either is fine.
-  }
 }

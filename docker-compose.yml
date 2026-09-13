@@ -77,6 +77,11 @@ services:
     # nginx terminates TLS and proxies to this; nothing else should reach it.
     ports:
       - '3100:3000'
+    # Funding traces and neighborhood pictures, kept across restarts. Without
+    # this every deploy emptied them and the first reader of each page after
+    # it waited on a fresh trace.
+    volumes:
+      - pactracker-cache:/app/.cache
     depends_on:
       db:
         condition: service_healthy
@@ -112,3 +117,4 @@ services:
 
 volumes:
   pactracker-pgdata:
+  pactracker-cache:
