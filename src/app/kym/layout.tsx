@@ -38,7 +38,14 @@ export default function KymLayout({ children }: { children: React.ReactNode }) {
               </h1>
             </Link>
             <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-500">
-              Powered by the PAC Tracker database
+              Powered by the{' '}
+              <a
+                href="https://pactrack.sjcrlc.org"
+                className="text-slate-400 underline-offset-2 hover:text-indigo-300 hover:underline"
+              >
+                PAC Tracker
+              </a>{' '}
+              database
             </p>
           </div>
           <div className="w-full sm:w-72 lg:w-96">
