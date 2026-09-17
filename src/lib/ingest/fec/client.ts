@@ -40,6 +40,16 @@ export class FecError extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** What `Retry-After` asks for, in milliseconds, when the header is present. */
+function retryAfterMs(res: Response): number | undefined {
+  const header = res.headers.get('retry-after');
+  if (!header) return undefined;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const when = Date.parse(header);
+  return Number.isNaN(when) ? undefined : Math.max(0, when - Date.now());
+}
+
 /** What every OpenFEC list endpoint wraps its results in. */
 export interface FecPage<T> {
   results: T[];
@@ -119,7 +129,13 @@ export class FecClient {
       if (!retryable || attempt === this.maxRetries) {
         throw new FecError(`${shown} -> HTTP ${res.status}`, res.status);
       }
-      await sleep(1000 * attempt ** 2);
+      // A 429 needs a longer wait than a 504 does. The allowance this service
+      // reports is 60 requests, and it refills on a window of its own rather
+      // than a request at a time, so 1s then 4s then 9s can spend every retry
+      // inside one exhausted window and give up with the sweep half loaded.
+      // Sixty seconds clears the window outright. `Retry-After` is used when
+      // the service sends one.
+      await sleep(retryAfterMs(res) ?? (res.status === 429 ? 60_000 : 1000 * attempt ** 2));
     }
     throw new FecError(`${shown}: retries exhausted`);
   }

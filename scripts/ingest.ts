@@ -19,7 +19,7 @@
  *   pnpm ingest county stjohns --all             # every cycle the portal offers
  *   pnpm ingest counties                         # list supported counties
  *   pnpm ingest irs rslc                         # a national 527's funders (IRS 8872)
- *   pnpm ingest fec fine                         # a federal candidate's committee (FEC)
+ *   pnpm ingest fec fine|rutherford              # a federal candidate's committee (FEC)
  *     --cycles=2024,2026 --min=200 --schedules=A|B|AB
  *   pnpm ingest orgs                             # refresh dark-money org profiles (IRS 990 via ProPublica + Sunbiz SFTP feed)
  *   pnpm ingest orgs eif                          # just one, by slug
@@ -769,18 +769,38 @@ async function ingestFecCandidate(slug: string) {
     throw err;
   }
 
+  // Matched on the alias as well as on the display name. A committee that
+  // already had a node before this load carries whatever spelling the feed
+  // that created it used, and a county portal abbreviates: John Rutherford's
+  // committee arrived as "Citizens for Rutherford" from St. Johns and files
+  // with the FEC as "Citizens for John Rutherford". On the display name alone
+  // this statement matched nothing and said nothing, and the committee stayed
+  // a plain conduit while every PAC that funded it was marked.
+  const filed = normalizeName(candidate.name);
   const marked = await db.execute<{ id: string; name: string }>(sql`
-    UPDATE entities SET is_injection_point = true, is_traversable = true
-    WHERE id IN (
+    UPDATE entities e SET is_injection_point = true, is_traversable = true
+    WHERE e.id IN (
       SELECT DISTINCT t.from_entity_id FROM transactions t
       WHERE t.source_id = ${sourceId} AND t.from_entity_id IS NOT NULL
       UNION
       SELECT DISTINCT t.to_entity_id FROM transactions t
       WHERE t.source_id = ${sourceId} AND t.to_entity_id IS NOT NULL
     )
-      AND normalized_name = ${normalizeName(candidate.name)}
-    RETURNING id, name
+      AND (
+        e.normalized_name = ${filed}
+        OR EXISTS (
+          SELECT 1 FROM entity_aliases a
+           WHERE a.entity_id = e.id AND a.normalized_alias = ${filed}
+        )
+      )
+    RETURNING e.id, e.name
   `);
+  if (!marked.length) {
+    throw new Error(
+      `loaded ${totalInserted} rows but found no node answering to "${candidate.name}" — ` +
+        'the committee has not been marked an injection point',
+    );
+  }
   for (const m of marked) console.log(`\n  marked injection point: ${m.name}`);
 
   // The federal PACs that funded this committee are endpoints too.
@@ -798,9 +818,16 @@ async function ingestFecCandidate(slug: string) {
   // of races, so pro-rating its donors into one of them would manufacture a
   // figure that would then sit beside observed transfers looking just as solid.
   //
-  // Scoped by having no receipts of our own: a Florida committee that also
-  // gives federally has its upstream loaded and must stay a conduit, and if
-  // these are ever loaded the flag can come off.
+  // Scoped by having no contributions of our own: a Florida committee that
+  // also gives federally has its upstream loaded and must stay a conduit, and
+  // if these are ever loaded the flag can come off.
+  //
+  // Contributions, not every row pointing at the node. A campaign pays its
+  // joint fundraising committee a share of the costs and pays a conduit a
+  // processing fee, and both land as expenditures on the committee that took
+  // them. Counted as an upstream, $300 of shared costs kept the Rutherford
+  // Victory Fund a conduit and left the $276,181 it raised reading as
+  // unresolved, which is the bar this whole sweep exists to empty.
   const pools = await db.execute<{ id: string; name: string }>(sql`
     UPDATE entities e SET is_injection_point = true, is_traversable = true
     WHERE e.kind = 'committee'
@@ -811,7 +838,10 @@ async function ingestFecCandidate(slug: string) {
           AND t.direction = 'contribution'
           AND t.from_entity_id IS NOT NULL
       )
-      AND NOT EXISTS (SELECT 1 FROM transactions r WHERE r.to_entity_id = e.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM transactions r
+         WHERE r.to_entity_id = e.id AND r.direction = 'contribution'
+      )
     RETURNING e.id, e.name
   `);
   if (pools.length > 0) {
