@@ -720,6 +720,39 @@ export const entityTombstones = pgTable('entity_tombstones', {
   deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Transactions that were deleted, so a replica can be told to delete them too.
+ *
+ * A delta carries inserts, updates and entity tombstones. Until this table
+ * existed it had no way to carry a deleted row, and every row the ingest
+ * machine deleted after having shipped it lived on the deployment box for
+ * good. The mirror rule is the usual cause: a correction moves a committee's
+ * payee onto the candidate, the rebuild then deletes the payer's duplicate of
+ * money the candidate already filed, and both steps happen between two syncs.
+ * The far side keeps the row on the old pair, where mirror collapse can never
+ * see it, and counts the money twice for ever. That had reached 2,743 rows and
+ * $2.6M on 286 private individuals by 2026-09-17.
+ *
+ * Keyed on the transaction's own id rather than the row hash. A deleted filing
+ * that a later sweep brings back is a new row with a new id, and a hash key
+ * would kill it on arrival.
+ */
+export const transactionTombstones = pgTable(
+  'transaction_tombstones',
+  {
+    /** The id the row had. Not a reference — the row it named is gone. */
+    id: uuid('id').primaryKey(),
+    /** The filed row itself, which reads the same in every database. */
+    sourceRowHash: text('source_row_hash').notNull(),
+    /** The feed that filed it. */
+    sourceId: uuid('source_id').references(() => sources.id),
+    /** What deleted it, when the deleter said so. */
+    reason: text('reason'),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('transaction_tombstones_hash_idx').on(t.sourceRowHash)],
+);
+
 export const ingestRuns = pgTable(
 
   'ingest_runs',

@@ -1126,6 +1126,9 @@ export async function collapseMirrors(
   }
 
   if (toDelete.length > 0 && !opts.dryRun) {
+    // Say why, for the tombstone the delete trigger is about to write. `true`
+    // scopes the setting to this transaction.
+    await db.execute(sql`SELECT set_config('pactracker.delete_reason', 'mirror collapse', true)`);
     await db.execute(
       sql`DELETE FROM transactions WHERE id = ANY(${sql.param(toDelete)}::uuid[])`,
     );
@@ -1195,6 +1198,9 @@ export async function purgeSource(
     .where(eq(sources.key, sourceKey));
   if (!src) throw new Error(`unknown source "${sourceKey}"`);
 
+  await db.execute(
+    sql`SELECT set_config('pactracker.delete_reason', ${'purge of feed ' + sourceKey}, true)`,
+  );
   const deletedTxns = await db.execute<{ count: number }>(sql`
     WITH removed AS (DELETE FROM transactions WHERE source_id = ${src.id} RETURNING 1)
     SELECT COUNT(*)::int AS count FROM removed
@@ -1287,6 +1293,12 @@ export async function verifyReferentialIntegrity(db: Db): Promise<IntegrityRepor
            WHERE EXISTS (SELECT 1 FROM entity_tombstones t WHERE t.id = x.from_entity_id)
               OR EXISTS (SELECT 1 FROM entity_tombstones t WHERE t.id = x.to_entity_id)
            LIMIT 20`,
+    ),
+    check(
+      'txn_tombstoned_still_present',
+      'transactions that carry a tombstone but were never deleted',
+      sql`SELECT x.id::text AS id FROM transactions x
+           JOIN transaction_tombstones d ON d.id = x.id LIMIT 20`,
     ),
     check(
       'txn_dangling_ref',
