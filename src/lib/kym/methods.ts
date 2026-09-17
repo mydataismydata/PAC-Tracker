@@ -38,7 +38,7 @@ const LIMITS = { ttlMs: TTL_MS, maxBytes: 16 * 1024 * 1024 };
  * which is how every dollar column on this page read as a dash for as long as
  * it took to notice.
  */
-const VERSION = 3;
+const VERSION = 4;
 
 /** One feed, and what it put in the database. */
 export interface SourceCoverage {
@@ -299,6 +299,26 @@ async function build(db: Db): Promise<Methods> {
   };
 }
 
+/**
+ * What the fold list is built from, in a form that changes when it does.
+ *
+ * The shared data stamp is the last write to `transactions` and `entities`,
+ * and a tombstone is neither. Naming a fold after the fact writes only to
+ * `entity_tombstones`, which moves no timestamp the stamp reads — so the page
+ * went on saying "not recorded" against rows that had names, for as long as
+ * nothing else happened to the database.
+ *
+ * Three aggregates over 1,664 rows, which is free, and `count(name)` is the
+ * one that catches a backfill.
+ */
+async function foldStamp(db: Db): Promise<string> {
+  const rows = await db.execute<{ stamp: string }>(sql`
+    SELECT concat(count(*), '|', count(name), '|', max(deleted_at)) AS stamp
+      FROM entity_tombstones
+  `);
+  return rows[0]?.stamp ?? 'unknown';
+}
+
 let held: { key: string; value: Promise<Methods> } | null = null;
 
 /**
@@ -309,7 +329,8 @@ let held: { key: string; value: Promise<Methods> } | null = null;
  * about a second, which is fine once a week and wrong once a reader.
  */
 export async function methods(db: Db): Promise<Methods> {
-  const stamp = `${VERSION}|${await dataStamp(db)}`;
+  const [data, folds] = await Promise.all([dataStamp(db), foldStamp(db)]);
+  const stamp = `${VERSION}|${data}|${folds}`;
   if (held?.key === stamp) return held.value;
 
   const file = createHash('sha1').update(`methods|${VERSION}|${stamp}`).digest('hex');

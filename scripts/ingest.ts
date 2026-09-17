@@ -104,6 +104,8 @@ import { APP_URL, warmReports } from '@/lib/kym/warm';
 import { isOfficerPlaceholder, normalizeName } from '@/lib/normalize';
 import { EntityResolver } from '@/lib/ingest/resolve';
 import { readCorrections } from '@/lib/corrections';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, basename, join } from 'node:path';
 
 const argv = process.argv.slice(2);
 const positional = argv.filter((a) => !a.startsWith('--'));
@@ -1394,22 +1396,46 @@ async function ingestCounty(slug: string, electionId?: string) {
  * to do: the methods page lists every fold, and a public record of a judgement
  * has to say what was folded rather than only that something was.
  *
- * The corrections log is the one place the older names survive. Every hand-
- * confirmed merge wrote both sides of itself down, so the losers it names can
- * be read straight back out. The automatic folds — a candidate's look-alike
- * node swept onto the candidate — wrote their names only to a working CSV,
- * which is not kept, so those tombstones stay unnamed and the page says so.
+ * Two places the older names survive, and between them they cover all but one.
+ *
+ * The corrections log holds every hand-confirmed merge, both sides written
+ * down, so the losers it names read straight back out.
+ *
+ * The automatic folds — a candidate's look-alike node swept onto the candidate
+ * — wrote theirs to the working CSV that `backfill-candidate-accounts --moves`
+ * produces, which carries the folded node's id, name and kind on every row it
+ * folded whole. That file is gitignored and local, so this is a recovery from
+ * it rather than a thing the deployment box can do: run it here, and the names
+ * travel in the next delta like any other column.
  *
  * Idempotent, and it never overwrites: a name a merge recorded itself is the
- * name as it read at the moment of the fold, and this log is a transcription.
+ * name as it read at the moment of the fold, and both of these are
+ * transcriptions of one.
  */
 async function backfillTombstoneNames(): Promise<void> {
-  const named = new Map<string, string>();
+  const named = new Map<string, { name: string; kind?: string }>();
   for (const { entry } of readCorrections()) {
     if (entry.op !== 'merge') continue;
     for (const loser of entry.lose) {
-      if (loser.id && loser.name) named.set(loser.id, loser.name);
+      if (loser.id && loser.name) named.set(loser.id, { name: loser.name });
     }
+  }
+  const fromLog = named.size;
+
+  // The sweep's own report, if it is still here. Absent is not an error: on a
+  // machine that never ran the sweep there is nothing to recover.
+  const pattern = flags.moves ?? '.working/candidate-accounts-moves*.csv';
+  const files = matchFiles(pattern);
+  for (const file of files) {
+    for (const row of readCsv(readFileSync(file, 'utf8'))) {
+      const id = row.entity_id;
+      const name = row.name;
+      if (!id || !name || named.has(id)) continue;
+      named.set(id, { name, kind: row.kind || undefined });
+    }
+  }
+  if (files.length) {
+    console.log(`Read ${files.length} sweep report(s): ${files.join(', ')}`);
   }
 
   const [before] = await db.execute<{ total: string; unnamed: string }>(sql`
@@ -1418,12 +1444,18 @@ async function backfillTombstoneNames(): Promise<void> {
       FROM entity_tombstones
   `);
   console.log(`${before.total} folds on record, ${before.unnamed} of them unnamed.`);
-  console.log(`The corrections log names ${named.size}.`);
+  console.log(
+    `The corrections log names ${fromLog}` +
+      (named.size > fromLog ? `, the sweep reports another ${named.size - fromLog}` : '') +
+      '.',
+  );
 
   let written = 0;
-  for (const [id, name] of named) {
+  for (const [id, what] of named) {
     const rows = await db.execute<{ id: string }>(sql`
-      UPDATE entity_tombstones SET name = ${name}
+      UPDATE entity_tombstones
+         SET name = ${what.name},
+             kind = COALESCE(kind, ${what.kind ?? null}::entity_kind)
        WHERE id = ${id} AND name IS NULL
       RETURNING id
     `);
@@ -1435,8 +1467,61 @@ async function backfillTombstoneNames(): Promise<void> {
   `);
   console.log(`  named ${written}; ${after.unnamed} still unnamed.`);
   if (Number(after.unnamed) > 0) {
-    console.log('  Those are the automatic candidate-account folds. Their names were not kept.');
+    console.log('  Nothing on this machine names those. They stay blank rather than guessed.');
   }
+  if (written > 0) console.log('  Ship them: ./scripts/ship.sh');
+}
+
+/**
+ * Files matching one `*` in the basename of a path. Missing directory, no files.
+ *
+ * `fs.globSync` would do this and arrived too late in Node to rely on here.
+ */
+function matchFiles(pattern: string): string[] {
+  const dir = dirname(pattern);
+  const name = basename(pattern);
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const re = new RegExp(`^${name.split('*').map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+  return entries.filter((e) => re.test(e)).sort().map((e) => join(dir, e));
+}
+
+/**
+ * A CSV as rows keyed by its header, quotes and embedded commas honored.
+ *
+ * Small on purpose. The only files read here are ones this project wrote, and
+ * the fields that matter — a committee name filed as `Greco, Sam  (REP)(STR)`
+ * — carry commas inside quotes and nothing else RFC 4180 allows.
+ */
+function readCsv(text: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+      continue;
+    }
+    if (c === '"') quoted = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); field = ''; rows.push(row); row = []; }
+    else if (c !== '\r') field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+
+  const [header, ...body] = rows;
+  if (!header) return [];
+  return body
+    .filter((r) => r.length > 1)
+    .map((r) => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
 }
 
 /**
