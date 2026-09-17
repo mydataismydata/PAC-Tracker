@@ -20,7 +20,7 @@
  * leaving two nodes separate.
  */
 
-import { sql, eq, and } from 'drizzle-orm';
+import { sql, eq, and, asc } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { entities, entityAliases } from '@/db/schema';
 import * as schema from '@/db/schema';
@@ -252,9 +252,58 @@ export function classifyContributor(
   return classifyContributorDetailed(rawName, occupation, opts).kind;
 }
 
+/**
+ * How many entities sharing one name this will weigh before giving up on
+ * telling them apart. Four is the worst real case (Accountability in
+ * Government's three registrations, plus room); beyond that the ordering alone
+ * keeps the answer stable.
+ */
+const SHARED_NAME_LIMIT = 8;
+
+/**
+ * Which of several entities sharing one name a dated row belongs to.
+ *
+ * The rule is the one a human reaches for: of the candidates already active on
+ * that date, take the one that started most recently. A committee that
+ * re-registers keeps the name, so a row dated after the new registration began
+ * is the new registration's, and a row dated before it can only be the old
+ * one's. That is exactly how Florida Forward and Florida Conservatives United
+ * were divided by hand, generalized.
+ *
+ * `firstSeen` is the earliest filing on the node, maintained by the rebuild. It
+ * is not the registration date, which Florida does not publish on the record
+ * this can read, but it is the first day the entity is known to have existed
+ * and it moves the same way.
+ *
+ * Every other case falls through to the first candidate, which is the oldest by
+ * `created_at`. That is a guess, and it is the same guess every time, which is
+ * the property the old `LIMIT 1` lacked.
+ */
+function registrationInForce<T extends { id: string; firstSeen: string | null; lastSeen: string | null }>(
+  rows: T[],
+  date: string | null,
+): T {
+  if (!date) return rows[0];
+  const ms = Date.parse(date);
+  if (!Number.isFinite(ms)) return rows[0];
+
+  const started = rows
+    .filter((r) => r.firstSeen !== null && Date.parse(r.firstSeen) <= ms)
+    .sort((a, b) => Date.parse(b.firstSeen as string) - Date.parse(a.firstSeen as string));
+  if (started.length > 0) return started[0];
+
+  // The row predates every candidate. It belongs to whichever began first.
+  const dated = rows
+    .filter((r) => r.firstSeen !== null)
+    .sort((a, b) => Date.parse(a.firstSeen as string) - Date.parse(b.firstSeen as string));
+  return dated[0] ?? rows[0];
+}
+
 export class EntityResolver {
   /** normalizedName -> entityId, scoped to one ingest run. */
   private cache = new Map<string, string>();
+  /** Normalized names held by more than one entity, where the cache cannot answer. */
+  private shared = new Set<string>();
   private stats = { cache: 0, exact: 0, alias: 0, prefix: 0, fuzzy: 0, created: 0, candidate: 0 };
   /** Candidate nodes by person name, loaded the first time a committee's payee needs it. */
   private candidates: CandidateIndex | null = null;
@@ -272,6 +321,7 @@ export class EntityResolver {
 
   clearCache() {
     this.cache.clear();
+    this.shared.clear();
   }
 
   async resolve(input: ResolveInput): Promise<ResolveResult> {
@@ -305,23 +355,48 @@ export class EntityResolver {
       }
     }
 
-    const cached = this.cache.get(normalized);
+    // A name held by more than one entity has no single answer, so the cache
+    // must not pretend it does: the answer depends on the row's date, and the
+    // cache is keyed on the name alone.
+    const cached = this.shared.has(normalized) ? undefined : this.cache.get(normalized);
     if (cached) {
       this.stats.cache++;
       return { entityId: cached, confidence: 1, created: false, method: 'cache' };
     }
 
     // 2. Exact normalized-name hit.
+    //
+    // Florida registers several committees under one name, and one operation
+    // often holds two registrations — a Committee of Continuous Existence
+    // closed in 2013 beside the political committee that replaced it. So this
+    // can match more than one entity, and until it was ordered it read
+    // `LIMIT 1` with no `ORDER BY`: an undefined answer that Postgres settled
+    // from the query plan, and settled differently as the table grew. One
+    // committee's rows went to one node in one ingest run and its twin in the
+    // next. Florida Forward ended with 53 expenditures on one and 48 on the
+    // other, divided by nothing.
+    //
+    // The damage was not only wrong totals. The mirror rule deletes a payment
+    // filed from both ends only when both rows sit between the same two nodes,
+    // so scattering one payer across two nodes hid every duplicate it made.
+    // $7.4M of double-counting survived every rebuild that way.
     const exact = await this.db
-      .select({ id: entities.id })
+      .select({ id: entities.id, firstSeen: entities.firstSeen, lastSeen: entities.lastSeen })
       .from(entities)
       .where(eq(entities.normalizedName, normalized))
-      .limit(1);
+      .orderBy(asc(entities.createdAt), asc(entities.id))
+      .limit(SHARED_NAME_LIMIT);
     if (exact.length > 0) {
-      this.cache.set(normalized, exact[0].id);
-      await this.enrich(exact[0].id, input);
+      if (exact.length === 1) {
+        this.cache.set(normalized, exact[0].id);
+      } else {
+        this.shared.add(normalized);
+        this.cache.delete(normalized);
+      }
+      const hit = exact.length === 1 ? exact[0] : registrationInForce(exact, input.txnDate ?? null);
+      await this.enrich(hit.id, input);
       this.stats.exact++;
-      return { entityId: exact[0].id, confidence: 1, created: false, method: 'exact' };
+      return { entityId: hit.id, confidence: 1, created: false, method: 'exact' };
     }
 
     // 3. Known alias.
