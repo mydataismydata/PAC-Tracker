@@ -61,10 +61,15 @@ TXNS="SELECT * FROM transactions WHERE ingested_at > '$SINCE' OR updated_at > '$
 # repoint below resolve a merge chain that reaches back past the watermark, and
 # clears any entity a missed delta left un-deleted over there.
 TOMBS="SELECT * FROM entity_tombstones"
+# Every transaction tombstone, for the same reasons as the entity ones: they
+# are small, the apply is idempotent, and shipping the whole set clears a row
+# that a missed delta left alive over there.
+TXN_TOMBS="SELECT * FROM transaction_tombstones"
 
 echo "since $SINCE"
 echo "  entities:     $(q "SELECT count(*) FROM ($ENTITIES) x")"
 echo "  transactions: $(q "SELECT count(*) FROM ($TXNS) x")"
+echo "  txn deletes:  $(q "SELECT count(*) FROM ($TXN_TOMBS) x")"
 echo "  deletions:    $(q "SELECT count(*) FROM ($TOMBS) x")"
 
 # Upsert a set of rows through a staging table.
@@ -95,6 +100,7 @@ setclause() {
 ENTITY_SET=$(setclause entities)
 TXN_SET=$(setclause transactions)
 TOMB_SET=$(setclause entity_tombstones)
+TXN_TOMB_SET=$(setclause transaction_tombstones)
 JURISDICTION_SET=$(setclause jurisdictions)
 SOURCE_SET=$(setclause sources)
 
@@ -123,6 +129,27 @@ SOURCE_SET=$(setclause sources)
     docker exec -i pactracker-db psql -U pactracker -d "$DB" -tAc \
       "SELECT format('INSERT INTO $t SELECT (%L::$t).* ON CONFLICT (id) DO UPDATE SET $set_clause;', x) FROM $t x"
   done
+
+  # Deleted transactions go first, before anything else touches the table.
+  #
+  # A delta carries inserts, updates and entity tombstones. Until this table
+  # existed it carried no deletions, so every row this machine deleted after
+  # having shipped it lived on over there for good — and the far side could not
+  # repair it in its own rebuild, because mirror collapse only pairs rows that
+  # already sit between the same two nodes and a row the correction never
+  # reached still points at the old one.
+  #
+  # Before the transaction upsert, for two reasons. `source_row_hash` is
+  # uniquely indexed and the upsert below resolves on `id`, so a filing that was
+  # deleted here and brought back by a later sweep arrives under a new id and
+  # collides with the old row's hash — which aborts the whole delta unless the
+  # old row goes first. And a stray still pointing at an entity the tombstones
+  # below delete is better deleted than repointed onto the survivor.
+  stage transaction_tombstones "$TXN_TOMBS"
+  echo "INSERT INTO transaction_tombstones SELECT * FROM _sync_transaction_tombstones"
+  echo "  ON CONFLICT (id) DO UPDATE SET $TXN_TOMB_SET;"
+  echo "DELETE FROM transactions t USING _sync_transaction_tombstones d WHERE t.id = d.id;"
+  echo "DROP TABLE _sync_transaction_tombstones;"
 
   # Parents before children: entities, then the rows pointing at them.
   stage entities "$ENTITIES"
