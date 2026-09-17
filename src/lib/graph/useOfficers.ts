@@ -37,9 +37,23 @@ export function useOfficerSubject(nodeId: string | null, cycle?: string) {
   return isHub ? subject : null;
 }
 
-/** Chair and treasurer for one committee, for the panel header. */
-export function useOfficers(entityId: string | null) {
-  const [officers, setOfficers] = useState<EntityOfficer[]>([]);
+interface Held {
+  id: string;
+  officers: EntityOfficer[];
+  address: string | null;
+}
+
+/**
+ * Chair, treasurer and address for one committee, for the panel header.
+ *
+ * What came back is held together with the id it came back for, and returned
+ * only when that id is still the one being asked about. An address is a single
+ * line with nothing in it that says whose it is, so the previous subject's
+ * would otherwise sit under a new name looking like an answer — and clearing
+ * it in the effect instead would mean a second render for every selection.
+ */
+export function useOfficers(entityId: string | null): Omit<Held, 'id'> {
+  const [held, setHeld] = useState<Held | null>(null);
 
   useEffect(() => {
     if (!entityId) return;
@@ -50,7 +64,8 @@ export function useOfficers(entityId: string | null) {
           signal: controller.signal,
         });
         if (!res.ok) return;
-        setOfficers((await res.json()).officers ?? []);
+        const body = await res.json();
+        setHeld({ id: entityId, officers: body.officers ?? [], address: body.address ?? null });
       } catch {
         // A missing officer line is not worth an error state in the header.
       }
@@ -58,9 +73,9 @@ export function useOfficers(entityId: string | null) {
     return () => controller.abort();
   }, [entityId]);
 
-  // Derived rather than cleared in the effect: the panel is keyed on the
-  // subject, so a stale list would otherwise flash under a new name.
-  return entityId ? officers : [];
+  return held && held.id === entityId
+    ? { officers: held.officers, address: held.address }
+    : { officers: [], address: null };
 }
 
 /** The corporate / Form 990 profile for an entity, or null when it has none. */

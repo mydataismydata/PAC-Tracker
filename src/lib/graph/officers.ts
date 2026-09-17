@@ -152,6 +152,35 @@ export async function officersForEntity(db: Db, entityId: string): Promise<Entit
   }));
 }
 
+/**
+ * Where a filer says it is, as one line.
+ *
+ * Kept off `GraphNode` on purpose. A crawl carries thousands of nodes and one
+ * address is read at a time — the one whose panel is open — so this rides
+ * along with the officers request the panel already makes rather than adding
+ * two columns to every node on the canvas.
+ *
+ * Every part is independently optional. A committee registration routinely has
+ * a street and no zip, or a city and nothing else, so the parts are joined as
+ * they come rather than laid into a template with holes in it.
+ */
+export async function addressForEntity(db: Db, entityId: string): Promise<string | null> {
+  const [row] = await db.execute<{
+    address: string | null;
+    city: string | null;
+    state_code: string | null;
+    zip: string | null;
+  }>(sql`
+    SELECT address, city, state_code, zip FROM entities WHERE id = ${entityId}
+  `);
+  if (!row) return null;
+  const cityState = [row.city, [row.state_code, row.zip].filter(Boolean).join(' ').trim()]
+    .filter(Boolean)
+    .join(', ');
+  const full = [row.address, cityState].filter(Boolean).join(', ');
+  return full || null;
+}
+
 export async function officerSubject(
   db: Db,
   role: string,

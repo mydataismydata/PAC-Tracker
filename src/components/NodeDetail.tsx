@@ -60,6 +60,8 @@ interface Props {
   subject: OfficerSubject | null;
   /** Chair and treasurer, fetched by the parent for the bar over the canvas. */
   officers: EntityOfficer[];
+  /** Where the filer says it is, when the registration gives one. */
+  address?: string | null;
   /**
    * Which side of the ledger to show. Owned by the parent, because the tiles
    * that set it now sit over the canvas rather than in this panel.
@@ -136,6 +138,7 @@ export default function NodeDetail({
   onRecenter,
   subject,
   officers,
+  address,
   direction,
   onDirectionChange,
   exploring,
@@ -354,6 +357,13 @@ export default function NodeDetail({
           <span className="mt-0.5 block truncate text-[10.5px] text-slate-500" title={detailMeta}>
             {detailMeta}
           </span>
+        )}
+        {/* The street, under the identity line. It is the tie the money does
+            not draw: two committees filing from one suite are one operation,
+            and the city alone never shows that. Wraps rather than truncates —
+            half an address is no address. */}
+        {address && (
+          <span className="mt-0.5 block text-[10.5px] leading-snug text-slate-500">{address}</span>
         )}
       </div>
 

@@ -1194,7 +1194,7 @@ export default function Home() {
               given={given}
               direction={direction}
               onDirectionChange={setDirection}
-              officers={searchedOfficers}
+              officers={searchedOfficers.officers}
               onFindRegistrations={handleFindRegistrations}
               registrationsOn={settings.linkMode === 'registration'}
             />
@@ -1253,7 +1253,8 @@ export default function Home() {
             highlighted={pinnedIds}
             onRecenter={handleRecenter}
             subject={subject}
-            officers={officers}
+            officers={officers.officers}
+            address={officers.address}
             direction={direction}
             onDirectionChange={setDirection}
             exploring={exploring}
