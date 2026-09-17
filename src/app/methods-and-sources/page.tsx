@@ -188,19 +188,6 @@ export default async function MethodsAndSourcesPage() {
           ]}
           rows={foldRows}
           filename="pactracker-folded-entities"
-          footnote={
-            m.unnamedFolds > 0 ? (
-              <>
-                {m.unnamedFolds === 1
-                  ? 'One further fold is not listed. It was'
-                  : `${num(m.unnamedFolds)} further folds are not listed. They were`}{' '}
-                made by hand before this record began, and nothing on file says what{' '}
-                {m.unnamedFolds === 1 ? 'was' : 'were'} folded — only which filer received the
-                money. The feed column is blank for the same reason wherever the fold predates the
-                record: a deleted row cannot be asked which sweep created it.
-              </>
-            ) : undefined
-          }
         />
 
         <DataTable
@@ -227,14 +214,6 @@ export default async function MethodsAndSourcesPage() {
           ]}
           rows={nonprofitRows}
           filename="pactracker-nonprofits"
-          footnote={
-            <>
-              An officer count of zero means the corporation is not registered in Florida. The
-              directors and the registered agent come from the Sunbiz feed, which covers Florida
-              corporations only, so a nonprofit incorporated in Virginia or Delaware appears here
-              with its tax status and its money but with nobody named against it.
-            </>
-          }
         />
 
         <p className="mt-10 max-w-3xl text-xs leading-relaxed text-slate-600">
