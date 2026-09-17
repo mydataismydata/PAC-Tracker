@@ -702,11 +702,21 @@ export const ingestRunStatus = pgEnum('ingest_run_status', [
  * `merged_into` is kept for the trail rather than for lookups: it says which
  * entity now holds that money, which is the question anyone reading a stale
  * link or an old CSV will have.
+ *
+ * The name, kind and source are kept for a second reason: a fold is a
+ * judgement about the data, and the public record of it has to say what was
+ * folded rather than only that something was. An id on its own names nothing
+ * once the row behind it is gone.
  */
 export const entityTombstones = pgTable('entity_tombstones', {
   /** The id that was deleted. Not a reference — the row it named is gone. */
   id: uuid('id').primaryKey(),
   mergedInto: uuid('merged_into'),
+  /** What the deleted entity was called, as it read at the moment of the fold. */
+  name: text('name'),
+  kind: entityKind('kind'),
+  /** The feed that created it. Null on folds made before these were recorded. */
+  sourceId: uuid('source_id').references(() => sources.id),
   deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

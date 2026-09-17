@@ -2345,7 +2345,12 @@ export async function mergeEntities(
   await db.transaction(async (tx) => {
     for (const loserId of ids) {
       const [loser] = await tx
-        .select({ name: entities.name, normalizedName: entities.normalizedName })
+        .select({
+          name: entities.name,
+          normalizedName: entities.normalizedName,
+          kind: entities.kind,
+          sourceId: entities.sourceId,
+        })
         .from(entities)
         .where(eq(entities.id, loserId));
       if (!loser) continue; // already merged away by an earlier group in this batch
@@ -2437,10 +2442,20 @@ export async function mergeEntities(
       // Record the deletion before making it. The deployment box is brought
       // forward by shipping rows that changed, and a deleted row cannot be
       // shipped — without this the duplicate lives on over there forever.
+      //
+      // The name, kind and feed go down with it. A fold is a judgement about
+      // whose money this was, and the public record of one has to name what
+      // was folded; read back later, an id alone says only that something was
+      // here. Written now because in three statements' time there is nowhere
+      // left to read them from.
       await tx.execute(sql`
-        INSERT INTO entity_tombstones (id, merged_into)
-        VALUES (${loserId}, ${keepId})
-        ON CONFLICT (id) DO UPDATE SET merged_into = EXCLUDED.merged_into
+        INSERT INTO entity_tombstones (id, merged_into, name, kind, source_id)
+        VALUES (${loserId}, ${keepId}, ${loser.name}, ${loser.kind}::entity_kind, ${loser.sourceId})
+        ON CONFLICT (id) DO UPDATE SET
+          merged_into = EXCLUDED.merged_into,
+          name        = COALESCE(EXCLUDED.name, entity_tombstones.name),
+          kind        = COALESCE(EXCLUDED.kind, entity_tombstones.kind),
+          source_id   = COALESCE(EXCLUDED.source_id, entity_tombstones.source_id)
       `);
       await tx.execute(sql`DELETE FROM entities WHERE id = ${loserId}`);
 

@@ -53,6 +53,24 @@ export default function KymLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         {children}
+
+        {/* Every report is built on judgements a reader cannot see from the
+            report: which filings were swept, and which filers were decided to
+            be one filer. The link sits on every page under this layout rather
+            than on the landing page alone, because a shared link arrives at a
+            report and never passes the landing page at all. */}
+        <footer className="mt-12 border-t border-slate-900 pt-4">
+          <p className="text-xs text-slate-600">
+            <Link
+              href="/methods-and-sources"
+              className="text-slate-500 underline-offset-2 hover:text-indigo-300 hover:underline"
+            >
+              Methods and sources
+            </Link>{' '}
+            — every feed behind these figures, every filer folded into another, and the nonprofits
+            in this data.
+          </p>
+        </footer>
       </div>
     </div>
   );
