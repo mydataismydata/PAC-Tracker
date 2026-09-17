@@ -10,8 +10,9 @@
  * empty search field shows a reader nothing about what is behind it, and
  * plenty of people arrive without a specific name in hand. There are two, and
  * they answer different questions. The left is the money: which committees
- * spend the most. The right is the people: who signs for the most committees,
- * which is the thing a list of committee names cannot show at all.
+ * spend the most. The right is the people: who signs for a committee twice
+ * over, as its chair and as its treasurer, which is the thing a list of
+ * committee names cannot show at all.
  *
  * What the database holds is stated outright, above both. A reader who has
  * just been told that a mailer's funder can be looked up is owed the years and
@@ -154,7 +155,8 @@ export default async function KymLandingPage() {
             Biggest Networks
           </h2>
           <p className="mt-1 text-xs text-slate-600">
-            People who control the most PACs as both Chairman and Treasurer.
+            People who control the most PACs as both Chairman and Treasurer. The figure is what
+            those committees raised.
           </p>
           <ul className="mt-3 divide-y divide-slate-900 rounded border border-slate-800">
             {operators.map((p) => (
@@ -166,11 +168,15 @@ export default async function KymLandingPage() {
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-slate-200">{p.name}</span>
                     <span className="block truncate text-xs text-slate-500">
-                      Chair of {num(p.chair)} · treasurer of {num(p.treasurer)}
+                      Chair and treasurer of {num(p.bothRoles)} committee
+                      {p.bothRoles === 1 ? '' : 's'}
+                      {p.committees > p.bothRoles
+                        ? ` · named on ${num(p.committees)} in all`
+                        : ''}
                     </span>
                   </span>
                   <span className="shrink-0 font-mono text-sm tabular-nums text-amber-400">
-                    {formatMoney(p.totalReceived)}
+                    {formatMoney(p.raised)}
                   </span>
                 </Link>
               </li>

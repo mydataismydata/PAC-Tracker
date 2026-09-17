@@ -375,34 +375,36 @@ export interface PersonHit {
   slug: string;
   /** Best display name: the spelling the most filings used. */
   name: string;
+  /** Every committee this person is named on, in any role. */
   committees: number;
-  /** Committees where this person is the chair, and where they are the treasurer. */
+  /** Committees where they are the chair, and where they are the treasurer. */
   chair: number;
   treasurer: number;
-  /** The two added together, which is what the order is on. */
-  roleCount: number;
-  totalReceived: string;
-  totalGiven: string;
+  /** Committees where they are both, which is what the money below covers. */
+  bothRoles: number;
+  /** Raised by those committees. The order is on this. */
+  raised: string;
+  given: string;
 }
 
 /**
- * The people who run the most committees, counted by the two roles that run
- * them.
+ * The people who control the most money as both chair and treasurer.
  *
- * Chair and treasurer only. Those are the two signatures a Florida committee
- * cannot file without, and they are the two that decide what it does with its
- * money. A registered agent is an address and a director is a name on a board,
- * so counting either would rank a mail drop alongside an operation.
+ * A Florida committee cannot file without a chair and a treasurer. Where those
+ * are two people, each is a check on the other; where they are one person,
+ * nobody signs off on anything. So the committees counted here are only the
+ * ones where the same person holds both, and the money counted is what those
+ * committees raised.
  *
- * Both roles count, and one person holding both on one committee counts twice.
- * That is the point rather than a flaw in the arithmetic: somebody who signs as
- * chair and as treasurer of the same committee answers to nobody about it, and
- * doing that across two hundred committees is the single loudest thing the
- * officer filings say about anyone.
+ * Both halves of that matter, and each on its own gives a list nobody wants.
+ * Counting committees puts a man who is chair and treasurer of 487 shell
+ * committees that raised nothing at the top. Counting money without the
+ * both-roles test puts treasurers-for-hire at the top, who sign for hundreds of
+ * committees and control none of them — Nancy Watkins is treasurer of 221
+ * committees holding $260M and chair of four that hold nothing.
  *
- * Money breaks a tie and never sets the order. Ranking on money alone puts a
- * treasurer of three enormous committees above an operator of two hundred, and
- * it is the operator whose page costs twenty-five seconds to build.
+ * The result is not a ranking of who moves the most money in Florida. It is a
+ * ranking of who moves the most with no second signature on it.
  */
 export async function busiestPeople(db: Db, limit = 10): Promise<PersonHit[]> {
   const rows = await db.execute<{
@@ -411,9 +413,9 @@ export async function busiestPeople(db: Db, limit = 10): Promise<PersonHit[]> {
     committees: number;
     chair: number;
     treasurer: number;
-    role_count: number;
-    total_received: string;
-    total_given: string;
+    both_roles: number;
+    raised: string;
+    given: string;
   }>(sql`
     WITH held AS (
       SELECT normalized_name,
@@ -425,24 +427,27 @@ export async function busiestPeople(db: Db, limit = 10): Promise<PersonHit[]> {
        GROUP BY normalized_name, entity_id
     )
     SELECT h.normalized_name,
-           count(*)::int                                   AS committees,
-           count(*) FILTER (WHERE h.is_chair)::int          AS chair,
-           count(*) FILTER (WHERE h.is_treasurer)::int      AS treasurer,
-           (count(*) FILTER (WHERE h.is_chair)
-            + count(*) FILTER (WHERE h.is_treasurer))::int  AS role_count,
-           sum(e.total_received)::text                      AS total_received,
-           sum(e.total_given)::text                         AS total_given,
+           count(*)::int                              AS committees,
+           count(*) FILTER (WHERE h.is_chair)::int     AS chair,
+           count(*) FILTER (WHERE h.is_treasurer)::int AS treasurer,
+           count(*) FILTER (WHERE h.is_chair AND h.is_treasurer)::int AS both_roles,
+           COALESCE(sum(e.total_received)
+                    FILTER (WHERE h.is_chair AND h.is_treasurer), 0)::text AS raised,
+           COALESCE(sum(e.total_given)
+                    FILTER (WHERE h.is_chair AND h.is_treasurer), 0)::text AS given,
            (SELECT o.full_name
               FROM committee_officers o
              WHERE o.is_current AND o.normalized_name = h.normalized_name
              GROUP BY o.full_name
              ORDER BY count(*) DESC, o.full_name
-             LIMIT 1)                                       AS full_name
+             LIMIT 1)                                  AS full_name
       FROM held h
       JOIN entities e ON e.id = h.entity_id
      GROUP BY h.normalized_name
-    HAVING count(*) FILTER (WHERE h.is_chair) + count(*) FILTER (WHERE h.is_treasurer) > 0
-     ORDER BY role_count DESC, sum(e.total_received) DESC
+    HAVING count(*) FILTER (WHERE h.is_chair AND h.is_treasurer) > 0
+     ORDER BY COALESCE(sum(e.total_received)
+                       FILTER (WHERE h.is_chair AND h.is_treasurer), 0) DESC,
+              count(*) FILTER (WHERE h.is_chair AND h.is_treasurer) DESC
      LIMIT ${limit}
   `);
 
@@ -453,9 +458,9 @@ export async function busiestPeople(db: Db, limit = 10): Promise<PersonHit[]> {
     committees: r.committees,
     chair: r.chair,
     treasurer: r.treasurer,
-    roleCount: r.role_count,
-    totalReceived: r.total_received,
-    totalGiven: r.total_given,
+    bothRoles: r.both_roles,
+    raised: r.raised,
+    given: r.given,
   }));
 }
 
