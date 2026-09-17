@@ -80,28 +80,27 @@ function Holdings({
   const feeds = sources.filter((s) => s.records > 0);
   return (
     <div className="mt-6 max-w-3xl">
+      {/* Set as a heading, because that is what it is: everything under it —
+          the four figures and the feeds they come from — is the short version
+          of what that page says at length. */}
+      <Link
+        href="/methods-and-sources"
+        className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-100
+                   underline-offset-4 hover:text-indigo-300 hover:underline"
+      >
+        Methods and sources
+      </Link>
+
       {/* Two across on a phone, four on anything wider. Four 20-character
           columns on a 375px screen is four columns of nothing. */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Filings" value={num(totals.records)} />
         <Stat label="Dates" value={years(totals.firstFiled, totals.lastFiled)} />
         <Stat label="Dollars tracked" value={formatMoneyFull(totals.amount)} />
         <Stat label="Filers" value={num(totals.entities)} />
       </div>
 
-      {/* Above the feed list, in the same type as the rows under it: the list
-          is what this link expands on, and a reader looking at one is the
-          reader who wants the other. */}
-      <p className="mt-4 text-sm text-slate-300">
-        <Link
-          href="/methods-and-sources"
-          className="underline-offset-2 hover:text-indigo-300 hover:underline"
-        >
-          Methods and sources
-        </Link>
-      </p>
-
-      <ul className="mt-2 space-y-0.5">
+      <ul className="mt-4 space-y-0.5">
         {feeds.map((s) => (
           <li key={s.key} className="flex items-baseline gap-2 text-sm text-slate-300">
             <span className="min-w-0 flex-1 truncate">{s.name}</span>
