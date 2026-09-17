@@ -96,9 +96,9 @@ function Holdings({
   const feeds = sources.filter((s) => s.records > 0);
   return (
     <div className="mt-6 max-w-3xl">
-      {/* Set as a heading, because that is what it is: everything under it —
-          the four figures and the feeds they come from — is the short version
-          of what that page says at length. */}
+      {/* The link is a link, not a heading over what follows it. Set alike,
+          it reads as the title of the figures below, and a reader who wants
+          the long version never goes looking for it. */}
       <Link
         href="/methods-and-sources"
         className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-100
@@ -106,6 +106,10 @@ function Holdings({
       >
         Methods and sources
       </Link>
+
+      <h2 className="mt-5 text-xs font-semibold uppercase tracking-[0.1em] text-slate-100">
+        Summary details
+      </h2>
 
       {/* Two across on a phone, four on anything wider. Four 20-character
           columns on a 375px screen is four columns of nothing. */}
