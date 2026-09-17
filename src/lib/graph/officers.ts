@@ -347,6 +347,95 @@ export async function personNetwork(
   };
 }
 
+export interface PersonHit {
+  normalizedName: string;
+  slug: string;
+  /** Best display name: the spelling the most filings used. */
+  name: string;
+  committees: number;
+  /** Committees where this person is the chair, and where they are the treasurer. */
+  chair: number;
+  treasurer: number;
+  /** The two added together, which is what the order is on. */
+  roleCount: number;
+  totalReceived: string;
+  totalGiven: string;
+}
+
+/**
+ * The people who run the most committees, counted by the two roles that run
+ * them.
+ *
+ * Chair and treasurer only. Those are the two signatures a Florida committee
+ * cannot file without, and they are the two that decide what it does with its
+ * money. A registered agent is an address and a director is a name on a board,
+ * so counting either would rank a mail drop alongside an operation.
+ *
+ * Both roles count, and one person holding both on one committee counts twice.
+ * That is the point rather than a flaw in the arithmetic: somebody who signs as
+ * chair and as treasurer of the same committee answers to nobody about it, and
+ * doing that across two hundred committees is the single loudest thing the
+ * officer filings say about anyone.
+ *
+ * Money breaks a tie and never sets the order. Ranking on money alone puts a
+ * treasurer of three enormous committees above an operator of two hundred, and
+ * it is the operator whose page costs twenty-five seconds to build.
+ */
+export async function busiestPeople(db: Db, limit = 10): Promise<PersonHit[]> {
+  const rows = await db.execute<{
+    normalized_name: string;
+    full_name: string;
+    committees: number;
+    chair: number;
+    treasurer: number;
+    role_count: number;
+    total_received: string;
+    total_given: string;
+  }>(sql`
+    WITH held AS (
+      SELECT normalized_name,
+             entity_id,
+             bool_or(role = 'chair')     AS is_chair,
+             bool_or(role = 'treasurer') AS is_treasurer
+        FROM committee_officers
+       WHERE is_current
+       GROUP BY normalized_name, entity_id
+    )
+    SELECT h.normalized_name,
+           count(*)::int                                   AS committees,
+           count(*) FILTER (WHERE h.is_chair)::int          AS chair,
+           count(*) FILTER (WHERE h.is_treasurer)::int      AS treasurer,
+           (count(*) FILTER (WHERE h.is_chair)
+            + count(*) FILTER (WHERE h.is_treasurer))::int  AS role_count,
+           sum(e.total_received)::text                      AS total_received,
+           sum(e.total_given)::text                         AS total_given,
+           (SELECT o.full_name
+              FROM committee_officers o
+             WHERE o.is_current AND o.normalized_name = h.normalized_name
+             GROUP BY o.full_name
+             ORDER BY count(*) DESC, o.full_name
+             LIMIT 1)                                       AS full_name
+      FROM held h
+      JOIN entities e ON e.id = h.entity_id
+     GROUP BY h.normalized_name
+    HAVING count(*) FILTER (WHERE h.is_chair) + count(*) FILTER (WHERE h.is_treasurer) > 0
+     ORDER BY role_count DESC, sum(e.total_received) DESC
+     LIMIT ${limit}
+  `);
+
+  return rows.map((r) => ({
+    normalizedName: r.normalized_name,
+    slug: personSlug(r.normalized_name),
+    name: r.full_name,
+    committees: r.committees,
+    chair: r.chair,
+    treasurer: r.treasurer,
+    roleCount: r.role_count,
+    totalReceived: r.total_received,
+    totalGiven: r.total_given,
+  }));
+}
+
 export interface InternalFlow {
   /** Money that moved from one committee in the set to another in the same set. */
   amount: string;

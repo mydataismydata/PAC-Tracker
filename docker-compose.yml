@@ -111,6 +111,12 @@ services:
     profiles: ['cli']
     environment:
       DATABASE_URL: *db-url
+      # Where `ingest rebuild` goes to re-run the reports it just emptied. The
+      # cache it is filling lives in the app's process and on a volume mounted
+      # only on `app`, so this has to be a request the app serves rather than
+      # work done here. `run` joins the project network, so the service name
+      # resolves.
+      PT_APP_URL: http://app:3000
     depends_on:
       db:
         condition: service_healthy
