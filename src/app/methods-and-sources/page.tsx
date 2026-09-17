@@ -95,16 +95,16 @@ export default async function MethodsAndSourcesPage() {
   ]);
 
   const nonprofitRows: Cell[][] = m.nonprofits.map((n) => [
-    n.name,
+    { text: n.name, href: `/kym/${committeeSlug(n.name)}?id=${n.id}` },
     n.taxStatus ?? n.corpType ?? '—',
-    num(n.officers),
+    { parts: n.officers.map((o) => ({ text: o.name })), empty: 'not read' },
     num(n.transactions),
     formatMoneyFull(n.amount),
   ]);
 
   return (
     <div className="h-dvh overflow-y-auto bg-slate-950">
-      <div className="mx-auto max-w-5xl px-5 py-8 text-slate-100 sm:py-10">
+      <div className="mx-auto max-w-7xl px-5 py-8 text-slate-100 sm:py-10">
         <header>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-100 sm:text-3xl">
             Methods and sources
@@ -211,17 +211,18 @@ export default async function MethodsAndSourcesPage() {
             <>
               Some of the largest payers into Florida politics are not committees at all. They are
               nonprofit corporations, which file with the IRS rather than with the Division of
-              Elections and do not disclose their donors. Each one here was matched by name and
-              address to a Florida Not-For-Profit Corporation record in the Sunbiz quarterly feed,
-              and to an IRS Form 990 through ProPublica&rsquo;s Nonprofit Explorer, which is where
-              the tax status and the officers come from. The amount is what the nonprofit paid out,
-              as reported by whoever received it.
+              Elections and do not disclose their donors. Each one here was matched by its EIN to an
+              IRS Form 990 through ProPublica&rsquo;s Nonprofit Explorer, which is where the tax
+              status comes from, and by name and address to a Florida Not-For-Profit Corporation
+              record in Sunbiz, which is where the officers come from — the registered agent first,
+              then the board. The amount is what the nonprofit paid out, as reported by whoever
+              received it.
             </>
           }
           columns={[
             { label: 'Nonprofit' },
             { label: 'Type' },
-            { label: 'Officers', numeric: true },
+            { label: 'Officers' },
             { label: 'Transactions', numeric: true },
             { label: 'Amount', numeric: true },
           ]}
