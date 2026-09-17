@@ -38,7 +38,7 @@ const LIMITS = { ttlMs: TTL_MS, maxBytes: 16 * 1024 * 1024 };
  * which is how every dollar column on this page read as a dash for as long as
  * it took to notice.
  */
-const VERSION = 4;
+const VERSION = 5;
 
 /** One feed, and what it put in the database. */
 export interface SourceCoverage {
@@ -73,8 +73,7 @@ export interface SourceKinds {
 /** One entity folded into another, and what each of them was. */
 export interface Fold {
   id: string;
-  /** Null for the automatic sweep, which did not record what it folded. */
-  name: string | null;
+  name: string;
   sourceKey: string | null;
   targetId: string | null;
   targetName: string | null;
@@ -98,7 +97,7 @@ export interface Methods {
   sources: SourceCoverage[];
   kinds: SourceKinds[];
   folds: Fold[];
-  /** Folds whose entity was never named, and the day the sweep that made them ran. */
+  /** Folds left off the list because nothing on file names what they folded. */
   unnamedFolds: number;
   nonprofits: Nonprofit[];
   totals: {
@@ -188,10 +187,19 @@ async function sourceKinds(db: Db): Promise<SourceKinds[]> {
   return [...byKey.values()].sort((a, b) => b.total - a.total);
 }
 
+/**
+ * Every fold that can say what it folded.
+ *
+ * A fold whose entity is unnamed is left off rather than shown as a blank row.
+ * The row would carry one fact — that something was folded into this filer —
+ * and a reader cannot check that against anything. The count of them is stated
+ * under the table instead, which is the same disclosure without the noise.
+ */
 async function folds(db: Db): Promise<Fold[]> {
+  // `name` is non-null in the type because the WHERE clause below makes it so.
   const rows = await db.execute<{
     id: string;
-    name: string | null;
+    name: string;
     source_key: string | null;
     target_id: string | null;
     target_name: string | null;
@@ -211,7 +219,8 @@ async function folds(db: Db): Promise<Fold[]> {
       LEFT JOIN sources  fs ON fs.id = t.source_id
       LEFT JOIN entities e  ON e.id  = t.merged_into
       LEFT JOIN sources  ts ON ts.id = e.source_id
-     ORDER BY t.name IS NULL, t.deleted_at DESC, t.name
+     WHERE t.name IS NOT NULL
+     ORDER BY t.deleted_at DESC, t.name
   `);
   return rows.map((r) => ({
     id: r.id,
@@ -270,6 +279,9 @@ async function build(db: Db): Promise<Methods> {
   const [counts] = await db.execute<{ entities: string }>(sql`
     SELECT count(*)::text AS entities FROM entities
   `);
+  const [omitted] = await db.execute<{ n: string }>(sql`
+    SELECT count(*)::text AS n FROM entity_tombstones WHERE name IS NULL
+  `);
 
   // The corporate and Form 990 feed reports no transactions, because it loads
   // none — it answers what a payer *is*, not what it paid. Left as zero it
@@ -286,7 +298,7 @@ async function build(db: Db): Promise<Methods> {
     sources: withProfiles,
     kinds,
     folds: foldRows,
-    unnamedFolds: foldRows.filter((f) => !f.name).length,
+    unnamedFolds: Number(omitted?.n ?? 0),
     nonprofits: nonprofitRows,
     totals: {
       records: withProfiles.reduce((a, s) => a + s.records, 0),

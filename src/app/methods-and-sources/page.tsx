@@ -80,9 +80,7 @@ export default async function MethodsAndSourcesPage() {
 
   const foldRows: Cell[][] = m.folds.map((f) => [
     KIND_LABELS[f.targetKind ?? 'unknown'] ?? f.targetKind ?? '—',
-    f.name
-      ? f.name
-      : { text: 'not recorded', muted: true },
+    f.name,
     f.sourceKey ?? '—',
     f.targetName && f.targetId
       ? {
@@ -194,11 +192,13 @@ export default async function MethodsAndSourcesPage() {
           footnote={
             m.unnamedFolds > 0 ? (
               <>
-                {num(m.unnamedFolds)} {m.unnamedFolds === 1 ? 'fold' : 'folds'} here{' '}
-                {m.unnamedFolds === 1 ? 'predates' : 'predate'} this record and{' '}
-                {m.unnamedFolds === 1 ? 'names' : 'name'} only the filer that received the money.
-                The feed a folded filer came from is blank for the same reason on everything folded
-                before the record began: a deleted row cannot be asked which sweep created it.
+                {m.unnamedFolds === 1
+                  ? 'One further fold is not listed. It was'
+                  : `${num(m.unnamedFolds)} further folds are not listed. They were`}{' '}
+                made by hand before this record began, and nothing on file says what{' '}
+                {m.unnamedFolds === 1 ? 'was' : 'were'} folded — only which filer received the
+                money. The feed column is blank for the same reason wherever the fold predates the
+                record: a deleted row cannot be asked which sweep created it.
               </>
             ) : undefined
           }
