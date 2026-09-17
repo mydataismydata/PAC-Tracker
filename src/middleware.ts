@@ -2,9 +2,13 @@
  * Sign-in gate for the graph explorer.
  *
  * Two audiences share one host. The sponsor summaries under /person, the
- * committee reports under /kym, and the JSON behind both are public records
- * served in seconds, so they stay open. Everything else crawls the whole
- * database and stays closed.
+ * committee reports under /kym, /methods-and-sources, and the JSON behind them
+ * are public records served in seconds, so they stay open. Everything else
+ * crawls the whole database and stays closed.
+ *
+ * /methods-and-sources is open for a reason beyond speed. It says which filings
+ * were swept and which filers were folded into one another, and a figure whose
+ * working is behind a sign-in is a figure nobody outside can check.
  *
  * /api/entities/search is deliberately not on that list even though /kym needs
  * a search box. It answers for every entity, private individuals who gave $50
@@ -21,7 +25,7 @@ import { GATE_COOKIE, readSession } from '@/lib/gate';
 export const config = {
   runtime: 'nodejs',
   matcher: [
-    '/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|person(?:/|$)|api/people(?:/|$)|kym(?:/|$)|api/kym(?:/|$)|gate(?:/|$)|api/gate(?:/|$)).*)',
+    '/((?!_next/static|_next/image|favicon\\.ico|robots\\.txt|person(?:/|$)|api/people(?:/|$)|kym(?:/|$)|api/kym(?:/|$)|methods-and-sources(?:/|$)|gate(?:/|$)|api/gate(?:/|$)).*)',
   ],
 };
 

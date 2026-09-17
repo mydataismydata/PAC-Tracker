@@ -70,6 +70,9 @@ export interface WarmReport {
  * answers under two keys. The page emits the picture as an `<img>`, so a
  * reader fetches it separately and pays for it separately. A person's report
  * has no picture.
+ *
+ * The methods page is warmed as well, and is not counted by either setting: it
+ * is one page whether ten subjects are asked for or fifty.
  */
 export async function warmTargets(
   db: Db,
@@ -80,7 +83,10 @@ export async function warmTargets(
     busiestPeople(db, counts.people),
   ]);
 
-  const targets: WarmTarget[] = [];
+  // The methods page first. It aggregates the whole transaction table by feed
+  // and is linked from the foot of every report and from the explorer, so it
+  // is both slow to build and reachable from everywhere.
+  const targets: WarmTarget[] = [{ label: 'Methods and sources', path: '/methods-and-sources' }];
   for (const c of committees) {
     // The id is pinned rather than left to the slug. Three separate committees
     // file as "Florida Forward", and a bare slug makes that page ask which one

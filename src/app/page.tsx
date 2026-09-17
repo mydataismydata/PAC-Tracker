@@ -1056,6 +1056,17 @@ export default function Home() {
           >
             Guide
           </a>
+          {/* Same reasoning, and the same tab treatment. Anyone reading a
+              number off this graph should be one click from what went into
+              it and what was folded together to make it. */}
+          <a
+            href="/methods-and-sources"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hidden rounded border border-slate-700 px-2 py-1 hover:bg-slate-800 lg:block"
+          >
+            Sources
+          </a>
           <AccountButton />
         </div>
       </header>

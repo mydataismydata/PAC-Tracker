@@ -41,6 +41,7 @@
  *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
  *   pnpm ingest verify                            # confirm no merged-away entity is still present or referenced
  *                                                 (rebuild runs this at the end; on the VPS run it after loading a delta)
+ *   pnpm ingest backfill-tombstones               # name the folds made before a tombstone recorded what it was
  *   pnpm ingest warm                              # re-run the reports a rebuild emptied, so no reader pays for them
  *     --committees=10 --people=10 --url=http://app:3000
  *                                                 (rebuild runs this at the end; --no-warm skips it)
@@ -102,6 +103,7 @@ import { cycleForYear } from '@/lib/cycles';
 import { APP_URL, warmReports } from '@/lib/kym/warm';
 import { isOfficerPlaceholder, normalizeName } from '@/lib/normalize';
 import { EntityResolver } from '@/lib/ingest/resolve';
+import { readCorrections } from '@/lib/corrections';
 
 const argv = process.argv.slice(2);
 const positional = argv.filter((a) => !a.startsWith('--'));
@@ -298,6 +300,11 @@ async function main() {
 
   if (mode === 'warm') {
     process.exit((await warmCache()) ? 0 : 1);
+  }
+
+  if (mode === 'backfill-tombstones') {
+    await backfillTombstoneNames();
+    process.exit(0);
   }
 
   if (mode === 'backfill-industry') {
@@ -1379,6 +1386,59 @@ async function ingestCounty(slug: string, electionId?: string) {
  * Returns true when nothing is wrong. Used on its own (`ingest verify`) and at
  * the end of every rebuild, on this Mac and on the deployment box.
  */
+/**
+ * Name the folds that were made before a tombstone recorded what it held.
+ *
+ * A tombstone used to be an id, a survivor and a date, because all it had to
+ * do was tell the deployment box to delete a row. That is no longer all it has
+ * to do: the methods page lists every fold, and a public record of a judgement
+ * has to say what was folded rather than only that something was.
+ *
+ * The corrections log is the one place the older names survive. Every hand-
+ * confirmed merge wrote both sides of itself down, so the losers it names can
+ * be read straight back out. The automatic folds — a candidate's look-alike
+ * node swept onto the candidate — wrote their names only to a working CSV,
+ * which is not kept, so those tombstones stay unnamed and the page says so.
+ *
+ * Idempotent, and it never overwrites: a name a merge recorded itself is the
+ * name as it read at the moment of the fold, and this log is a transcription.
+ */
+async function backfillTombstoneNames(): Promise<void> {
+  const named = new Map<string, string>();
+  for (const { entry } of readCorrections()) {
+    if (entry.op !== 'merge') continue;
+    for (const loser of entry.lose) {
+      if (loser.id && loser.name) named.set(loser.id, loser.name);
+    }
+  }
+
+  const [before] = await db.execute<{ total: string; unnamed: string }>(sql`
+    SELECT count(*)::text AS total,
+           count(*) FILTER (WHERE name IS NULL)::text AS unnamed
+      FROM entity_tombstones
+  `);
+  console.log(`${before.total} folds on record, ${before.unnamed} of them unnamed.`);
+  console.log(`The corrections log names ${named.size}.`);
+
+  let written = 0;
+  for (const [id, name] of named) {
+    const rows = await db.execute<{ id: string }>(sql`
+      UPDATE entity_tombstones SET name = ${name}
+       WHERE id = ${id} AND name IS NULL
+      RETURNING id
+    `);
+    written += rows.length;
+  }
+
+  const [after] = await db.execute<{ unnamed: string }>(sql`
+    SELECT count(*) FILTER (WHERE name IS NULL)::text AS unnamed FROM entity_tombstones
+  `);
+  console.log(`  named ${written}; ${after.unnamed} still unnamed.`);
+  if (Number(after.unnamed) > 0) {
+    console.log('  Those are the automatic candidate-account folds. Their names were not kept.');
+  }
+}
+
 /**
  * Ask the app for the reports worth holding, so the first reader does not.
  *

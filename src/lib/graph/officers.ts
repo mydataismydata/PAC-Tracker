@@ -334,7 +334,7 @@ export async function personNetwork(
   return {
     normalizedName,
     slug: personSlug(normalizedName),
-    name: spellings[0],
+    name: personDisplayName(normalizedName, spellings[0]),
     spellings,
     roles: [...roleCounts.entries()]
       .map(([role, ids]) => ({ role, committees: ids.size }))
@@ -345,6 +345,29 @@ export async function personNetwork(
     totalReceived: list.reduce((a, c) => a + Number(c.totalReceived), 0).toFixed(2),
     totalGiven: list.reduce((a, c) => a + Number(c.totalGiven), 0).toFixed(2),
   };
+}
+
+/**
+ * Display names that stand in front of the filed spelling.
+ *
+ * Every name on this site comes out of a filing, with one exception: a person
+ * the filings name in a way nobody else does. All 435 committees William
+ * Stafford Jones signs for file him as "William S. Jones", and the middle name
+ * is what he is called everywhere outside the filings, including by himself.
+ * Printing the initial leaves a reader unable to join the two together.
+ *
+ * Keyed on the officer key rather than on a spelling, so every variant the
+ * state holds resolves to it. Kept short on purpose: this is the place a
+ * judgement about somebody's name is written down, not a place to tidy up
+ * capitalization.
+ */
+const DISPLAY_NAMES: Record<string, string> = {
+  'JONES WILLIAM': 'William Stafford Jones',
+};
+
+/** What to call this person, given the spelling the most filings used. */
+export function personDisplayName(normalizedName: string, filed: string): string {
+  return DISPLAY_NAMES[normalizedName] ?? filed;
 }
 
 export interface PersonHit {
@@ -426,7 +449,7 @@ export async function busiestPeople(db: Db, limit = 10): Promise<PersonHit[]> {
   return rows.map((r) => ({
     normalizedName: r.normalized_name,
     slug: personSlug(r.normalized_name),
-    name: r.full_name,
+    name: personDisplayName(r.normalized_name, r.full_name),
     committees: r.committees,
     chair: r.chair,
     treasurer: r.treasurer,
