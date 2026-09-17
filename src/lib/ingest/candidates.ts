@@ -48,6 +48,12 @@ export interface CandidateMatch {
   node: CandidateNode | null;
   /** Every node sharing the person's name, before office and date narrowed it. */
   options: CandidateNode[];
+  /**
+   * What the office words in the string leave standing, before dates. Empty
+   * when they rule every option out — the string names a race none of these
+   * nodes ran, so none of them can hold the money.
+   */
+  narrowed: CandidateNode[];
   parsed: CampaignName;
   /** The office words name a federal race, which Florida never files: no node can exist. */
   federal: boolean;
@@ -58,8 +64,29 @@ const SUFFIXES = new Set(['JR', 'SR', 'II', 'III', 'IV']);
 /** Words in an office phrase that pick a county office by its text. */
 const COUNTY_OFFICE_WORDS = new Set([
   'COUNCIL', 'MAYOR', 'SHERIFF', 'SCHOOL', 'COMMISSION', 'COMMISSIONER', 'CLERK', 'SUPERVISOR',
-  'APPRAISER', 'COLLECTOR', 'JUDGE', 'ATTORNEY', 'DEFENDER', 'BOARD',
+  'APPRAISER', 'COLLECTOR', 'JUDGE', 'ATTORNEY', 'DEFENDER', 'BOARD', 'COUNTY',
 ]);
+/**
+ * Office words that say nothing about which race this is. A year is the
+ * cycle, and the state and its name are true of every node on file. A phrase
+ * built only from these leaves the choice to the other signals; a phrase with
+ * anything else in it names a race, and if no rule here can read it — "FOR
+ * OCPA", "FOR PBC" — the safe reading is that it names one of the county
+ * offices Florida does not file, not the state node standing next to it.
+ */
+const FILLER_OFFICE_WORDS = new Set([
+  'FLORIDA', 'FL', 'FOR', 'THE', 'OF', 'RE', 'REELECTION', 'ELECTION', 'CAMPAIGN', 'CAMPAIGNS',
+  'FUND', 'FUNDS', 'ACCOUNT', 'COMMITTEE', 'PRIMARY', 'GENERAL', 'CANDIDATE', 'DISTRICT', 'DIST',
+  'SEAT', 'GROUP', 'REPUBLICAN', 'DEMOCRAT', 'DEMOCRATIC',
+]);
+
+/** True when the phrase names a race, but nothing here can say which one. */
+function officePhraseIsOpaque(phrase: string): boolean {
+  return phrase
+    .split(' ')
+    .filter(Boolean)
+    .some((w) => !FILLER_OFFICE_WORDS.has(w) && !/^\d+$/.test(w));
+}
 /** How far outside a node's observed span a row may fall and still be its money. */
 const SPAN_PAD_MS = 400 * 86_400_000;
 /**
@@ -118,6 +145,17 @@ export function personKeys(name: string): string[] {
     const [l, f] = bare.split(',', 2);
     last = tokens(l);
     first = tokens(f);
+    // A county node is written "Anthony E. Coleman, SR" — a first-last name
+    // with a suffix behind the comma, not the registry's "Coleman, Anthony".
+    // Nothing but the suffix follows the comma, so the surname is the last
+    // word in front of it. Read the comma form and the node has no given name
+    // at all, and answers to nothing.
+    if (first.every((x) => SUFFIXES.has(x))) {
+      const t = tokens(l);
+      if (t.length < 2) return [];
+      last = [t[t.length - 1]];
+      first = t.slice(0, -1);
+    }
   } else {
     const t = tokens(bare);
     if (t.length < 2) return [];
@@ -175,8 +213,13 @@ export function campaignName(raw: string): CampaignName {
 export function officeCodeFromPhrase(phrase: string): string | null {
   const p = ` ${phrase} `;
   if (/ (CONGRESS|CONGRESSIONAL|US SENATE|U S SENATE|PRESIDENT|FEDERAL) /.test(p)) return 'FEDERAL';
-  if (/ (REPRESENTATIVE|REP|HOUSE|ASSEMBLY|HD ?\d+) /.test(p) || / HD\d+ /.test(p)) return 'STR';
-  if (/ (SENATE|SENATOR|SD ?\d+) /.test(p) || / SD\d+ /.test(p)) return 'STS';
+  // A district is written six ways — "HD 26", "HD26", "FLHD26", "SD 13",
+  // "FLSD13" — and a chamber runs into the word in front of it, as
+  // "STATESENATE" and the state's own 40-character truncation "STATE SENAT".
+  if (/\b(FL)?HD ?\d+\b/.test(p) || /\bSTATE ?(HOUSE|REP)/.test(p)) return 'STR';
+  if (/\b(FL)?SD ?\d+\b/.test(p) || /\bSTATE ?SENAT/.test(p)) return 'STS';
+  if (/ (REPRESENTATIVE|REP|HOUSE|ASSEMBLY) /.test(p)) return 'STR';
+  if (/ (SENATE|SENATOR) /.test(p)) return 'STS';
   if (/ PUBLIC DEFENDER /.test(p)) return 'PUB';
   if (/ STATE ATTORNEY /.test(p)) return 'STA';
   if (/ ATTORNEY GENERAL /.test(p)) return 'ATG';
@@ -245,15 +288,25 @@ export class CandidateIndex {
 
   /** Nodes whose person is named by this normalized string, trying looser forms after the exact one. */
   private lookup(person: string): CandidateNode[] {
-    const t = person.split(' ').filter(Boolean);
-    if (t.length < 2) return [];
-    const tries = [person];
-    const noInitials = t.filter((x) => x.length > 1);
-    if (noInitials.length >= 2 && noInitials.length !== t.length) tries.push(noInitials.join(' '));
-    if (t.length >= 3) {
-      tries.push(t.slice(0, 2).join(' '));
-      tries.push(`${t[0]} ${t[t.length - 1]}`);
-      tries.push(`${t[t.length - 1]} ${t[0]}`);
+    const whole = person.split(' ').filter(Boolean);
+    if (whole.length < 2) return [];
+    // A payer writes "JAY N TRUMBULL JR"; the registry writes "Trumbull, Jay".
+    // `personKeys` drops a generational suffix before it builds a key, so a
+    // query that keeps one matches nothing. The suffixed form is tried first
+    // all the same: a node whose own name carries the suffix answers to it.
+    const forms = [whole];
+    const unsuffixed = whole.filter((x) => !SUFFIXES.has(x));
+    if (unsuffixed.length >= 2 && unsuffixed.length !== whole.length) forms.push(unsuffixed);
+    const tries: string[] = [];
+    for (const t of forms) {
+      tries.push(t.join(' '));
+      const noInitials = t.filter((x) => x.length > 1);
+      if (noInitials.length >= 2 && noInitials.length !== t.length) tries.push(noInitials.join(' '));
+      if (t.length >= 3) {
+        tries.push(t.slice(0, 2).join(' '));
+        tries.push(`${t[0]} ${t[t.length - 1]}`);
+        tries.push(`${t[t.length - 1]} ${t[0]}`);
+      }
     }
     // The same forms again with a nickname swapped in for either end token.
     for (const k of [...tries]) {
@@ -284,7 +337,7 @@ export class CandidateIndex {
   ): CandidateMatch {
     const parsed = campaignName(raw);
     const options = this.lookup(parsed.person);
-    const none = { node: null, options, parsed, federal: false };
+    const none = { node: null, options, narrowed: [] as CandidateNode[], parsed, federal: false };
     if (options.length === 0) return none;
     let pool = options;
     if (parsed.office) {
@@ -298,10 +351,13 @@ export class CandidateIndex {
           pool = pool.filter(
             (n) => n.office !== null && words.some((w) => normalizeName(n.office as string).includes(w)),
           );
+        } else if (officePhraseIsOpaque(parsed.office)) {
+          pool = [];
         }
       }
       if (pool.length === 0) return none;
     }
+    const narrowed = pool;
     // Dates decide between a person's campaigns, and also reject the only
     // campaign on record when the money is dated years away from it: a 2023
     // contribution to a senator whose one node is a 2026 statewide run is a
@@ -316,6 +372,6 @@ export class CandidateIndex {
     if (from !== null && to !== null && Number.isFinite(from) && Number.isFinite(to)) {
       pool = pool.filter((n) => inSpan(n, from as number, to as number));
     }
-    return { node: pool.length === 1 ? pool[0] : null, options, parsed, federal: false };
+    return { node: pool.length === 1 ? pool[0] : null, options, narrowed, parsed, federal: false };
   }
 }

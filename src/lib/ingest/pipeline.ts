@@ -43,7 +43,7 @@ import {
   unescapeQuotes,
 } from '@/lib/normalize';
 import { manualKindEntityIds } from '@/lib/corrections';
-import { CandidateIndex, type CandidateNode } from './candidates';
+import { CandidateIndex, personKeys, type CandidateNode } from './candidates';
 import { classifyIndustry } from './industry';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
@@ -2020,6 +2020,12 @@ export interface CandidateAccountReport {
   twinsTouched: number;
   rowsMoved: number;
   rowsDollars: number;
+  /** Campaign accounts whose rows were dealt out across one person's several runs. */
+  splitAccounts: number;
+  splitRows: number;
+  splitDollars: number;
+  /** Accounts split clean, with no row left dated outside every run. */
+  splitWhole: number;
   /** Twins left with no rows at all after the move, folded away. */
   absorbed: number;
   /** Entities or rows written to the review file. */
@@ -2038,18 +2044,60 @@ type TwinRow = {
   last_seen: string | null;
 };
 
+type RunRow = {
+  id: string;
+  txn_date: string | null;
+  amount: string;
+  /** True when the money came in to the account, false when it went out. */
+  inbound: boolean;
+};
+
+/**
+ * Do these nodes all name the same person?
+ *
+ * Two candidate nodes for one person are the ordinary case: Florida files a
+ * separate node per office, so a representative who wins a Senate seat has
+ * one of each. Two nodes for two people who share a name is the case that
+ * must never be treated as one, and the two look alike from the outside. The
+ * spellings each node answers to settle it — one person's nodes share at
+ * least one, and two people's nodes share none.
+ */
+function oneCandidate(nodes: CandidateNode[]): boolean {
+  if (nodes.length < 2) return nodes.length === 1;
+  const sets = nodes.map((n) => new Set(personKeys(n.name)));
+  if (sets.some((s) => s.size === 0)) return false;
+  return [...sets[0]].some((k) => sets.every((s) => s.has(k)));
+}
+
+/** The one run of this person's that was under way on this date, or null. */
+function runForDate(nodes: CandidateNode[], date: string | null): CandidateNode | null {
+  if (!date) return null;
+  const ms = Date.parse(date);
+  if (!Number.isFinite(ms)) return null;
+  const inside = nodes.filter(
+    (n) => n.firstSeen && n.lastSeen && ms >= Date.parse(n.firstSeen) && ms <= Date.parse(n.lastSeen),
+  );
+  return inside.length === 1 ? inside[0] : null;
+}
+
 /**
  * Put committee money paid to a candidate onto the candidate.
  *
  * The resolver now sends a committee's or party's payee that names a
  * candidate straight to the candidate node (`CandidateIndex`). This repairs
- * what was loaded before it did, in two shapes:
+ * what was loaded before it did, in three shapes:
  *
  * - An entity named as a campaign — "TOM LEEK CAMPAIGN", "ALLISON TANT
  *   CAMPAIGN FUND", "SUSAN VALDES FOR STATE REP - DISTRICT 62" — is the
  *   campaign account and nothing else. It folds into the candidate whole,
  *   rows and spellings alike, when the office words and its dates pick one
  *   node.
+ * - The same account, when the person on file ran more than once, belongs to
+ *   no single node. Florida files a node per office, so a representative who
+ *   wins a Senate seat has one of each, and a payer who wrote only "TOM LEEK
+ *   CAMPAIGN" said nothing about which. The runs do not overlap, so each row
+ *   goes to the run that was under way on its own date. A row dated inside
+ *   two runs, or inside none, stays where it is and goes to the review file.
  * - An entity carrying the bare person name is mixed. Rows paid to it by
  *   committees and parties as candidate contributions (`CAN`, or a purpose
  *   saying so) are the campaign's; rows paid by its own candidate node are
@@ -2079,6 +2127,10 @@ export async function backfillCandidateAccounts(
     twinsTouched: 0,
     rowsMoved: 0,
     rowsDollars: 0,
+    splitAccounts: 0,
+    splitRows: 0,
+    splitDollars: 0,
+    splitWhole: 0,
     absorbed: 0,
     review: 0,
     federal: 0,
@@ -2130,13 +2182,97 @@ export async function backfillCandidateAccounts(
             .join(','),
         );
         if (opts.apply) await mergeEntities(db, hit.node.id, [twin.id]);
-      } else {
-        review.push(
-          [twin.id, twin.name, twin.kind, 'named campaign', twin.given, twin.received, '', '', twin.first_seen, twin.last_seen, optionsText(hit.options), '']
-            .map(csv)
-            .join(','),
-        );
+        continue;
       }
+
+      // Several nodes, one person: the account is that person's, and the nodes
+      // are their consecutive runs — a House term, then a Senate seat. The
+      // office words that would pick one are not in the payee string, so each
+      // row picks its own run by its date. A row dated inside exactly one run
+      // is that run's money. A row dated inside none of them, or inside two,
+      // stays where it is and goes to the review file: a campaign this data
+      // never loaded is a likelier reading than the nearest one on file.
+      if (hit.narrowed.length > 1 && oneCandidate(hit.narrowed)) {
+        const rows = await db.execute<RunRow>(sql`
+          SELECT t.id, t.txn_date::text AS txn_date, t.amount::text AS amount,
+                 (t.to_entity_id = ${twin.id}) AS inbound
+            FROM transactions t
+           WHERE t.to_entity_id = ${twin.id} OR t.from_entity_id = ${twin.id}
+        `);
+        const byNode = new Map<string, RunRow[]>();
+        let unplaced = 0;
+        let unplacedDollars = 0;
+        let dollars = 0;
+        for (const r of rows) {
+          const run = runForDate(hit.narrowed, r.txn_date);
+          if (!run) {
+            unplaced++;
+            unplacedDollars += Number(r.amount);
+            continue;
+          }
+          const list = byNode.get(run.id) ?? [];
+          list.push(r);
+          byNode.set(run.id, list);
+          dollars += Number(r.amount);
+        }
+        const moved = [...byNode.values()].reduce((n, l) => n + l.length, 0);
+        if (moved > 0) {
+          report.splitAccounts++;
+          report.splitRows += moved;
+          report.splitDollars += dollars;
+          for (const [nodeId, list] of byNode) {
+            const node = hit.narrowed.find((n) => n.id === nodeId);
+            moves.push(
+              [twin.id, twin.name, twin.kind, 'split by run', twin.given, twin.received, list.length,
+               list.reduce((s, r) => s + Number(r.amount), 0).toFixed(2), nodeId, node?.name ?? '', node?.office ?? '']
+                .map(csv)
+                .join(','),
+            );
+          }
+        }
+        if (unplaced > 0) {
+          review.push(
+            [twin.id, twin.name, twin.kind, 'named campaign, dated outside every run', twin.given, twin.received,
+             unplaced, unplacedDollars.toFixed(2), twin.first_seen, twin.last_seen, optionsText(hit.options), '']
+              .map(csv)
+              .join(','),
+          );
+        }
+        if (moved > 0 && unplaced === 0) report.splitWhole++;
+        if (opts.apply && moved > 0) {
+          for (const [nodeId, list] of byNode) {
+            const inbound = list.filter((r) => r.inbound).map((r) => r.id);
+            const outbound = list.filter((r) => !r.inbound).map((r) => r.id);
+            if (inbound.length > 0) {
+              await db.execute(sql`
+                UPDATE transactions SET to_entity_id = ${nodeId} WHERE id = ANY(${sql.param(inbound)}::uuid[])
+              `);
+            }
+            if (outbound.length > 0) {
+              await db.execute(sql`
+                UPDATE transactions SET from_entity_id = ${nodeId} WHERE id = ANY(${sql.param(outbound)}::uuid[])
+              `);
+            }
+          }
+          // An account with nothing left is the campaign and nothing else.
+          // Fold the empty shell onto the run that took most of it, alias and
+          // all: this name is the candidate's, unlike a bare person name.
+          const [left] = await db.execute<{ n: string }>(sql`
+            SELECT count(*)::text AS n FROM transactions WHERE from_entity_id = ${twin.id} OR to_entity_id = ${twin.id}
+          `);
+          if (Number(left.n) === 0) {
+            const biggest = [...byNode.entries()].sort((a, b) => b[1].length - a[1].length)[0][0];
+            await mergeEntities(db, biggest, [twin.id]);
+          }
+        }
+        continue;
+      }
+
+      review.push(
+        [twin.id, twin.name, twin.kind, 'named campaign', twin.given, twin.received, '', '', twin.first_seen, twin.last_seen, optionsText(hit.options), '']
+          .map(csv)
+          .join(','),
+      );
       continue;
     }
 
