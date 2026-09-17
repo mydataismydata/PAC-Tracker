@@ -149,13 +149,19 @@ export const TRACKED_ORGS: TrackedOrg[] = [
 
   /* ------------------------------------------------------------------------
    * Found by tracing the funding origins of the 145 committees William
-   * Stafford Jones chairs or keeps the books for. Each is a 501(c)(4) that
-   * put money into that network, and each is here on its IRS record alone:
-   * the Sunbiz half — document number, registered agent, board, corporate
-   * type — has not been read yet, so those fields are absent rather than
-   * guessed. Filling them in is what turns a name into a link to the rest of
-   * the network, because a shared registered agent is the strongest tie there
-   * is here.
+   * Stafford Jones chairs or keeps the books for. Each is a 501(c)(4) that put
+   * money into that network.
+   *
+   * These arrived on their IRS record alone, with no document number to read
+   * the Sunbiz half by. The loader now finds that half by EIN instead, so the
+   * registered agent, the board, the status and the document number come off
+   * the feed for every one of them that is in it — which is what turns a name
+   * into a link to the rest of the network, a shared registered agent being
+   * the strongest tie there is here.
+   *
+   * Three are not in it, and the notes below say which and why. The quarterly
+   * snapshot publishes active Florida corporations, so a dissolved one is
+   * absent from it and an out-of-state one was never in it.
    * ---------------------------------------------------------------------- */
   {
     slug: 'florida-consumer-awareness-fund',
@@ -166,7 +172,7 @@ export const TRACKED_ORGS: TrackedOrg[] = [
       directors: [],
       is527: false,
       donorsRestricted: true,
-      note: 'Tallahassee. $185,363 traced into the Jones committees, $82,045 of it given directly. Sunbiz record not yet read.',
+      note: 'Tallahassee, at 115 E Park Ave Suite 1 — the address Economic Improvement Fund and Foundation for a Safe Environment file from. $185,363 traced into the Jones committees, $82,045 of it given directly. Absent from the quarterly feed, which publishes active corporations only, so it is dissolved or was never a Florida non-profit corporation.',
     },
   },
   {
@@ -178,7 +184,7 @@ export const TRACKED_ORGS: TrackedOrg[] = [
       directors: [],
       is527: false,
       donorsRestricted: true,
-      note: 'West Palm Beach. $117,643 traced, of which $45,000 straight to Florida Jobs Alliance on 2020-12-14. Sunbiz record not yet read.',
+      note: 'West Palm Beach. $117,643 traced, of which $45,000 straight to Florida Jobs Alliance on 2020-12-14.',
     },
   },
   {
@@ -190,7 +196,7 @@ export const TRACKED_ORGS: TrackedOrg[] = [
       directors: [],
       is527: false,
       donorsRestricted: true,
-      note: 'Tallahassee. $33,557 traced, all of it through other committees rather than direct. Sunbiz record not yet read.',
+      note: 'Tallahassee. $33,557 traced, all of it through other committees rather than direct.',
     },
   },
   {
@@ -226,7 +232,7 @@ export const TRACKED_ORGS: TrackedOrg[] = [
       directors: [],
       is527: false,
       donorsRestricted: true,
-      note: 'St Petersburg. $7,725 traced, reached the network through other committees. Sunbiz record not yet read.',
+      note: 'St Petersburg. $7,725 traced, reached the network through other committees.',
     },
   },
 ];

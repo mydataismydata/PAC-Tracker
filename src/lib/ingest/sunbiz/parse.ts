@@ -31,6 +31,26 @@ const F = {
   officerName: [5, 42],
 } as const;
 
+/**
+ * What the middle column holds that is not a middle name.
+ *
+ * The 8-character middle column is free text and filers put a professional or
+ * generational suffix in it, so the registered agent of The American Promise
+ * reads as "Erika Esq Alba" and the agent of Save Our Society From Drugs as
+ * "Jeremy Desq Bailie" — that one being an initial and a suffix run together.
+ * These are names printed on a public page, so the suffix comes off and
+ * whatever initial was in front of it stays.
+ */
+const SUFFIX = /\s*(ESQ|ESQUIRE|JR|SR|II|III|IV|MD|PHD|CPA|CFA|RET)\.?$/i;
+
+function stripSuffix(middle: string): string {
+  let out = middle.trim();
+  // Twice: "D ESQ" and "DESQ" both leave an initial behind, and a name can
+  // carry two suffixes ("JR ESQ").
+  for (let i = 0; i < 2; i++) out = out.replace(SUFFIX, '').trim();
+  return out;
+}
+
 /** The three sub-columns inside a 42-char name field. */
 const NAME_LAST = [0, 20] as const;
 const NAME_FIRST = [20, 14] as const;
@@ -94,7 +114,7 @@ function parseName(field: string, isPerson: boolean): SunbizName {
   }
   const last = smartCase(field.slice(NAME_LAST[0], NAME_LAST[0] + NAME_LAST[1]).trim());
   const first = smartCase(field.slice(NAME_FIRST[0], NAME_FIRST[0] + NAME_FIRST[1]).trim());
-  const middle = smartCase(field.slice(NAME_MIDDLE[0], NAME_MIDDLE[0] + NAME_MIDDLE[1]).trim());
+  const middle = smartCase(stripSuffix(field.slice(NAME_MIDDLE[0], NAME_MIDDLE[0] + NAME_MIDDLE[1])));
   const mid = middle ? (middle.length === 1 ? `${middle}.` : middle) : '';
   const display = [first, mid, last].filter(Boolean).join(' ');
   return { first, last, middle, display, isPerson: true };

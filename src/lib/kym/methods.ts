@@ -39,7 +39,7 @@ const LIMITS = { ttlMs: TTL_MS, maxBytes: 16 * 1024 * 1024 };
  * which is how every dollar column on this page read as a dash for as long as
  * it took to notice.
  */
-const VERSION = 8;
+const VERSION = 9;
 
 /** One feed, and what it put in the database. */
 export interface SourceCoverage {
@@ -340,21 +340,27 @@ async function build(db: Db): Promise<Methods> {
 }
 
 /**
- * What the fold list is built from, in a form that changes when it does.
+ * The two tables this page reads that the shared data stamp does not watch.
  *
- * The shared data stamp is the last write to `transactions` and `entities`,
- * and a tombstone is neither. Naming a fold after the fact writes only to
- * `entity_tombstones`, which moves no timestamp the stamp reads — so the page
- * went on saying "not recorded" against rows that had names, for as long as
- * nothing else happened to the database.
+ * That stamp is the last write to `transactions` and `entities`, which is
+ * everything a trace or a picture depends on and not everything here depends
+ * on. Twice now a write landed that it could not see: naming a fold touches
+ * only `entity_tombstones`, and reading a corporation's registration touches
+ * only `org_profiles` and the officers beside it. Both times the page went on
+ * answering from a held copy that was wrong in exactly the way the write had
+ * just fixed.
  *
- * Three aggregates over 1,664 rows, which is free, and `count(name)` is the
- * one that catches a backfill.
+ * Cheap to ask. The fold table is 1,664 rows and `count(name)` is what catches
+ * a backfill; the profile table is nine and its `updated_at` moves whenever the
+ * officers beside it are rewritten, because the loader writes both together.
  */
-async function foldStamp(db: Db): Promise<string> {
+async function contentStamp(db: Db): Promise<string> {
   const rows = await db.execute<{ stamp: string }>(sql`
-    SELECT concat(count(*), '|', count(name), '|', max(deleted_at)) AS stamp
-      FROM entity_tombstones
+    SELECT concat(
+      (SELECT concat(count(*), ':', count(name), ':', max(deleted_at)) FROM entity_tombstones),
+      '|',
+      (SELECT concat(count(*), ':', max(updated_at)) FROM org_profiles)
+    ) AS stamp
   `);
   return rows[0]?.stamp ?? 'unknown';
 }
@@ -369,8 +375,8 @@ let held: { key: string; value: Promise<Methods> } | null = null;
  * about a second, which is fine once a week and wrong once a reader.
  */
 export async function methods(db: Db): Promise<Methods> {
-  const [data, folds] = await Promise.all([dataStamp(db), foldStamp(db)]);
-  const stamp = `${VERSION}|${data}|${folds}`;
+  const [data, content] = await Promise.all([dataStamp(db), contentStamp(db)]);
+  const stamp = `${VERSION}|${data}|${content}`;
   if (held?.key === stamp) return held.value;
 
   const file = createHash('sha1').update(`methods|${VERSION}|${stamp}`).digest('hex');
