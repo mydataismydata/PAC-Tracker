@@ -96,6 +96,7 @@ import { Propublica990Client, type Propublica990Response } from '@/lib/ingest/or
 import { TRACKED_ORGS as ORG_PROFILE_ORGS, findTrackedOrg, buildProfile } from '@/lib/ingest/org-990/adapter';
 import { ensureOrgProfileSource, upsertProfile } from '@/lib/ingest/org-990/store';
 import { SunbizClient } from '@/lib/ingest/sunbiz/client';
+import type { SunbizRecord } from '@/lib/ingest/sunbiz/parse';
 import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
@@ -914,6 +915,19 @@ async function ingestOrgProfiles(slug?: string) {
   const docNumbers = orgs.map((o) => o.sunbiz.docNumber).filter((d): d is string => Boolean(d));
   const records = await sunbiz.fetchRecords(docNumbers);
 
+  // Then by EIN, for the ones nobody has looked a document number up for. The
+  // file is split by document number, so this reads all ten members instead of
+  // one — worth it once, and it is what turns "Sunbiz record not yet read"
+  // into a registered agent and a board without anyone transcribing either.
+  const missing = orgs.filter((o) => !o.sunbiz.docNumber || !records.has(o.sunbiz.docNumber));
+  const byEin = missing.length
+    ? await sunbiz.fetchByEin(missing.map((o) => o.ein))
+    : new Map<string, SunbizRecord>();
+  if (missing.length) {
+    const hit = missing.filter((o) => byEin.has(o.ein)).length;
+    console.log(`  ${hit}/${missing.length} found by EIN; the rest are not in the feed.`);
+  }
+
   console.log(`\nRefreshing ${orgs.length} org profile(s) — IRS 990 (ProPublica) + Sunbiz feed\n`);
 
   for (const org of orgs) {
@@ -925,7 +939,10 @@ async function ingestOrgProfiles(slug?: string) {
       console.log(`990 fetch failed (${String(err).slice(0, 50)}) — overlay only`);
     }
 
-    const rec = org.sunbiz.docNumber ? (records.get(org.sunbiz.docNumber) ?? null) : null;
+    const rec =
+      (org.sunbiz.docNumber ? (records.get(org.sunbiz.docNumber) ?? null) : null) ??
+      byEin.get(org.ein) ??
+      null;
     const built = buildProfile(org, resp, rec);
     await upsertProfile(db, sourceId, built);
 

@@ -49,6 +49,22 @@ function years(from: string | null, to: string | null): string {
 }
 
 /**
+ * The latest filing date anywhere in the database, as a day rather than a year.
+ *
+ * What a reader wants from this is whether the figures below it are current, and
+ * a year cannot answer that in December. Parsed off the string rather than
+ * through `Date`, which would read a bare yyyy-mm-dd as UTC midnight and print
+ * the day before it in every American time zone.
+ */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function day(date: string | null): string {
+  const m = date?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return '—';
+  return `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+/**
  * What is in the database, said plainly and counted from the database itself.
  *
  * Every figure is read at request time rather than written into the copy,
@@ -61,11 +77,11 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-400">
         {label}
       </div>
-      {/* A step smaller below `sm`. Two blocks across a phone leaves 128px,
-          and $4,852,300,681 at `text-lg` wants 151 of them. */}
-      <div className="mt-1 font-mono text-[15px] tabular-nums text-slate-100 sm:text-lg">
-        {value}
-      </div>
+      {/* One size at every width. The longest of these is $4,852,300,681, which
+          wants 151px at `text-lg` and has 128 in a two-up phone layout and 149
+          in a four-up desktop one — so the breakpoint that would make the
+          others bigger only ever clips this one. */}
+      <div className="mt-1 font-mono text-[15px] tabular-nums text-slate-100">{value}</div>
     </div>
   );
 }
@@ -95,7 +111,7 @@ function Holdings({
           columns on a 375px screen is four columns of nothing. */}
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Filings" value={num(totals.records)} />
-        <Stat label="Dates" value={years(totals.firstFiled, totals.lastFiled)} />
+        <Stat label="Latest pull" value={day(totals.lastFiled)} />
         <Stat label="Dollars tracked" value={formatMoneyFull(totals.amount)} />
         <Stat label="Filers" value={num(totals.entities)} />
       </div>

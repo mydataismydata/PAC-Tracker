@@ -139,11 +139,41 @@ export class SunbizClient {
     });
   }
 
-  /** Inflate only the needed member files and collect the wanted records. */
+  /**
+   * The records for a set of EINs, keyed by EIN as the feed spells them.
+   *
+   * For a corporation whose document number nobody has looked up. The document
+   * number is what the file is split by, so without one there is no member file
+   * to guess and all ten are read — about forty seconds against a cached zip,
+   * which is why this is a fallback rather than the way in.
+   *
+   * Note what is not here. The quarterly snapshot carries active corporations
+   * only: Foundation for a Safe Environment, administratively dissolved in
+   * 2022, is absent from it, and so is anything else that has been dissolved.
+   * An EIN that finds nothing has not necessarily got no record — it may have a
+   * record this feed does not publish.
+   */
+  async fetchByEin(eins: string[]): Promise<Map<string, SunbizRecord>> {
+    const wanted = new Set(eins.map((e) => e.trim()).filter(Boolean));
+    if (wanted.size === 0) return new Map();
+
+    await this.ensureZip();
+    const found = new Map<string, SunbizRecord>();
+    await this.scanZip(new Set('0123456789'), wanted, found, 'ein');
+    return found;
+  }
+
+  /**
+   * Inflate only the needed member files and collect the wanted records.
+   *
+   * `by` picks which column the wanted set is matched against: the document
+   * number at the head of the record, or the FEI/EIN two thirds of the way in.
+   */
   private scanZip(
     digits: Set<string>,
     wanted: Set<string>,
     found: Map<string, SunbizRecord>,
+    by: 'doc' | 'ein' = 'doc',
   ): Promise<void> {
     const members = new Set([...digits].map(MEMBER));
     return new Promise((resolve, reject) => {
@@ -159,8 +189,17 @@ export class SunbizClient {
             const rl = createInterface({ input: stream, crlfDelay: Infinity });
             rl.on('line', (raw) => {
               const line = raw.length > 1440 ? raw.slice(0, 1440) : raw;
-              const doc = line.slice(0, 12).trim().toUpperCase();
-              if (wanted.has(doc) && !found.has(doc)) found.set(doc, parseSunbizRecord(line));
+              // The EIN sits at byte 481; a short line has no such column and
+              // is nothing this is looking for either way.
+              const key =
+                by === 'doc'
+                  ? line.slice(0, 12).trim().toUpperCase()
+                  : line.length >= 494
+                    ? line.slice(480, 494).trim()
+                    : '';
+              if (key && wanted.has(key) && !found.has(key)) {
+                found.set(key, parseSunbizRecord(line));
+              }
             });
             rl.on('close', () => zip.readEntry());
             stream.on('error', reject);
