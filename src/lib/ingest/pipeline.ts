@@ -2548,6 +2548,25 @@ export async function mergeEntities(
       await tx.execute(sql`
         UPDATE committee_registrations SET entity_id = ${keepId} WHERE entity_id = ${loserId}
       `);
+      // The same guard the registration above needs, for the same reason. The
+      // officer table is unique on (entity_id, source_id, role, normalized_name)
+      // among current rows, and the merges that matter most are exactly the ones
+      // that collide: two registrations are one operation *because* they name
+      // the same chair and the same treasurer, so repointing the loser's
+      // officers onto the keeper duplicates every one of them. Demote the
+      // loser's copy and keep it as history, rather than deleting the evidence
+      // that the two registrations shared an officer.
+      await tx.execute(sql`
+        UPDATE committee_officers o SET is_current = false
+         WHERE o.entity_id = ${loserId} AND o.is_current
+           AND EXISTS (
+             SELECT 1 FROM committee_officers k
+              WHERE k.entity_id = ${keepId} AND k.is_current
+                AND k.source_id IS NOT DISTINCT FROM o.source_id
+                AND k.role = o.role
+                AND k.normalized_name = o.normalized_name
+           )
+      `);
       await tx.execute(sql`
         UPDATE committee_officers SET entity_id = ${keepId} WHERE entity_id = ${loserId}
       `);
