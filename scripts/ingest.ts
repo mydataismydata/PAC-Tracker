@@ -41,6 +41,9 @@
  *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
  *   pnpm ingest verify                            # confirm no merged-away entity is still present or referenced
  *                                                 (rebuild runs this at the end; on the VPS run it after loading a delta)
+ *   pnpm ingest warm                              # re-run the reports a rebuild emptied, so no reader pays for them
+ *     --committees=10 --people=10 --url=http://app:3000
+ *                                                 (rebuild runs this at the end; --no-warm skips it)
  *
  * Repairing resolution, once a human has confirmed what is what:
  *   pnpm ingest merge <keepId> <loserId> [...]   # fold duplicates into one entity
@@ -96,6 +99,7 @@ import { VoterFocusAdapter } from '@/lib/ingest/voterfocus/adapter';
 import { VoterFocusClient } from '@/lib/ingest/voterfocus/client';
 import { VOTERFOCUS_COUNTIES, findCounty } from '@/lib/ingest/voterfocus/counties';
 import { cycleForYear } from '@/lib/cycles';
+import { APP_URL, warmReports } from '@/lib/kym/warm';
 import { isOfficerPlaceholder, normalizeName } from '@/lib/normalize';
 import { EntityResolver } from '@/lib/ingest/resolve';
 
@@ -285,7 +289,15 @@ async function main() {
     // Every rebuild ends by confirming no merged-away reference survived — the
     // check runs on the deployment box too, right after it loads a delta.
     const clean = await runVerify();
+    // Then it re-runs the reports it just emptied. A rebuild moves the stamp
+    // every cached trace and picture is keyed on, so the busiest pages are
+    // uncached at exactly the moment they are slowest to answer.
+    if (flags['no-warm'] !== 'true') await warmCache();
     process.exit(clean ? 0 : 1);
+  }
+
+  if (mode === 'warm') {
+    process.exit((await warmCache()) ? 0 : 1);
   }
 
   if (mode === 'backfill-industry') {
@@ -1367,6 +1379,46 @@ async function ingestCounty(slug: string, electionId?: string) {
  * Returns true when nothing is wrong. Used on its own (`ingest verify`) and at
  * the end of every rebuild, on this Mac and on the deployment box.
  */
+/**
+ * Ask the app for the reports worth holding, so the first reader does not.
+ *
+ * Never fatal on its own. A rebuild that finished is a rebuild that worked,
+ * and the app being down, or unreachable from this container, costs a reader
+ * one slow page rather than anything permanent. The one exception is a bad
+ * `--committees` or `--people`, which is a typo worth saying out loud.
+ */
+async function warmCache(): Promise<boolean> {
+  const num = (name: string, fallback: number): number => {
+    if (flags[name] === undefined) return fallback;
+    const n = Number(flags[name]);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`--${name} must be a whole number, not "${flags[name]}"`);
+    return n;
+  };
+  const committees = num('committees', 10);
+  const people = num('people', 10);
+  const base = flags.url ?? APP_URL;
+
+  console.log(`\nWarming ${committees} committee reports and ${people} person reports at ${base}…`);
+  try {
+    const report = await warmReports(db, {
+      base,
+      committees,
+      people,
+      onProgress: (m) => console.log(`  ${m}`),
+    });
+    const failed = report.outcomes.filter((o) => o.error || o.status >= 400);
+    console.log(
+      `  ${report.outcomes.length - failed.length}/${report.outcomes.length} warm in ${(report.ms / 1000).toFixed(1)}s` +
+        `${failed.length ? `, ${failed.length} failed` : ''}`,
+    );
+    return failed.length === 0 && report.ready;
+  } catch (err) {
+    console.warn(`  could not reach ${base}: ${String(err)}`);
+    console.warn('  the reports stay uncached; the first reader of each pays for it.');
+    return false;
+  }
+}
+
 async function runVerify(): Promise<boolean> {
   const report = await verifyReferentialIntegrity(db);
   console.log('Referential integrity:');
