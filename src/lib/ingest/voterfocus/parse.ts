@@ -32,6 +32,11 @@ export interface VoterFocusElection {
   label: string;
   /** Four-digit year parsed out of the label, when present. */
   year: number | null;
+  /**
+   * The cycle the portal opens on, which is the one a sweep gets when it names
+   * no election. Exactly one option carries it.
+   */
+  selected: boolean;
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
@@ -79,10 +84,21 @@ function safeCodePoint(code: number): string {
 export function parseElections(html: string): VoterFocusElection[] {
   const sel = html.match(/<select[^>]*name="el"[^>]*>([\s\S]*?)<\/select>/i);
   if (!sel) return [];
-  return [...sel[1].matchAll(/<option[^>]*value='?"?(\d+)'?"?[^>]*>([^<]*)/g)].map((m) => {
+  // The whole tag is captured, not just the value, because `selected` is an
+  // attribute with no value and the caller needs to know which option carries
+  // it. Its position is not fixed: it follows `value` here and could precede
+  // it elsewhere.
+  return [...sel[1].matchAll(/<option([^>]*)>([^<]*)/g)].flatMap((m) => {
+    const id = m[1].match(/value=['"]?(\d+)/);
+    if (!id) return [];
     const label = decode(m[2]);
     const year = label.match(/\b(19|20)\d{2}\b/);
-    return { id: m[1], label, year: year ? Number(year[0]) : null };
+    return [{
+      id: id[1],
+      label,
+      year: year ? Number(year[0]) : null,
+      selected: /\bselected\b/i.test(m[1]),
+    }];
   });
 }
 
