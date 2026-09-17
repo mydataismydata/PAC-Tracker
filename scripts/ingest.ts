@@ -393,6 +393,8 @@ async function main() {
     console.log(`  ${r.namedMerged} entities named as a campaign ${apply ? 'folded' : 'would fold'} into their candidate, ${fmt(r.namedDollars)}`);
     console.log(`  ${r.rowsMoved} committee-paid rows on ${r.twinsTouched} bare-name twins ${apply ? 'moved' : 'would move'}, ${fmt(r.rowsDollars)}`);
     console.log(`  ${r.absorbed} of those twins ${apply ? 'had' : 'would have'} nothing left and ${apply ? 'folded' : 'would fold'} away`);
+    console.log(`  ${r.splitRows} rows on ${r.splitAccounts} campaign accounts ${apply ? 'went' : 'would go'} to the run they were dated in, ${fmt(r.splitDollars)}`);
+    console.log(`  ${r.splitWhole} of those accounts ${apply ? 'split' : 'would split'} clean and ${apply ? 'folded' : 'would fold'} away`);
     console.log(`  ${r.review} entities could not be placed; written to ${reviewPath}`);
     if (r.federal > 0) console.log(`  ${r.federal} named for a federal race, left alone: Florida files no node for those`);
     if (movesPath) console.log(`  every fold and move listed in ${movesPath}`);
