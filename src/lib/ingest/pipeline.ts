@@ -261,6 +261,14 @@ export async function ensureFecSource(
  * a company merely containing "IRS" is not caught. The same rules, as SQL,
  * purged what was already loaded: migrations/manual/drop-interest-and-cfr.sql
  * and drop-irs.sql.
+ *
+ * Those two SQL files and this function have to agree, and for a year they did
+ * not. The SQL matched the *resolved entity name*, "INTERNAL REVENUE SERVICE",
+ * while this matches the *filed string*, and St. Johns files "INTERNAL REVENUE
+ * SERVICE - IRS". The purge caught those rows and the sweep that followed
+ * brought them straight back, 32 of them. Christian Financial Resources was
+ * worse: the purge named it by entity id, which is a handle this function
+ * cannot have, so it had no rule here at all and returned on every sweep.
  */
 export function isNonPoliticalMoney(
   direction: 'contribution' | 'expenditure',
@@ -269,7 +277,15 @@ export function isNonPoliticalMoney(
   counterparty: string | null = null,
 ): boolean {
   const who = (counterparty ?? '').toUpperCase().replace(/[^A-Z]/g, '');
-  if (/^(USTREASURY)?(IRS|INTERNALREVENUESERVICES?)(USTREASURY)?(VIAEFTPS)?$/.test(who)) return true;
+  // "IRS" rides in front of the full name or behind it, and both spellings are
+  // filed: "IRS", "INTERNAL REVENUE SERVICE", "INTERNAL REVENUE SERVICE - IRS".
+  if (/^(USTREASURY)?(IRS|(IRS)?INTERNALREVENUESERVICES?(IRS)?)(USTREASURY)?(VIAEFTPS)?$/.test(who)) {
+    return true;
+  }
+  // A 501(c)(3) church loan fund that two committees used as a savings account.
+  // Its "contributions" to them are their own principal coming back, filed as
+  // checks, which made a church fund read as a $1.1M original source.
+  if (who === 'CHRISTIANFINANCIALRESOURCES') return true;
   const code = (typeCode ?? '').trim().toUpperCase();
   const desc = description ?? '';
   if (direction === 'contribution') {

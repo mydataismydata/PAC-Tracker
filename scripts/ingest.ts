@@ -1345,8 +1345,14 @@ async function ingestCounty(slug: string, electionId?: string) {
   // A sweep is scoped to one election, so its cycle is known rather than
   // inferred. That matters at the boundaries: a closing cycle's final reports
   // are filed *after* its election and would otherwise be booked to the next.
+  // A sweep that names no election still gets one: the portal opens on a
+  // cycle and marks it `selected`. Reading that is what stamps the rows. Left
+  // undefined, a default sweep wrote 326 rows with no cycle at all on
+  // 2026-09-17, and every figure filtered by cycle silently missed them.
   const offered = await adapter.elections();
-  const chosen = electionId ? offered.find((e) => String(e.id) === String(electionId)) : undefined;
+  const chosen = electionId
+    ? offered.find((e) => String(e.id) === String(electionId))
+    : offered.find((e) => e.selected);
   const cycle = chosen?.year ? cycleForYear(chosen.year)?.id : undefined;
 
   const runId = await startRun(db, sourceId, {
