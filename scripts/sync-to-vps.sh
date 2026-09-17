@@ -94,6 +94,9 @@ setclause() {
 
 ENTITY_SET=$(setclause entities)
 TXN_SET=$(setclause transactions)
+TOMB_SET=$(setclause entity_tombstones)
+JURISDICTION_SET=$(setclause jurisdictions)
+SOURCE_SET=$(setclause sources)
 
 {
   echo "BEGIN;"
@@ -106,9 +109,19 @@ TXN_SET=$(setclause transactions)
   # jurisdiction the far side has never seen. That stayed hidden while every
   # new source reused a jurisdiction the last full dump already carried, and
   # broke on the first genuinely new one — US-FEC, for the federal loader.
+  #
+  # Upserted rather than inserted-if-absent. A feed that is renamed, or pointed
+  # at a different jurisdiction, changes a row that already exists on the far
+  # side, and `DO NOTHING` left it reading whatever it read the day it was
+  # created. The methods page prints these names, so the two would disagree in
+  # public.
   for t in jurisdictions sources; do
+    case $t in
+      jurisdictions) set_clause=$JURISDICTION_SET ;;
+      sources)       set_clause=$SOURCE_SET ;;
+    esac
     docker exec -i pactracker-db psql -U pactracker -d "$DB" -tAc \
-      "SELECT format('INSERT INTO $t SELECT (%L::$t).* ON CONFLICT (id) DO NOTHING;', x) FROM $t x"
+      "SELECT format('INSERT INTO $t SELECT (%L::$t).* ON CONFLICT (id) DO UPDATE SET $set_clause;', x) FROM $t x"
   done
 
   # Parents before children: entities, then the rows pointing at them.
@@ -135,9 +148,15 @@ TXN_SET=$(setclause transactions)
   # Deletions last, once everything that was reassigned off these entities has
   # already moved. Merged-away ids are carried too, so the far side can answer
   # for a stale link instead of 404ing on one.
+  #
+  # Every column, through the same helper the other tables use. This named
+  # `merged_into` by hand, which was invisible for as long as a tombstone had
+  # nothing else on it. It now carries what was folded — the name, the kind and
+  # the feed — and all 1,664 of these already exist on the far side, so every
+  # one takes the DO UPDATE branch and none of the new columns ever arrived.
   stage entity_tombstones "$TOMBS"
   echo "INSERT INTO entity_tombstones SELECT * FROM _sync_entity_tombstones"
-  echo "  ON CONFLICT (id) DO UPDATE SET merged_into = EXCLUDED.merged_into;"
+  echo "  ON CONFLICT (id) DO UPDATE SET $TOMB_SET;"
 
   # Repoint any transaction that still references a tombstoned id onto the
   # entity it was merged into, before deleting the id. Locally these rows moved
