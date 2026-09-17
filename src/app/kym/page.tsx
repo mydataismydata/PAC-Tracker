@@ -27,6 +27,7 @@ import { busiestCommittees, committeeHref } from '@/lib/graph/committee';
 import { busiestPeople } from '@/lib/graph/officers';
 import { methods } from '@/lib/kym/methods';
 import { formatMoney, formatMoneyFull, kindLabel } from '@/lib/graph/types';
+import PanelHeading from '@/components/kym/PanelHeading';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,6 +55,21 @@ function years(from: string | null, to: string | null): string {
  * because a sentence that says two million filings after the fourth sweep of
  * the month is worse than no sentence at all.
  */
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 px-4 py-3">
+      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-400">
+        {label}
+      </div>
+      {/* A step smaller below `sm`. Two blocks across a phone leaves 128px,
+          and $4,852,300,681 at `text-lg` wants 151 of them. */}
+      <div className="mt-1 font-mono text-[15px] tabular-nums text-slate-100 sm:text-lg">
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function Holdings({
   totals,
   sources,
@@ -63,30 +79,41 @@ function Holdings({
 }) {
   const feeds = sources.filter((s) => s.records > 0);
   return (
-    <div className="mt-5 max-w-3xl rounded border border-slate-900 bg-slate-900/40 px-4 py-3">
-      <p className="text-sm leading-relaxed text-slate-400">
-        {num(totals.records)} filings, {years(totals.firstFiled, totals.lastFiled)}, worth{' '}
-        {formatMoneyFull(totals.amount)} between {num(totals.entities)} filers.
+    <div className="mt-6 max-w-3xl">
+      {/* Two across on a phone, four on anything wider. Four 20-character
+          columns on a 375px screen is four columns of nothing. */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat label="Filings" value={num(totals.records)} />
+        <Stat label="Dates" value={years(totals.firstFiled, totals.lastFiled)} />
+        <Stat label="Dollars tracked" value={formatMoneyFull(totals.amount)} />
+        <Stat label="Filers" value={num(totals.entities)} />
+      </div>
+
+      {/* Above the feed list, in the same type as the rows under it: the list
+          is what this link expands on, and a reader looking at one is the
+          reader who wants the other. */}
+      <p className="mt-4 text-sm text-slate-300">
+        <Link
+          href="/methods-and-sources"
+          className="underline-offset-2 hover:text-indigo-300 hover:underline"
+        >
+          Methods and sources
+        </Link>
       </p>
+
       <ul className="mt-2 space-y-0.5">
         {feeds.map((s) => (
-          <li key={s.key} className="flex items-baseline gap-2 text-xs text-slate-500">
+          <li key={s.key} className="flex items-baseline gap-2 text-sm text-slate-300">
             <span className="min-w-0 flex-1 truncate">{s.name}</span>
-            <span className="shrink-0 font-mono tabular-nums text-slate-600">
+            <span className="shrink-0 font-mono text-xs tabular-nums text-slate-400">
               {years(s.firstFiled, s.lastFiled)}
             </span>
-            <span className="w-24 shrink-0 text-right font-mono tabular-nums text-slate-500">
+            <span className="w-24 shrink-0 text-right font-mono text-xs tabular-nums text-slate-300">
               {num(s.records)}
             </span>
           </li>
         ))}
       </ul>
-      <p className="mt-2 text-xs text-slate-600">
-        <Link href="/methods-and-sources" className="text-slate-500 underline-offset-2 hover:text-indigo-300 hover:underline">
-          Methods and sources
-        </Link>{' '}
-        sets out every feed, every filer folded into another, and the nonprofits in this data.
-      </p>
     </div>
   );
 }
@@ -121,12 +148,9 @@ export default async function KymLandingPage() {
           truncation inside actually truncate. */}
       <div className="mt-10 grid grid-cols-1 gap-8 md:grid-cols-2">
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
+          <PanelHeading info="Committees that have paid out the most, across every cycle in the database.">
             Biggest PACs
-          </h2>
-          <p className="mt-1 text-xs text-slate-600">
-            Committees that have paid out the most, across every cycle in the database.
-          </p>
+          </PanelHeading>
           <ul className="mt-3 divide-y divide-slate-900 rounded border border-slate-800">
             {busiest.map((c) => (
               <li key={c.id}>
@@ -136,7 +160,7 @@ export default async function KymLandingPage() {
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-slate-200">{c.name}</span>
-                    <span className="block truncate text-xs text-slate-500">
+                    <span className="block truncate text-xs text-slate-400">
                       {kindLabel({ kind: c.kind, committeeType: c.committeeType })}
                       {c.city ? ` · ${c.city}, ${c.stateCode ?? ''}` : ''}
                     </span>
@@ -151,13 +175,9 @@ export default async function KymLandingPage() {
         </section>
 
         <section>
-          <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
+          <PanelHeading info="People who control the most PACs as both Chairman and Treasurer. The figure is what those committees raised.">
             Biggest Networks
-          </h2>
-          <p className="mt-1 text-xs text-slate-600">
-            People who control the most PACs as both Chairman and Treasurer. The figure is what
-            those committees raised.
-          </p>
+          </PanelHeading>
           <ul className="mt-3 divide-y divide-slate-900 rounded border border-slate-800">
             {operators.map((p) => (
               <li key={p.normalizedName}>
@@ -167,7 +187,7 @@ export default async function KymLandingPage() {
                 >
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm text-slate-200">{p.name}</span>
-                    <span className="block truncate text-xs text-slate-500">
+                    <span className="block truncate text-xs text-slate-400">
                       Chair and treasurer of {num(p.bothRoles)} committee
                       {p.bothRoles === 1 ? '' : 's'}
                       {p.committees > p.bothRoles
@@ -185,7 +205,7 @@ export default async function KymLandingPage() {
         </section>
       </div>
 
-      <p className="mt-8 max-w-3xl text-xs leading-relaxed text-slate-600">
+      <p className="mt-8 max-w-3xl text-xs leading-relaxed text-slate-400">
         Figures are as filed with the Florida Division of Elections and the county supervisors of
         elections, and may be amended.
       </p>

@@ -123,8 +123,7 @@ export default async function MethodsAndSourcesPage() {
         <p className="mt-6 max-w-3xl leading-relaxed text-slate-400">
           This database holds {num(m.totals.records)} filings from {m.totals.sources} feeds, covering{' '}
           {span(m.totals.firstFiled, m.totals.lastFiled)} and {formatMoneyFull(m.totals.amount)} in
-          contributions and expenditures between {num(m.totals.entities)} filers. Everything on this
-          page is derived from those filings. Nothing is estimated.
+          contributions and expenditures between {num(m.totals.entities)} filers.
         </p>
 
         <DataTable

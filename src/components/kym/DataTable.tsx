@@ -17,6 +17,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
+import PanelHeading from '@/components/kym/PanelHeading';
 
 export interface Column {
   label: string;
@@ -72,18 +73,6 @@ function download(filename: string, columns: Column[], rows: Cell[][]): void {
   URL.revokeObjectURL(url);
 }
 
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 12 12"
-      aria-hidden="true"
-      className={`h-3 w-3 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
-    >
-      <path d="M4 2l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
 export default function DataTable({
   heading,
   tagline,
@@ -109,29 +98,14 @@ export default function DataTable({
   return (
     <section className="mt-10">
       <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          {collapsible ? (
-            <button
-              type="button"
-              onClick={() => setOpen((v) => !v)}
-              aria-expanded={open}
-              className="flex items-center gap-2 text-left text-slate-300 hover:text-indigo-300"
-            >
-              <Chevron open={open} />
-              <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400">
-                {heading}
-              </h2>
-              <span className="font-mono text-[11px] tabular-nums text-slate-600">
-                {count.toLocaleString()}
-              </span>
-            </button>
-          ) : (
-            <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-400">
-              {heading}
-            </h2>
-          )}
-          {tagline && <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-600">{tagline}</p>}
-        </div>
+        <PanelHeading
+          info={tagline}
+          count={collapsible ? count : undefined}
+          onToggle={collapsible ? () => setOpen((v) => !v) : undefined}
+          expanded={collapsible ? open : undefined}
+        >
+          {heading}
+        </PanelHeading>
         <button
           type="button"
           onClick={() => download(`${filename}.csv`, columns, rows)}
@@ -213,7 +187,7 @@ export default function DataTable({
         </div>
       )}
 
-      {footnote && <p className="mt-2 max-w-3xl text-xs leading-relaxed text-slate-600">{footnote}</p>}
+      {footnote && <p className="mt-2 max-w-3xl text-xs leading-relaxed text-slate-400">{footnote}</p>}
     </section>
   );
 }
