@@ -39,6 +39,21 @@ export const TRACKED_CANDIDATES = [
     cycles: [2024, 2026],
     note: 'Florida state senator through 2025, then FL-06. Florida sees only the outgoing side.',
   },
+  {
+    slug: 'rutherford',
+    candidateId: 'H6FL04105',
+    committeeId: 'C00615294',
+    name: 'Citizens for John Rutherford',
+    office: 'U.S. House FL-05',
+    /**
+     * Six periods, not the two Fine needed. The committee has given to Duval
+     * and St. Johns filers in every one of them since 2016, so loading only
+     * the recent cycles would leave the older years with an outgoing side and
+     * no raising side.
+     */
+    cycles: [2016, 2018, 2020, 2022, 2024, 2026],
+    note: 'Sheriff of Duval County through 2015, then FL-04, and FL-05 after the 2022 redistricting. One committee across all of it.',
+  },
 ] as const;
 
 export type TrackedCandidate = (typeof TRACKED_CANDIDATES)[number];
