@@ -1462,6 +1462,38 @@ async function backfillTombstoneNames(): Promise<void> {
     written += rows.length;
   }
 
+  // The feed, from the rows the folded node left behind.
+  //
+  // It cannot be read from the row itself — that was deleted — but it can be
+  // read from its filings. When X was folded into Y its transactions moved to
+  // Y and kept the spelling they were filed under, so the feed that filed that
+  // spelling against Y is the feed X came from.
+  //
+  // Only where one feed filed it. A spelling that appears in two is a real
+  // thing — the state and a county each holding the same committee — and
+  // picking one of them would be a guess dressed as a record.
+  const sourced = await db.execute<{ id: string }>(sql`
+    WITH t AS (
+      SELECT id, merged_into, upper(name) AS un
+        FROM entity_tombstones
+       WHERE name IS NOT NULL AND source_id IS NULL AND merged_into IS NOT NULL
+    ),
+    found AS (
+      SELECT t.id, s.keys[1] AS key
+        FROM t
+        JOIN LATERAL (
+          SELECT array_agg(DISTINCT x.source_id) AS keys
+            FROM transactions x
+           WHERE (x.from_entity_id = t.merged_into AND upper(x.raw_from_name) = t.un)
+              OR (x.to_entity_id   = t.merged_into AND upper(x.raw_to_name)   = t.un)
+        ) s ON array_length(s.keys, 1) = 1
+    )
+    UPDATE entity_tombstones e SET source_id = f.key
+      FROM found f WHERE e.id = f.id
+    RETURNING e.id
+  `);
+  if (sourced.length) console.log(`  traced the feed of ${sourced.length} from the rows they left.`);
+
   const [after] = await db.execute<{ unnamed: string }>(sql`
     SELECT count(*) FILTER (WHERE name IS NULL)::text AS unnamed FROM entity_tombstones
   `);

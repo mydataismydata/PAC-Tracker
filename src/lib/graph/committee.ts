@@ -39,6 +39,21 @@ const KINDS = sql`('committee', 'party')`;
  */
 const SUBJECT_KINDS = sql`('committee', 'party', 'candidate')`;
 
+/**
+ * Who a report may be about.
+ *
+ * The three kinds above, plus any payer we hold a corporate and tax record
+ * for. A 501(c)(4) is an organization like ninety-four thousand others in this
+ * database and must not be addressable the way they are — but the handful with
+ * a profile are named on the methods page as among the largest payers into
+ * Florida politics, and a reader told that should be able to open one. The
+ * report answers the same question it answers for a committee, and answers it
+ * honestly: a nonprofit discloses no donors, so the money reaching it has no
+ * origin to show.
+ */
+const SUBJECT = sql`(e.kind IN ${SUBJECT_KINDS}
+                     OR EXISTS (SELECT 1 FROM org_profiles p WHERE p.entity_id = e.id))`;
+
 /** `Keep Florida Great` → `keep-florida-great`. */
 export function committeeSlug(name: string): string {
   return normalizeName(name).toLowerCase().replace(/ /g, '-');
@@ -189,7 +204,7 @@ export async function committeesBySlug(db: Db, slug: string): Promise<CommitteeS
   const rows = await db.execute<Row>(sql`
     SELECT ${COLUMNS}
       FROM entities e ${DETAIL}
-     WHERE e.kind IN ${SUBJECT_KINDS} AND e.normalized_name = ${needle}
+     WHERE ${SUBJECT} AND e.normalized_name = ${needle}
      ORDER BY e.total_received DESC, e.name
   `);
   return rows.map(toSubject);
@@ -200,7 +215,7 @@ export async function committeeById(db: Db, id: string): Promise<CommitteeSubjec
   const rows = await db.execute<Row>(sql`
     SELECT ${COLUMNS}
       FROM entities e ${DETAIL}
-     WHERE e.id = ${id}::uuid AND e.kind IN ${SUBJECT_KINDS}
+     WHERE e.id = ${id}::uuid AND ${SUBJECT}
   `);
   return rows.length > 0 ? toSubject(rows[0]) : null;
 }

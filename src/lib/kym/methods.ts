@@ -22,6 +22,7 @@ import { sql } from 'drizzle-orm';
 import type { db as Database } from '@/db';
 import * as disk from '@/lib/cache/disk';
 import { dataStamp } from '@/lib/graph/traceCache';
+import { personDisplayName, personSlug } from '@/lib/graph/officers';
 
 type Db = typeof Database;
 
@@ -38,7 +39,7 @@ const LIMITS = { ttlMs: TTL_MS, maxBytes: 16 * 1024 * 1024 };
  * which is how every dollar column on this page read as a dash for as long as
  * it took to notice.
  */
-const VERSION = 5;
+const VERSION = 8;
 
 /** One feed, and what it put in the database. */
 export interface SourceCoverage {
@@ -82,13 +83,21 @@ export interface Fold {
   at: string;
 }
 
+/** One name on a nonprofit's corporate record, and its page here. */
+export interface NonprofitOfficer {
+  name: string;
+  role: string;
+  slug: string;
+}
+
 /** A payer we hold corporate and tax filings for. */
 export interface Nonprofit {
   id: string;
   name: string;
   taxStatus: string | null;
   corpType: string | null;
-  officers: number;
+  /** The registered agent first, then the directors. */
+  officers: NonprofitOfficer[];
   transactions: number;
   amount: string;
 }
@@ -248,8 +257,18 @@ async function nonprofits(db: Db): Promise<Nonprofit[]> {
            -- The officer rows rather than the board on the profile: they carry
            -- the registered agent as well as the directors, and the agent is a
            -- named person on the corporate record like any other.
-           (SELECT count(*) FROM committee_officers o
-             WHERE o.entity_id = e.id AND o.is_current)::text AS officers,
+           --
+           -- The agent leads. Three of these share one, which is the strongest
+           -- tie between them and the first thing a reader should see.
+           (SELECT COALESCE(
+                     jsonb_agg(jsonb_build_object('name', x.full_name, 'role', x.role,
+                                                  'key', x.normalized_name)
+                               ORDER BY x.role <> 'registered_agent', x.full_name),
+                     '[]'::jsonb)
+              FROM (SELECT DISTINCT o.full_name, o.role::text AS role, o.normalized_name
+                      FROM committee_officers o
+                     WHERE o.entity_id = e.id AND o.is_current) x
+           )::text AS officers,
            (SELECT count(*) FROM transactions t
              WHERE t.from_entity_id = e.id OR t.to_entity_id = e.id)::text AS transactions,
            e.total_given::text AS amount
@@ -262,7 +281,16 @@ async function nonprofits(db: Db): Promise<Nonprofit[]> {
     name: r.name,
     taxStatus: r.tax_status,
     corpType: r.corp_type,
-    officers: Number(r.officers),
+    // Keyed on `committee_officers.normalized_name`, which is surname-first and
+    // is not what `normalizeName` makes of a display name: "William S. Jones"
+    // normalizes to WILLIAM S JONES and keys as JONES WILLIAM.
+    officers: (JSON.parse(r.officers) as { name: string; role: string; key: string }[]).map(
+      (o) => ({
+        name: personDisplayName(o.key, o.name),
+        role: o.role,
+        slug: personSlug(o.key),
+      }),
+    ),
     transactions: Number(r.transactions),
     amount: r.amount,
   }));

@@ -24,10 +24,21 @@ export interface Column {
   numeric?: boolean;
 }
 
-export type Cell = string | { text: string; href?: string; muted?: boolean };
+export type Cell =
+  | string
+  | { text: string; href?: string; muted?: boolean }
+  /** Several names in one cell, each its own link. */
+  | { parts: { text: string; href?: string }[]; empty?: string };
 
+function isParts(cell: Cell): cell is { parts: { text: string; href?: string }[]; empty?: string } {
+  return typeof cell !== 'string' && 'parts' in cell;
+}
+
+/** What this cell says, for the export and for anything measuring it. */
 function text(cell: Cell): string {
-  return typeof cell === 'string' ? cell : cell.text;
+  if (typeof cell === 'string') return cell;
+  if (isParts(cell)) return cell.parts.length ? cell.parts.map((p) => p.text).join('; ') : (cell.empty ?? '');
+  return cell.text;
 }
 
 /**
@@ -132,7 +143,7 @@ export default function DataTable({
 
       {open && (
         <div className="mt-3 overflow-x-auto rounded border border-slate-800">
-          <table className="w-full min-w-max text-sm">
+          <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-900/60">
                 {/* Keyed by position, not by label. A table may name two
@@ -157,18 +168,35 @@ export default function DataTable({
                   {row.map((cell, j) => {
                     const c = columns[j];
                     const value = text(cell);
-                    const muted = typeof cell !== 'string' && cell.muted;
-                    const href = typeof cell !== 'string' ? cell.href : undefined;
+                    const muted = typeof cell !== 'string' && !isParts(cell) && cell.muted;
+                    const href = typeof cell !== 'string' && !isParts(cell) ? cell.href : undefined;
                     return (
                       <td
                         key={j}
-                        className={`px-3 py-2 ${
+                        className={`px-3 py-2 align-top ${
                           c?.numeric
                             ? 'text-right font-mono tabular-nums text-slate-300'
                             : 'text-slate-300'
                         } ${muted ? 'text-slate-600' : ''}`}
                       >
-                        {href ? (
+                        {isParts(cell) ? (
+                          cell.parts.length === 0 ? (
+                            <span className="text-slate-600">{cell.empty ?? '—'}</span>
+                          ) : (
+                            cell.parts.map((p, k) => (
+                              <span key={k}>
+                                {k > 0 && <span className="text-slate-700">, </span>}
+                                {p.href ? (
+                                  <Link href={p.href} className="text-slate-200 hover:text-indigo-300">
+                                    {p.text}
+                                  </Link>
+                                ) : (
+                                  p.text
+                                )}
+                              </span>
+                            ))
+                          )
+                        ) : href ? (
                           <Link href={href} className="text-slate-200 hover:text-indigo-300">
                             {value}
                           </Link>
