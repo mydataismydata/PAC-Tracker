@@ -194,12 +194,11 @@ export default async function MethodsAndSourcesPage() {
           footnote={
             m.unnamedFolds > 0 ? (
               <>
-                {num(m.unnamedFolds)} of these were made by one automatic sweep, which put a
-                candidate&rsquo;s look-alike node onto the candidate. That sweep wrote what it folded
-                to a working file rather than to this record, so those rows name the candidate that
-                received the money but not the node that was folded into it. Folds made since name
-                both sides. The feed a folded filer came from is recorded the same way, from the
-                same point on: a deleted row cannot be asked which sweep created it.
+                {num(m.unnamedFolds)} {m.unnamedFolds === 1 ? 'fold' : 'folds'} here{' '}
+                {m.unnamedFolds === 1 ? 'predates' : 'predate'} this record and{' '}
+                {m.unnamedFolds === 1 ? 'names' : 'name'} only the filer that received the money.
+                The feed a folded filer came from is blank for the same reason on everything folded
+                before the record began: a deleted row cannot be asked which sweep created it.
               </>
             ) : undefined
           }
