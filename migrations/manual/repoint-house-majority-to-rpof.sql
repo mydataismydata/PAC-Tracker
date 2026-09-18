@@ -1,0 +1,104 @@
+-- REVERTED. DO NOT RUN. Kept as the record of a bad change.
+--
+-- This migration moved 47 transactions off the Republican Party of Florida House
+-- Majority committee and onto the Republican Party of Florida. The test behind it
+-- matched a payer, an amount and a date window, and called the match proof that
+-- the payer and the party had filed the two halves of one transfer. That test does
+-- not hold. The party takes money from most committees in Florida, so a payer, an
+-- amount and a nearby date fit two separate gifts just as well as one transfer
+-- filed twice.
+--
+-- The rebuild that followed read 46 of the moved rows as duplicates of the party's
+-- own receipts and deleted them. The loss was $874,875.
+--
+-- migrations/manual/restore-house-majority-rows.sql put the 46 rows back, sent the
+-- 47th row back to the committee, and cleared the 46 tombstones. The committee
+-- holds all 66 of its rows again.
+--
+-- Everything below is the original file, commented out.
+--
+-- -- Put the House Majority rows that were really paid to the party on the party.
+-- --
+-- -- Ten unregistered nodes carry a name for the Republican Party of Florida's
+-- -- House campaign operation: HOUSE MAJORITY, RPOF HOUSE MAJORITY, REPUBLICAN
+-- -- PARTY OF FLA HOUSE MAJORITY and seven more spellings of the same idea. They
+-- -- hold 66 rows worth $1,358,008, every one of them money paid in.
+-- --
+-- -- That operation is its own political committee and is not the party. The rows
+-- -- on these nodes are not all its rows, though. For 47 of the 66 the payer's own
+-- -- ledger shows the matching receipt filed by the Republican Party of Florida,
+-- -- account 4700, within the window the mirror rule uses: at most 14 days before
+-- -- the payer's entry and at most 60 days after it. Those 47 are payments to the
+-- -- party, written loosely by the payer, and they belong on the party.
+-- --
+-- -- $895,000 moves. The remaining 19 rows worth $463,008 have no such receipt and
+-- -- stay with the committee.
+-- --
+-- -- Two of the 47 come from a node named HOUSE REPUBLICAN PARTY, which is neither
+-- -- a registered committee nor a name anyone uses. Florida CPA PAC files every
+-- -- name comma-first — CABRERA, DEMI BUSATTA and CAMPAIGN, COMMITTEE, FL
+-- -- REPUBLICAN SENATORIAL are its own spellings — so REPUBLICAN PARTY, HOUSE is
+-- -- the party's House account. The party booked the first of the two, $5,000 on
+-- -- 2023-01-18, as a receipt 50 days later. The second, $20,000 on 2023-12-05,
+-- -- has no receipt on file, and it moves with its twin because the name is the
+-- -- same and the payer paid the Senate committee separately on both dates.
+-- --
+-- -- Listed by transaction id rather than by rule, so a later sweep cannot widen
+-- -- what this moves. Run on the Mac only. Follow with `pnpm ingest rebuild`, which
+-- -- collapses each pair now that both halves sit between one payer and one
+-- -- recipient. Safe to run twice.
+-- BEGIN;
+
+-- UPDATE transactions
+--    SET to_entity_id = '58ab0474-6b52-40bf-8522-93597b79b9d4'
+--  WHERE id IN (
+--   '03c7f846-7706-4a81-a982-424ff7f882ac',
+--   '103aca13-41ec-4cc3-967b-5f0a63ba7951',
+--   '11e5999d-1526-4961-8068-62732f759d6f',
+--   '14151e62-02fd-4ca8-89d1-152a61459573',
+--   '2641eff6-9704-4842-bb0b-7ad5dcb88b2f',
+--   '38b415a2-cdf0-4173-8621-5ea4c6da94e9',
+--   '555a4c33-81e6-4165-aae8-07e628ca8c0d',
+--   '56db4452-d619-4337-ab42-73a23330b438',
+--   '5b7b6e53-a589-4314-9c6f-e4eee6f1f7c8',
+--   '6332c037-449d-4a28-834f-4f76c0fc0bba',
+--   '64dac1c1-98d9-4f07-8658-9da0a52081f3',
+--   '6d236795-eb17-41db-9538-7262ac7d31a5',
+--   '78bc35ea-27ca-43a1-8093-7bbdc000bab4',
+--   '82cda419-3941-42e7-bdeb-2f11d6178028',
+--   '919cbf8a-f414-4762-9c4c-302cd9911ff8',
+--   '934a5f7a-8d51-43af-881d-028243fc9bc0',
+--   '94148794-358d-4df8-ae57-9035b1372ba5',
+--   '983f2571-e014-4673-9895-176dd387c75c',
+--   '984832ea-0f15-470f-915c-810584b87f4f',
+--   '9a2b512f-b053-436f-b675-76c16c4c1aa5',
+--   'a3631d6a-5ccf-4e2b-a348-f8ff0b372854',
+--   'a4c0d2d4-3e38-4125-8ab7-b6802a08f1aa',
+--   'a5ee5c25-bf27-4b14-8786-24f8bf916358',
+--   'a62b37df-77b8-4619-aaec-b2d17e9d6c36',
+--   'aee69e7d-a15a-414a-88c3-ae22614a1800',
+--   'c038bde2-8c5e-4c63-a571-4657ce170c15',
+--   'c1ac91ba-7ad3-4c3c-9efa-5d2986a90ef6',
+--   'c4b88b04-de04-48be-9737-aeea4f6beeda',
+--   'c5f735d6-0085-44a2-b8b0-58d2b1319345',
+--   'cd53f27d-302f-45ef-a81c-6c4ce18a1133',
+--   'cdf3a106-b839-448f-b95e-29161589d211',
+--   'cf540a30-b191-404b-828c-0fa4a04004be',
+--   'd37a7e23-a965-407b-8465-47075312318b',
+--   'd4396486-76cc-496a-bd47-64bf927e4d33',
+--   'deb5bd82-4758-4c34-9232-d147c13e77aa',
+--   'e07240ec-9b7e-4e72-87dd-b475943b1505',
+--   'e323bef7-57f5-4de5-b348-6620f38e0bb3',
+--   'e656b3e1-2717-41ab-9bf5-714952c24e7a',
+--   'ea42e124-6b14-4e43-9896-6ca709a52f74',
+--   'ecf357c1-bcec-4149-a365-92f20bc41872',
+--   'f769a660-7910-4db7-8d29-1ba140ba98a1',
+--   'f77bd053-4303-431f-8c93-c29b5d2783ec',
+--   'f908ce14-fcea-4687-b84f-fc734ec930aa',
+--   'f94116dc-da8d-4c2d-bab2-54f4cdeb3d0a',
+--   'f9a38d8f-9e94-4c9f-9e27-2a69849377ff',
+--   'f9b08f26-217d-4450-97c7-5d56dc5d92a5',
+--   'fa264046-3354-4f45-90f5-a6d335aeb288'
+--  );
+
+-- COMMIT;
