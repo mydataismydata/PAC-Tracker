@@ -58,3 +58,7 @@ scripts/tmp-*.ts
 # Server-local compose tuning. Generated per box by
 # docs-local/ovh/configure-stack.sh; never the same on two machines.
 docker-compose.override.yml
+
+# Controlled-vocabulary dictionary for the docs in docs-local, which are
+# themselves local-only. Grows per machine as terms are reviewed.
+.ste-dictionary.yaml
