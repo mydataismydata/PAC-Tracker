@@ -12,8 +12,30 @@
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$HERE/_lib.sh"
 
-say 'Pulling'
-git pull
+say 'Fetching'
+git fetch --prune origin
+
+# Take the remote exactly, rather than pulling it.
+#
+# This box holds no work of its own, so there is nothing here to reconcile a
+# pull against. A pull still tries: it walks two histories looking for a shared
+# base, and a history that was rewritten on the Mac no longer has one. It stops
+# with "divergent branches" and the deploy stops with it.
+#
+# --hard moves tracked files only. docker-compose.override.yml, .env, .exports
+# and .working are all ignored here, and none of them are touched.
+if ! git diff --quiet HEAD --; then
+  cat >&2 <<'DIRTY'
+Tracked files here have been edited, and the next step would discard them.
+
+Look at them with `git status`. Keep them with `git stash`, or throw them away
+with `git checkout -- .`. Then run this again.
+DIRTY
+  exit 1
+fi
+
+say 'Taking origin/main'
+git reset --hard origin/main
 
 # Plain `build`, never `build app`. `app` builds pactracker-app; `migrate` and
 # `cli` both build a separate image, pactracker-tools. Building only `app`
