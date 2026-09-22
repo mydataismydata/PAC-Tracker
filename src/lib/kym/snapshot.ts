@@ -313,7 +313,7 @@ function place(
 /* ------------------------------------------------------------------------ */
 
 /** Bump when the drawing changes, so pictures drawn the old way are not served. */
-export const RENDER_VERSION = 4;
+export const RENDER_VERSION = 5;
 
 /** How long a picture stands once the filings behind it stop moving. */
 export const TTL_MS = 7 * 24 * 60 * 60 * 1000;

@@ -62,3 +62,6 @@ docker-compose.override.yml
 # Controlled-vocabulary dictionary for the docs in docs-local, which are
 # themselves local-only. Grows per machine as terms are reviewed.
 .ste-dictionary.yaml
+
+# Markdown preview output from the editor. Regenerated on demand, per machine.
+.npp-md-preview.html

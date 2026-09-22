@@ -386,6 +386,37 @@ function Picture({ scene, scope, site }: { scene: Scene; scope: string; site: st
 
 const CACHE = 'public, max-age=3600, stale-while-revalidate=86400';
 
+/**
+ * The address the picture prints along its bottom edge.
+ *
+ * The drawn image is cached, so the first caller decides what every later
+ * reader sees. That caller is usually `ingest warm`, which reaches the app
+ * over the Docker network as `app:3000`. A reader who saves the picture then
+ * has a hostname that resolves nowhere.
+ *
+ * `PT_PUBLIC_HOST` settles it where the operator has set one. The fallback
+ * drops any host that is a bare container name, because that is the same
+ * mistake arriving through the request instead of the environment. A name
+ * with no dot is internal unless it is the loopback a local run serves from.
+ */
+const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+function externalHost(candidate: string | null | undefined): string | null {
+  const bare = (candidate ?? '').replace(/^https?:\/\//, '').replace(/\/+$/, '').trim();
+  if (!bare) return null;
+  if (LOOPBACK.test(bare)) return bare;
+  return bare.split(':')[0].includes('.') ? bare : null;
+}
+
+function publicHost(req: NextRequest): string {
+  return (
+    externalHost(process.env.PT_PUBLIC_HOST) ??
+    externalHost(req.headers.get('x-forwarded-host')) ??
+    externalHost(req.headers.get('host')) ??
+    ''
+  );
+}
+
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   if (!UUID.test(id)) return Response.json({ error: 'invalid id' }, { status: 400 });
@@ -401,7 +432,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return new Response(null, { status: 304, headers: { ETag: etag, 'Cache-Control': CACHE } });
   }
 
-  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? '';
+  const host = publicHost(req);
   const slug = committeeSlug(subject.name);
   const scope = cycle ? `${cycle.slice(0, 4)} cycle` : 'all cycles on file';
 

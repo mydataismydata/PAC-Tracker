@@ -65,6 +65,12 @@ services:
     environment:
       DATABASE_URL: *db-url
       NODE_ENV: production
+      # The hostname the shareable pictures print along their bottom edge.
+      # Leave it out on a local run. Set it in a .env file beside this one, or
+      # in an override, wherever the site answers on a real name: the warm job
+      # reaches this container as app:3000, and without this that is the
+      # address every cached picture would carry.
+      PT_PUBLIC_HOST: ${PT_PUBLIC_HOST:-}
       # Optional. Set these in a .env file beside this one to offer the
       # "request an account" form on the sign-in page; leave them out and the
       # form is not shown. See .env.example.
