@@ -22,7 +22,7 @@ import {
 import { officersForEntity, rolePhrase, type EntityOfficer } from '@/lib/graph/officers';
 import { OFFICE_LABELS } from '@/lib/graph/person';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
-import { RING_ONE, RING_TWO_EACH } from '@/lib/kym/snapshot';
+import { CRAWL } from '@/lib/kym/snapshot';
 import { Money, MoneyColumns, SectionHeading, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
@@ -237,8 +237,8 @@ function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] 
  *
  * Drawn by `/api/kym/snapshot`, which caches the file, so the page emits the
  * tag and nothing more; a first draw takes a few seconds and the page must
- * not wait on it. Sized as a square here because the drawn picture nearly is
- * one, and the browser corrects the height once it has the file.
+ * not wait on it. Sized at three by two here, which is near what the layout
+ * gives, and the browser corrects the height once it has the file.
  */
 function Snapshot({
   subject,
@@ -253,13 +253,13 @@ function Snapshot({
   const what = subject.kind === 'candidate' ? 'campaign' : 'committee';
   return (
     <section className="mt-10">
-      <SectionHeading>Two hops out · {scope}</SectionHeading>
+      <SectionHeading>Two hops in and out · {scope}</SectionHeading>
       <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-600">
-        Who this {what} paid or was paid by, and who they paid or were paid by: the {RING_ONE}{' '}
-        that moved the most money with it, and the {RING_TWO_EACH} that moved the most with each
-        of those. Only direct links are drawn, which means both ends went on to move money
-        themselves. Donors who only give are left out, so the chain stays readable. Open the
-        picture to save it.
+        This is the graph the PAC Tracker explorer opens on for this {what}. It shows who this{' '}
+        {what} paid or was paid by, and who they paid or were paid by. Each entity brings its{' '}
+        {CRAWL.maxPerNode} largest links each way. Only direct links are drawn, which means both
+        ends went on to move money themselves. Donors who only give are left out, so the chain
+        stays readable. Open the picture to see it full size or to save it.
       </p>
       <a
         href={src}
@@ -269,9 +269,9 @@ function Snapshot({
       >
         <Image
           src={src}
-          alt={`${subject.name}: money to and from other committees, two hops out`}
-          width={1600}
-          height={1600}
+          alt={`${subject.name}: money in and out, two hops each way`}
+          width={1500}
+          height={1000}
           unoptimized
           className="h-auto w-full"
         />

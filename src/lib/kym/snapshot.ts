@@ -2,31 +2,21 @@
  * The picture of who a committee moves money with, two hops out, and the
  * file that holds it once drawn.
  *
- * The graph explorer draws the same neighborhood live, with a force layout
- * and a reader who can pan. A picture has neither, so it has to choose. It
- * keeps the twelve counterparties that moved the most money with the subject,
- * and around each of those the three that moved the most with them, thirty in
- * all. Everything it drops is counted and said in the caption, so a picture of
- * twelve never passes for a picture of a hundred.
+ * It is the explorer's own view, drawn on the server. The crawl is the
+ * explorer's default: two hops, money in and out, direct links, and the same
+ * per-entity and total caps. The layout is the explorer's force layout and
+ * overlap pass, run headless from `src/lib/graph/layout.ts`. Every entity the
+ * explorer would draw is drawn here, whatever its kind.
  *
- * Direct links only. Following individual donors and vendors would put a
- * thousand tiles on the page, and the chain of committees is what a mailer's
- * recipient is trying to see.
- *
- * ## Layout
- *
- * Concentric, by hop. The subject sits in the middle, its counterparties on a
- * ring around it, and theirs on a ring outside that. The rings are sized from
- * the counts so tiles never overlap: a ring holds as many tiles as its
- * circumference has room for, and the outer one alternates between two radii
- * so it can hold twice as many. Each outer tile sits in the sector of the
- * inner tile it belongs to, which keeps the picture readable as a tree even
- * where the money runs sideways as well.
+ * The one difference is the frame. The explorer fits the graph to a window a
+ * reader can zoom. A picture has one size, so a large graph is drawn smaller
+ * rather than cropped, down to the point where a tile's name is still legible
+ * when the file is opened full size.
  *
  * ## Caching
  *
- * A picture costs a dozen queries and two seconds of drawing, and it is
- * 100–400KB. Holding a week of those in memory on a small box is the thing to
+ * A picture costs a crawl, a layout and a few seconds of drawing, and it can
+ * run to a few megabytes. Holding a week of those in memory is the thing to
  * avoid, so they go to the disk store in `src/lib/cache/disk.ts`, which
  * survives a restart of the container, capped by age and by total size. The
  * name of the file carries the same data stamp the trace cache uses, so a
@@ -35,71 +25,103 @@
  */
 
 import { createHash } from 'node:crypto';
+import cytoscape from 'cytoscape';
+import fcose from 'cytoscape-fcose';
 import type { db as Database } from '@/db';
 import * as disk from '@/lib/cache/disk';
 import { crawlAll, type GraphEdge, type GraphNode } from '@/lib/graph/crawl';
+import {
+  FCOSE_LAYOUT,
+  SEED_H,
+  SEED_W,
+  TILE_H,
+  TILE_W,
+  edgeWidth,
+  separateTiles,
+} from '@/lib/graph/layout';
 import { dataStamp } from '@/lib/graph/traceCache';
+import { DEFAULT_SETTINGS } from '@/lib/graph/types';
+
+cytoscape.use(fcose);
 
 type Db = typeof Database;
 
-/** Direct counterparties drawn around the subject, most money first. */
-export const RING_ONE = 12;
-/** Counterparties drawn around each of those. */
-export const RING_TWO_EACH = 3;
-/** The outer ring as a whole. */
-export const RING_TWO = 30;
+/**
+ * The explorer's default crawl, less the cycle, which the report chooses.
+ *
+ * Read from the explorer's settings rather than copied, so a change to what
+ * the explorer opens on changes the picture with it.
+ */
+export const CRAWL = {
+  depth: DEFAULT_SETTINGS.depth,
+  direction: DEFAULT_SETTINGS.direction,
+  linkMode: DEFAULT_SETTINGS.linkMode,
+  maxPerNode: DEFAULT_SETTINGS.maxPerNode,
+  maxNodes: DEFAULT_SETTINGS.maxNodes,
+};
+
+/** Space kept around the graph, in graph units. The explorer's fit uses the same. */
+const PAD = 60;
 
 /**
- * Neighbors asked for before ranking. Far above the caps, so that the twelve
- * drawn are the twelve largest rather than the first twelve found.
+ * The longest side the graph may take, in pixels.
+ *
+ * Six hundred tiles lay out to about five thousand graph units a side. Drawn
+ * at full size that is a 25-megapixel file. This bound keeps the largest
+ * graphs near 0.8 of full size, where a tile's 10px name is still 8px.
  */
-const FETCH_PER_NODE = 200;
+const MAX_SIDE = 4200;
 
-/** Tile geometry, matching the explorer's so the two read as the same thing. */
-export const SEED_TILE = { w: 194, h: 70 };
-export const TILE = { w: 168, h: 58 };
-export const SMALL_TILE = { w: 136, h: 48 };
+/** Narrowest picture, so the masthead has room over a graph of one or two tiles. */
+const MIN_WIDTH = 1200;
 
-/** Clear space between neighboring tiles on a ring. */
-const GAP = 24;
-/** The outer ring's second radius, far enough out that a wide tile clears one beside it. */
-const STAGGER = SMALL_TILE.w + 20;
-/** Least distance between the two rings. */
-const RING_GAP = 240;
+/** The width the masthead and foot are designed at. Wider pictures scale them up. */
+const DESIGN_WIDTH = 1600;
 
-const HEADER = 110;
-const FOOTER = 64;
-const MARGIN = 40;
+/** Distance between two edges joining the same pair, as the explorer bends them. */
+const BUNDLE_STEP = 40;
 
 export interface Tile {
   node: GraphNode;
+  /** Center, in pixels. */
   x: number;
   y: number;
   w: number;
   h: number;
-  ring: 0 | 1 | 2;
+  seed: boolean;
+  /** More lies past this tile than the crawl drew. Dashed, as in the explorer. */
+  hasMore: boolean;
 }
 
 export interface Line {
   edge: GraphEdge;
   from: Tile;
   to: Tile;
-  /** Stroke width, on the same log scale the explorer uses. */
+  /** Stroke width in pixels, on the explorer's log scale. */
   width: number;
-  /** Whether the amount is written on the line. Only the subject's own edges are. */
-  labeled: boolean;
+  /** Both ends are committees or others that move money. Drawn in the explorer's link color. */
+  direct: boolean;
+  /**
+   * How far the line bows off the straight path, in pixels, to the left of
+   * travel from the lower id to the higher. Zero for a pair joined once.
+   */
+  bend: number;
 }
 
 export interface Scene {
   seed: GraphNode;
   width: number;
   height: number;
+  /** Pixels per graph unit. Fonts and strokes inside the graph scale by it. */
+  scale: number;
+  /** Size of the masthead and foot relative to their design width. */
+  unit: number;
+  /** Height of the masthead band. */
+  header: number;
   tiles: Tile[];
   lines: Line[];
-  /** Direct counterparties the subject has in this period, drawn or not. */
-  directCount: number;
-  /** How many of them were drawn. */
-  drawn: number;
+  /** The crawl stopped at the explorer's node ceiling. */
+  truncated: boolean;
 }
 
 /** Trim a name to what two lines of a tile will hold. */
@@ -108,204 +130,148 @@ export function fitLabel(name: string, max: number): string {
   return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
 }
 
-function amountOf(e: GraphEdge): number {
-  const n = Number(e.amount);
-  return Number.isFinite(n) ? n : 0;
-}
-
-function other(e: GraphEdge, id: string): string {
-  return e.source === id ? e.target : e.source;
-}
-
 /**
- * The subject's neighborhood, chosen and placed.
- *
- * Two rounds of queries. The first is one hop from the subject with a high
- * cap, which is what ranks the counterparties. The second is one hop from
- * each counterparty kept, run together; it finds the outer ring and, as a
- * side effect, every payment between two inner-ring tiles, which is drawn
- * as well because money running around a hub is the pattern worth seeing.
+ * The subject's neighborhood as the explorer draws it, placed.
  *
  * Null when the id names nothing.
  */
 export async function buildScene(db: Db, seedId: string, cycle?: string): Promise<Scene | null> {
-  const hop = (id: string) =>
-    crawlAll(db, {
-      seedEntityId: id,
-      depth: 1,
-      direction: 'both',
-      linkMode: 'direct',
-      cycle,
-      maxPerNode: FETCH_PER_NODE,
-      maxNodes: FETCH_PER_NODE * 2 + 1,
-    });
-
-  const first = await hop(seedId);
-  const seed = first.nodes.find((n) => n.id === seedId);
+  const graph = await crawlAll(db, { seedEntityId: seedId, ...CRAWL, cycle });
+  const seed = graph.nodes.find((n) => n.id === seedId);
   if (!seed) return null;
 
-  // Rank counterparties by everything that moved between them and the
-  // subject, both ways, so a committee that gave $50K and got $40K back
-  // outranks one that only gave $60K. Both are real, but the round trip is
-  // the one a reader should see first.
-  const byNode = new Map<string, { node: GraphNode; amount: number }>();
-  for (const n of first.nodes) if (n.id !== seedId) byNode.set(n.id, { node: n, amount: 0 });
-  for (const e of first.edges) {
-    const held = byNode.get(other(e, seedId));
-    if (held) held.amount += amountOf(e);
-  }
-  const ringOne = [...byNode.values()].sort((a, b) => b.amount - a.amount).slice(0, RING_ONE);
-  const inner = new Set(ringOne.map((r) => r.node.id));
+  // The crawl reports an edge even where the node ceiling kept its far end
+  // off the canvas. The explorer skips those, and so does this. A payment to
+  // itself has no line to draw.
+  const ids = new Set(graph.nodes.map((n) => n.id));
+  const edges = graph.edges.filter(
+    (e) => ids.has(e.source) && ids.has(e.target) && e.source !== e.target,
+  );
 
-  const second = await Promise.all(ringOne.map((r) => hop(r.node.id)));
+  const positions = layOut(graph.nodes, edges, seedId);
+  return place(seed, graph.nodes, edges, positions, graph.truncated);
+}
 
-  // Outer candidates, each under the inner tile it moved the most with.
-  const outer = new Map<string, { node: GraphNode; parent: string; amount: number }>();
-  const edges = new Map<string, GraphEdge>();
-  for (const e of first.edges) edges.set(e.id, e);
-
-  second.forEach((hopResult, i) => {
-    const parent = ringOne[i].node.id;
-    const nodes = new Map(hopResult.nodes.map((n) => [n.id, n]));
-    for (const e of hopResult.edges) {
-      const id = other(e, parent);
-      if (id === seedId) continue;
-      // A payment between two inner tiles: keep the edge, place no new tile.
-      if (inner.has(id)) {
-        edges.set(e.id, e);
-        continue;
-      }
-      // A direct counterparty that missed the cut stays out. Drawn as some
-      // other tile's neighbor it would read as two hops away, and it is one.
-      if (byNode.has(id)) continue;
-      const node = nodes.get(id);
-      if (!node) continue;
-      const amount = amountOf(e);
-      const held = outer.get(id);
-      if (!held) outer.set(id, { node, parent, amount });
-      else if (amount > held.amount) {
-        held.parent = parent;
-        held.amount = amount;
-      }
-    }
+/** The explorer's layout, headless. Positions are in graph units. */
+function layOut(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  seedId: string,
+): Map<string, { x: number; y: number }> {
+  const cy = cytoscape({
+    headless: true,
+    // On, so the layout reads each tile's size from the style below.
+    styleEnabled: true,
+    style: [
+      { selector: 'node', style: { shape: 'round-rectangle', width: TILE_W, height: TILE_H } },
+      { selector: 'node[?isSeed]', style: { width: SEED_W, height: SEED_H } },
+    ],
+    elements: [
+      ...nodes.map((n) => ({ group: 'nodes' as const, data: { id: n.id, isSeed: n.id === seedId } })),
+      ...edges.map((e) => ({
+        group: 'edges' as const,
+        data: { id: e.id, source: e.source, target: e.target },
+      })),
+    ],
   });
-
-  // Three per parent, then the thirty largest of those.
-  const perParent = new Map<string, number>();
-  const ringTwo = [...outer.values()]
-    .sort((a, b) => b.amount - a.amount)
-    .filter((c) => {
-      const n = perParent.get(c.parent) ?? 0;
-      if (n >= RING_TWO_EACH) return false;
-      perParent.set(c.parent, n + 1);
-      return true;
-    })
-    .slice(0, RING_TWO);
-  // An outer tile is joined to its parent and to nothing else. The full set
-  // of links among thirty outer tiles is real, and it is also the hairball
-  // the explorer exists to untangle; a still picture cannot, so it draws the
-  // tree and the loops among the inner ring, and leaves the rest to the
-  // explorer.
-  const parentOf = new Map(ringTwo.map((c) => [c.node.id, c.parent]));
-  for (const hopResult of second) {
-    for (const e of hopResult.edges) {
-      const child = parentOf.get(e.source) ?? parentOf.get(e.target);
-      if (!child) continue;
-      const parent = parentOf.has(e.source) ? e.target : e.source;
-      if (child === parent) edges.set(e.id, e);
-    }
+  try {
+    cy.layout({
+      ...FCOSE_LAYOUT,
+      animate: false,
+      randomize: true,
+      fit: false,
+    } as cytoscape.LayoutOptions).run();
+    separateTiles(cy, () => false);
+    return new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
+  } finally {
+    cy.destroy();
   }
-
-  return place(seed, ringOne, ringTwo, [...edges.values()], byNode.size);
 }
 
 function place(
   seed: GraphNode,
-  ringOne: { node: GraphNode; amount: number }[],
-  ringTwo: { node: GraphNode; parent: string; amount: number }[],
+  nodes: GraphNode[],
   edges: GraphEdge[],
-  directCount: number,
+  positions: Map<string, { x: number; y: number }>,
+  truncated: boolean,
 ): Scene {
-  const n1 = ringOne.length;
-  const r1 = Math.max(320, (n1 * (TILE.w + GAP)) / (2 * Math.PI));
-
-  const children = new Map<string, typeof ringTwo>();
-  for (const c of ringTwo) {
-    const held = children.get(c.parent);
-    if (held) held.push(c);
-    else children.set(c.parent, [c]);
-  }
-  for (const list of children.values()) list.sort((a, b) => b.amount - a.amount);
-
-  // The outer ring alternates radii, so tiles two apart share one and the
-  // angular step between neighbors need only hold half a tile.
-  const hasOuter = ringTwo.length > 0;
-  const r2 = hasOuter
-    ? Math.max(r1 + RING_GAP, (n1 * RING_TWO_EACH * (SMALL_TILE.w + GAP)) / (4 * Math.PI))
-    : 0;
-  const step = hasOuter ? (SMALL_TILE.w + GAP) / (2 * r2) : 0;
-
-  const reachX = hasOuter ? r2 + STAGGER + SMALL_TILE.w / 2 : r1 + TILE.w / 2;
-  const reachY = hasOuter ? r2 + STAGGER + SMALL_TILE.h / 2 : r1 + TILE.h / 2;
-  const width = Math.ceil(2 * (Math.max(reachX, 420) + MARGIN));
-  const height = Math.ceil(HEADER + 2 * (reachY + MARGIN) + FOOTER);
-  const cx = width / 2;
-  const cy = HEADER + MARGIN + reachY;
-
-  const tiles: Tile[] = [{ node: seed, x: cx, y: cy, ...SEED_TILE, ring: 0 }];
-  const at = new Map<string, Tile>([[seed.id, tiles[0]]]);
-
-  let outerIndex = 0;
-  ringOne.forEach((r, i) => {
-    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n1;
-    const tile: Tile = {
-      node: r.node,
-      x: cx + Math.cos(angle) * r1,
-      y: cy + Math.sin(angle) * r1,
-      ...TILE,
-      ring: 1,
-    };
-    tiles.push(tile);
-    at.set(r.node.id, tile);
-
-    const kids = children.get(r.node.id) ?? [];
-    kids.forEach((c, j) => {
-      const a = angle + (j - (kids.length - 1) / 2) * step;
-      const radius = r2 + (outerIndex % 2) * STAGGER;
-      outerIndex += 1;
-      const t: Tile = {
-        node: c.node,
-        x: cx + Math.cos(a) * radius,
-        y: cy + Math.sin(a) * radius,
-        ...SMALL_TILE,
-        ring: 2,
-      };
-      tiles.push(t);
-      at.set(c.node.id, t);
-    });
+  const sized = nodes.map((node) => {
+    const isSeed = node.id === seed.id;
+    const p = positions.get(node.id) ?? { x: 0, y: 0 };
+    return { node, isSeed, x: p.x, y: p.y, w: isSeed ? SEED_W : TILE_W, h: isSeed ? SEED_H : TILE_H };
   });
 
-  const maxAmount = edges.reduce((m, e) => Math.max(m, amountOf(e)), 0);
-  const lines: Line[] = [];
+  let x1 = Infinity;
+  let y1 = Infinity;
+  let x2 = -Infinity;
+  let y2 = -Infinity;
+  for (const t of sized) {
+    x1 = Math.min(x1, t.x - t.w / 2);
+    y1 = Math.min(y1, t.y - t.h / 2);
+    x2 = Math.max(x2, t.x + t.w / 2);
+    y2 = Math.max(y2, t.y + t.h / 2);
+  }
+  const graphW = x2 - x1 + 2 * PAD;
+  const graphH = y2 - y1 + 2 * PAD;
+
+  const scale = Math.min(1, MAX_SIDE / Math.max(graphW, graphH));
+  const width = Math.max(MIN_WIDTH, Math.ceil(graphW * scale));
+  const unit = Math.min(3, Math.max(1, width / DESIGN_WIDTH));
+  const header = Math.round(110 * unit);
+  const footer = Math.round(64 * unit);
+  const height = Math.ceil(header + graphH * scale + footer);
+  const left = (width - graphW * scale) / 2;
+
+  const tiles: Tile[] = [];
+  const at = new Map<string, Tile>();
+  for (const t of sized) {
+    const tile: Tile = {
+      node: t.node,
+      x: left + (t.x - x1 + PAD) * scale,
+      y: header + (t.y - y1 + PAD) * scale,
+      w: t.w * scale,
+      h: t.h * scale,
+      seed: t.isSeed,
+      hasMore: t.node.isTraversable && t.node.inDegree + t.node.outDegree > 0,
+    };
+    tiles.push(tile);
+    at.set(t.node.id, tile);
+  }
+
+  // Edges joining the same pair, either way round, fan out around the
+  // straight path the way the explorer bundles them.
+  const bundles = new Map<string, GraphEdge[]>();
   for (const e of edges) {
-    const from = at.get(e.source);
-    const to = at.get(e.target);
-    if (!from || !to || from === to) continue;
-    const amount = amountOf(e);
-    // Log scale, as on the canvas: amounts span five orders of magnitude.
-    const width = 1.5 + (Math.log10(amount + 1) / Math.log10(maxAmount + 1)) * 6.5;
-    lines.push({
-      edge: e,
-      from,
-      to,
-      width: Number.isFinite(width) ? width : 1.5,
-      labeled: from.ring === 0 || to.ring === 0,
+    const key = e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
+    const held = bundles.get(key);
+    if (held) held.push(e);
+    else bundles.set(key, [e]);
+  }
+
+  const maxAmount = edges.reduce((m, e) => Math.max(m, Number(e.amount) || 0), 0);
+  const lines: Line[] = [];
+  for (const bundle of bundles.values()) {
+    bundle.forEach((e, i) => {
+      const from = at.get(e.source);
+      const to = at.get(e.target);
+      if (!from || !to) return;
+      lines.push({
+        edge: e,
+        from,
+        to,
+        width: edgeWidth(Number(e.amount) || 0, maxAmount) * scale,
+        direct: e.isDirectLink,
+        bend: (i - (bundle.length - 1) / 2) * BUNDLE_STEP * scale,
+      });
     });
   }
   // Heavier lines last, so the money that matters is drawn over the rest.
   lines.sort((a, b) => a.width - b.width);
 
-  return { seed, width, height, tiles, lines, directCount, drawn: n1 };
+  // The seed last, so nothing is drawn over it.
+  tiles.sort((a, b) => Number(a.seed) - Number(b.seed));
+
+  return { seed, width, height, scale, unit, header, tiles, lines, truncated };
 }
 
 /* ------------------------------------------------------------------------ */
@@ -313,13 +279,13 @@ function place(
 /* ------------------------------------------------------------------------ */
 
 /** Bump when the drawing changes, so pictures drawn the old way are not served. */
-export const RENDER_VERSION = 5;
+export const RENDER_VERSION = 6;
 
 /** How long a picture stands once the filings behind it stop moving. */
 export const TTL_MS = 7 * 24 * 60 * 60 * 1000;
-/** Disk the pictures may take, all together. At 100–400KB each, this is hundreds of them. */
-export const MAX_BYTES = 256 * 1024 * 1024;
-/** Pictures drawn at once. Each render holds a canvas of a few megapixels while it works. */
+/** Disk the pictures may take, all together. At 1–4MB each, this is several hundred of them. */
+export const MAX_BYTES = 1024 * 1024 * 1024;
+/** Pictures drawn at once. Each render holds a canvas of up to twelve megapixels while it works. */
 const MAX_RENDERS = 2;
 
 const NS = 'snapshots';
