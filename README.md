@@ -761,4 +761,21 @@ handles this. A crawl walks straight through.
 
 ## Licence
 
-MIT. The underlying campaign finance records are Florida public records.
+Copyright (C) 2026 The St. Johns County Republican Liberty Caucus
+
+Anyone may use, copy, change, and share PAC Tracker. Whoever shares a changed
+version, or runs one as a website other people use, must release its source
+under this same licence. The full text is in [LICENSE](LICENSE).
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more
+details.
+
+The underlying campaign finance records are Florida public records. The
+licence covers the code, not the data.
