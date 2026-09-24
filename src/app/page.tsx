@@ -15,6 +15,7 @@ import ControlPanel from '@/components/ControlPanel';
 import NodeDetail from '@/components/NodeDetail';
 import SavedSearches from '@/components/SavedSearches';
 import AccountButton from '@/components/AccountButton';
+import HostedBy from '@/components/HostedBy';
 import { useCrawl } from '@/lib/graph/useCrawl';
 import { useOfficers, useOfficerSubject, type EntityOfficer } from '@/lib/graph/useOfficers';
 import { parseOfficerKey } from '@/lib/graph/officers';
@@ -987,10 +988,14 @@ export default function Home() {
       {/* ------------------------------------------------------------ header */}
       <header className="flex shrink-0 items-center gap-4 border-b border-slate-800 px-4 py-3">
         {/* Dropped below `sm` rather than shrunk: the search and the buttons
-            beside it already want more width than a phone has. */}
-        <div className="hidden shrink-0 items-baseline gap-2 sm:flex">
-          <h1 className="text-sm font-semibold tracking-tight lg:text-base">PAC Tracker</h1>
-          <span className="hidden text-xs text-slate-500 lg:inline">Florida</span>
+            beside it already want more width than a phone has. The host credit
+            waits for `lg` for the same reason; it is wider than the title. */}
+        <div className="hidden shrink-0 sm:block">
+          <div className="flex items-baseline gap-2">
+            <h1 className="text-sm font-semibold tracking-tight lg:text-base">PAC Tracker</h1>
+            <span className="hidden text-xs text-slate-500 lg:inline">Florida</span>
+          </div>
+          <HostedBy short className="hidden leading-tight lg:block" />
         </div>
 
         <div className="max-w-xl flex-1">

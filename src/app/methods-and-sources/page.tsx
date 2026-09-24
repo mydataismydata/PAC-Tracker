@@ -20,6 +20,7 @@ import { methods } from '@/lib/kym/methods';
 import { committeeSlug } from '@/lib/graph/committee';
 import { formatMoneyFull } from '@/lib/graph/types';
 import DataTable, { type Cell } from '@/components/kym/DataTable';
+import HostedBy from '@/components/HostedBy';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,6 +119,7 @@ export default async function MethodsAndSourcesPage() {
               PAC Tracker
             </Link>
           </p>
+          <HostedBy className="mt-0.5" />
         </header>
 
         <p className="mt-6 max-w-3xl leading-relaxed text-slate-400">

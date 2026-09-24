@@ -6,6 +6,7 @@
  */
 
 import GateForm from '@/components/GateForm';
+import HostedBy from '@/components/HostedBy';
 import RequestAccessForm from '@/components/RequestAccessForm';
 import { GATE_COOKIE, countUsers, readSession } from '@/lib/gate';
 import { mailConfigured } from '@/lib/mail';
@@ -40,6 +41,9 @@ export default async function GatePage({
     <main className="flex h-dvh items-center justify-center overflow-y-auto bg-slate-950 px-4 py-8 text-slate-100">
       <div className="w-full max-w-sm">
         <h1 className="text-lg font-semibold tracking-tight">PAC Tracker</h1>
+        {/* Anyone who opens the bare address without a session lands here,
+            so the credit goes here as well as on the public pages. */}
+        <HostedBy className="mb-3 mt-1" />
 
         {noAccounts ? (
           <>

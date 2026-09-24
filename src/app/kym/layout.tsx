@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import CommitteeSearch from '@/components/CommitteeSearch';
+import HostedBy from '@/components/HostedBy';
 
 /**
  * Chrome for Know Your Mailer.
@@ -47,6 +48,11 @@ export default function KymLayout({ children }: { children: React.ReactNode }) {
               </a>{' '}
               database
             </p>
+            {/* Takes its width from the lines above instead of setting it. At
+                its own width the title column would outgrow the room beside
+                the search box, and between the small and large breakpoints
+                the box would drop under the title. */}
+            <HostedBy className="mt-0.5 contain-inline-size" />
           </div>
           <div className="w-full sm:w-72 lg:w-96">
             <CommitteeSearch />

@@ -11,6 +11,7 @@ import type { Metadata } from 'next';
 import { loadedStats } from '@/lib/sources';
 import { formatMoneyFull } from '@/lib/graph/types';
 import { CURRENT_CYCLE, PREVIOUS_CYCLE } from '@/lib/cycles';
+import HostedBy from '@/components/HostedBy';
 
 /**
  * Rendered per request, never prerendered: the Docker builder stage has no
@@ -87,6 +88,7 @@ export default async function GuidePage() {
           PAC Tracker
         </p>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">User guide</h1>
+        <HostedBy className="mt-2" />
 
         <P>
           PAC Tracker draws Florida political money as a graph. Start by searching for a PAC, organization or person in the search bar. As you type, the system will auto-fill matching entities. Click on an entity to load the graph and contribution details with the selected name.
