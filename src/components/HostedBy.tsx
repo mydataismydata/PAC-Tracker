@@ -10,9 +10,10 @@
  * Balanced, so a narrow column breaks it into two even lines instead of
  * leaving the last word on a line of its own.
  *
- * `short` is for the explorer's header, where the full name would push the
- * search box off its row. It abbreviates the name and keeps the full name in
- * the link's tooltip.
+ * `short` abbreviates the name to "St. Johns County RLC" so the credit keeps
+ * to one line, and keeps the full name in the link's tooltip. `tight` sets it
+ * a size smaller, for the explorer's header, where any extra width pushes the
+ * search box off its row.
  */
 
 const HOST_NAME = 'St. Johns County Republican Liberty Caucus';
@@ -21,11 +22,13 @@ const HOST_URL = 'https://sjcrlc.org';
 export default function HostedBy({
   className = '',
   short = false,
+  tight = false,
 }: {
   className?: string;
   short?: boolean;
+  tight?: boolean;
 }) {
-  const size = short ? 'text-[10px] tracking-[0.12em]' : 'text-[11px] tracking-[0.14em]';
+  const size = tight ? 'text-[10px] tracking-[0.12em]' : 'text-[11px] tracking-[0.14em]';
   return (
     <p className={`text-balance font-mono uppercase text-slate-500 ${size} ${className}`}>
       Hosted by {short ? '' : 'the '}

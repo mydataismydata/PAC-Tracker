@@ -167,7 +167,7 @@ export default async function PersonPage({ params, searchParams }: Params) {
         <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-slate-500">
           Florida campaign finance
         </p>
-        <HostedBy className="mt-0.5" />
+        <HostedBy short className="mt-0.5" />
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">{person.name}</h1>
         {person.offices.length > 0 && (
           <p className="mt-1 text-sm text-slate-400">

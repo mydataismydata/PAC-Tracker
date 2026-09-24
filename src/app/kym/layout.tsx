@@ -52,7 +52,7 @@ export default function KymLayout({ children }: { children: React.ReactNode }) {
                 its own width the title column would outgrow the room beside
                 the search box, and between the small and large breakpoints
                 the box would drop under the title. */}
-            <HostedBy className="mt-0.5 contain-inline-size" />
+            <HostedBy short className="mt-0.5 contain-inline-size" />
           </div>
           <div className="w-full sm:w-72 lg:w-96">
             <CommitteeSearch />

@@ -995,7 +995,7 @@ export default function Home() {
             <h1 className="text-sm font-semibold tracking-tight lg:text-base">PAC Tracker</h1>
             <span className="hidden text-xs text-slate-500 lg:inline">Florida</span>
           </div>
-          <HostedBy short className="hidden leading-tight lg:block" />
+          <HostedBy short tight className="hidden leading-tight lg:block" />
         </div>
 
         <div className="max-w-xl flex-1">
