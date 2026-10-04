@@ -164,6 +164,23 @@ cp .env.example .env && pnpm db:migrate && pnpm dev
 
 `.env.example` points at `localhost:5439`. That is the same database the containers use.
 
+### Version and build number
+
+The version is set by hand in `package.json`. The build number is the number of commits,
+and a pre-commit hook writes it to `src/lib/build.json` on every commit. Both show at the
+foot of every Know Your Mailer page and in the explorer's account dialog, so you can see
+which commit a server is running.
+
+Turn the hook on once in each clone you commit from:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+That setting replaces any global `core.hooksPath` for this repo. The hooks in `.githooks`
+pass on to the global hook of the same name, so a global `pre-commit` or `commit-msg` still
+runs.
+
 ### Let people ask for an account
 
 Accounts are issued by hand and there is no self-service sign-up. Someone who reaches the

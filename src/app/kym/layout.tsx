@@ -2,6 +2,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import CommitteeSearch from '@/components/CommitteeSearch';
 import HostedBy from '@/components/HostedBy';
+import { VERSION_LABEL } from '@/lib/version';
 import mark from './mark.svg';
 
 /**
@@ -88,6 +89,8 @@ export default function KymLayout({ children }: { children: React.ReactNode }) {
             — every feed behind these figures, every filer folded into another, and the nonprofits
             in this data.
           </p>
+          {/* Says which build is live, so a deploy can be checked from the page. */}
+          <p className="mt-2 font-mono text-[10px] text-slate-700">{VERSION_LABEL}</p>
         </footer>
       </div>
     </div>

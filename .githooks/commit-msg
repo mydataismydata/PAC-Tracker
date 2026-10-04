@@ -1,0 +1,5 @@
+#!/bin/sh
+# commit-msg: nothing of this repo's own. Present only so that the global hook
+# of the same name still runs; see `chain`.
+
+exec "$(dirname "$0")/chain" commit-msg "$@"

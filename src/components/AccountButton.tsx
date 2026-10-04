@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MIN_PASSWORD } from '@/lib/gate.client';
+import { VERSION_LABEL } from '@/lib/version';
 
 const field = `w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm
                text-slate-100 placeholder:text-slate-600 focus:border-indigo-500
@@ -199,6 +200,10 @@ export default function AccountButton() {
                 </button>
               </>
             )}
+
+            <p className="mt-4 text-center font-mono text-[10px] text-slate-600">
+              {VERSION_LABEL}
+            </p>
           </div>
         </div>
       )}
