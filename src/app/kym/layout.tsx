@@ -1,6 +1,8 @@
+import Image from 'next/image';
 import Link from 'next/link';
 import CommitteeSearch from '@/components/CommitteeSearch';
 import HostedBy from '@/components/HostedBy';
+import mark from './mark.svg';
 
 /**
  * Chrome for Know Your Mailer.
@@ -28,33 +30,43 @@ export default function KymLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="h-dvh overflow-y-auto bg-slate-950">
       <div className="mx-auto max-w-5xl px-5 py-8 text-slate-100 sm:py-10">
-        {/* Wraps rather than shrinks: below the small breakpoint the box drops
+        {/* Wraps rather than shrinks: below the medium breakpoint the box drops
             under the title at full width, where it is still usable, instead of
             squeezing into a gap too narrow to read what you typed. */}
         <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
-          <div>
-            <Link href="/kym" className="inline-block">
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-100 sm:text-3xl">
-                Know Your Mailer
-              </h1>
+          <div className="flex items-center gap-3 sm:gap-4">
+            {/* Square, and as tall as the three lines beside it. On a phone
+                narrower than about 410px the credit wraps to a fourth line and
+                the text runs taller than the mark. A second link to the same
+                place as the title, so it stays out of the tab order and out of
+                the accessibility tree. */}
+            <Link href="/kym" tabIndex={-1} aria-hidden className="shrink-0">
+              <Image src={mark} alt="" unoptimized priority className="size-[71px] sm:size-[75px]" />
             </Link>
-            <p className="mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-slate-500">
-              Powered by the{' '}
-              <a
-                href="https://pactrack.sjcrlc.org"
-                className="text-slate-400 underline-offset-2 hover:text-indigo-300 hover:underline"
-              >
-                PAC Tracker
-              </a>{' '}
-              database
-            </p>
-            {/* Takes its width from the lines above instead of setting it. At
-                its own width the title column would outgrow the room beside
-                the search box, and between the small and large breakpoints
-                the box would drop under the title. */}
-            <HostedBy short className="mt-0.5 contain-inline-size" />
+            <div>
+              <Link href="/kym" className="inline-block">
+                <h1 className="text-2xl font-semibold tracking-tight text-slate-100 sm:text-3xl">
+                  Know Your Mailer
+                </h1>
+              </Link>
+              <p className="mt-1 text-balance font-mono text-[11px] uppercase tracking-[0.14em] text-slate-500">
+                Powered by the{' '}
+                <a
+                  href="https://pactrack.sjcrlc.org"
+                  className="whitespace-nowrap text-slate-400 underline-offset-2 hover:text-indigo-300 hover:underline"
+                >
+                  PAC Tracker
+                </a>{' '}
+                database
+              </p>
+              {/* Takes its width from the lines above instead of setting it. At
+                  its own width the title column would outgrow the room beside
+                  the search box, and between the medium and large breakpoints
+                  the box would drop under the title. */}
+              <HostedBy short className="mt-0.5 contain-inline-size" />
+            </div>
           </div>
-          <div className="w-full sm:w-72 lg:w-96">
+          <div className="w-full md:w-72 lg:w-96">
             <CommitteeSearch />
           </div>
         </header>
