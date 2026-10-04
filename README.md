@@ -167,19 +167,13 @@ cp .env.example .env && pnpm db:migrate && pnpm dev
 ### Version and build number
 
 The version is set by hand in `package.json`. The build number is the number of commits,
-and a pre-commit hook writes it to `src/lib/build.json` on every commit. Both show at the
-foot of every Know Your Mailer page and in the explorer's account dialog, so you can see
-which commit a server is running.
+kept in `build-number.json`. Both show at the foot of every Know Your Mailer page and in
+the explorer's account dialog, so you can see which commit a server is running.
 
-Turn the hook on once in each clone you commit from:
-
-```bash
-git config core.hooksPath .githooks
-```
-
-That setting replaces any global `core.hooksPath` for this repo. The hooks in `.githooks`
-pass on to the global hook of the same name, so a global `pre-commit` or `commit-msg` still
-runs.
+The repo does not stamp the number itself. A `pre-commit` hook in the global git hooks
+directory does. It writes the commit count to `build-number.json` in any repo that tracks
+that file at its root, and does nothing in any other repo. Without that hook the number
+stays where it was.
 
 ### Let people ask for an account
 

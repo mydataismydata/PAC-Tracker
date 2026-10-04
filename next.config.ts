@@ -1,6 +1,6 @@
 import type { NextConfig } from 'next';
 import pkg from './package.json';
-import stamp from './src/lib/build.json';
+import stamp from './build-number.json';
 
 const nextConfig: NextConfig = {
   // Baked in at build time for src/lib/version.ts. The Docker build context
