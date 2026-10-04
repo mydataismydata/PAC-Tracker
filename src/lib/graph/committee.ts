@@ -252,6 +252,33 @@ export function committeeHref(hit: { id: string; slug: string; sharesName: boole
   return hit.sharesName ? `/kym/${hit.slug}?id=${hit.id}` : `/kym/${hit.slug}`;
 }
 
+/**
+ * A link to one report from inside another.
+ *
+ * Pins the id, because a report's lists carry no namesake count and a
+ * candidate files under one name per office sought. Keeps the cycle, so a
+ * reader following 2024 money through a chain of committees stays in 2024.
+ */
+export function reportHref(id: string, name: string, cycle?: string): string {
+  return `/kym/${committeeSlug(name)}?id=${id}${cycle ? `&cycle=${encodeURIComponent(cycle)}` : ''}`;
+}
+
+/**
+ * Which of these entities a report can be run on.
+ *
+ * A report's lists put committees beside individuals and vendors, and a reader
+ * who finds a committee there wants its report next. The test is the one
+ * `committeeById` applies, so no link lands on a page with nothing to show.
+ */
+export async function reportSubjects(db: Db, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await db.execute<{ id: string }>(sql`
+    SELECT e.id FROM entities e
+     WHERE e.id = ANY(${sql.param(ids)}::uuid[]) AND ${SUBJECT}
+  `);
+  return new Set(rows.map((r) => r.id));
+}
+
 /** Committees sharing a name, counted per row so a link knows whether to pin an id. */
 const NAMESAKES = sql`
   LEFT JOIN LATERAL (

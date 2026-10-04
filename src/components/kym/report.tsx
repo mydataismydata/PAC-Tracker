@@ -14,8 +14,10 @@
  * limits.
  */
 
+import Link from 'next/link';
 import { Suspense } from 'react';
 import { db } from '@/db';
+import { reportHref, reportSubjects } from '@/lib/graph/committee';
 import { ledger, type LedgerSourceRow } from '@/lib/graph/ledger';
 import { cachedTrace, type TraceDigest } from '@/lib/graph/traceCache';
 import { formatMoney, formatMoneyFull } from '@/lib/graph/types';
@@ -139,6 +141,41 @@ export function Note({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * One list row, opening that entity's own report when it has one.
+ *
+ * Committees share these lists with individuals and vendors, and only the
+ * committees have a report. The whole row is the target, as in the landing
+ * page's lists. The name carries a faint underline as well, so the rows that
+ * open somewhere can be picked out before anything is hovered.
+ */
+function Row({
+  href,
+  className,
+  children,
+}: {
+  href?: string;
+  className: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li>
+      {href ? (
+        <Link href={href} className={`${className} hover:bg-slate-900/60`}>
+          {children}
+        </Link>
+      ) : (
+        <div className={className}>{children}</div>
+      )}
+    </li>
+  );
+}
+
+/** The underline on a name whose row is a link. */
+function linked(href?: string): string {
+  return href ? 'underline decoration-slate-700 underline-offset-2' : '';
+}
+
 /* ------------------------------------------------------------------ donors */
 
 /**
@@ -206,6 +243,13 @@ async function Donors({
   cycle?: string;
 }) {
   const result = await cachedTrace(db, ids, { ...TRACE, cycle }, KEEP);
+  const subjects = await reportSubjects(db, [
+    ...result.sources.rows.map((s) => s.id),
+    ...result.injectionPoints.flatMap((p) => [p.id, ...p.funders.map((f) => f.id)]),
+    ...result.unresolved.rows.map((s) => s.id),
+  ]);
+  const href = (id: string, name: string) =>
+    subjects.has(id) ? reportHref(id, name, cycle) : undefined;
 
   if (result.sources.count === 0 && result.injectionPoints.length === 0) {
     return (
@@ -227,9 +271,11 @@ async function Donors({
       />
       <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
         {result.sources.rows.map((s) => (
-          <li key={s.id} className="flex items-start gap-3 px-4 py-2.5">
+          <Row key={s.id} href={href(s.id, s.name)} className="flex items-start gap-3 px-4 py-2.5">
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm text-slate-200">{s.name}</span>
+              <span className={`block truncate text-sm text-slate-200 ${linked(href(s.id, s.name))}`}>
+                {s.name}
+              </span>
               <span className="block text-xs text-slate-500">
                 {s.kind} · {s.hop} hop{s.hop === 1 ? '' : 's'} away
               </span>
@@ -242,7 +288,7 @@ async function Donors({
                 {(s.share * 100).toFixed(1)}%
               </span>
             </span>
-          </li>
+          </Row>
         ))}
       </ul>
 
@@ -254,7 +300,16 @@ async function Donors({
             Entered Florida through a national pool
           </p>
           <div className="mt-1 flex items-baseline justify-between gap-3">
-            <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{p.name}</span>
+            {href(p.id, p.name) ? (
+              <Link
+                href={href(p.id, p.name)!}
+                className="min-w-0 flex-1 truncate text-sm text-slate-200 underline decoration-slate-700 underline-offset-2 hover:text-sky-300 hover:decoration-sky-700"
+              >
+                {p.name}
+              </Link>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{p.name}</span>
+            )}
             <span className="shrink-0 font-mono text-sm tabular-nums text-sky-300">
               {formatMoneyFull(p.amount)}
             </span>
@@ -266,15 +321,19 @@ async function Donors({
           </p>
           <ul className="mt-2 divide-y divide-slate-800/60 border-t border-slate-800/60">
             {p.funders.map((f) => (
-              <li key={f.id} className="flex items-baseline gap-3 py-1.5">
-                <span className="min-w-0 flex-1 truncate text-sm text-slate-300">{f.name}</span>
+              <Row key={f.id} href={href(f.id, f.name)} className="flex items-baseline gap-3 py-1.5">
+                <span
+                  className={`min-w-0 flex-1 truncate text-sm text-slate-300 ${linked(href(f.id, f.name))}`}
+                >
+                  {f.name}
+                </span>
                 <span className="shrink-0 font-mono text-xs tabular-nums text-slate-400">
                   {formatMoney(f.amount)}
                 </span>
                 <span className="w-12 shrink-0 text-right text-xs tabular-nums text-slate-500">
                   {(f.share * 100).toFixed(1)}%
                 </span>
-              </li>
+              </Row>
             ))}
           </ul>
         </div>
@@ -295,12 +354,16 @@ async function Donors({
           />
           <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
             {result.unresolved.rows.map((s) => (
-              <li key={s.id} className="flex items-baseline gap-3 px-4 py-2">
-                <span className="min-w-0 flex-1 truncate text-sm text-slate-300">{s.name}</span>
+              <Row key={s.id} href={href(s.id, s.name)} className="flex items-baseline gap-3 px-4 py-2">
+                <span
+                  className={`min-w-0 flex-1 truncate text-sm text-slate-300 ${linked(href(s.id, s.name))}`}
+                >
+                  {s.name}
+                </span>
                 <span className="shrink-0 font-mono text-sm tabular-nums text-slate-400">
                   {formatMoney(s.amount)}
                 </span>
-              </li>
+              </Row>
             ))}
           </ul>
         </div>
@@ -325,6 +388,10 @@ async function Payments({ ids, cycle }: { ids: string[]; cycle?: string }) {
 
   if (rows.length === 0) return <Note>No payments out on file.</Note>;
 
+  const subjects = await reportSubjects(db, rows.map((r) => r.entity_id));
+  const href = (r: LedgerSourceRow) =>
+    subjects.has(r.entity_id) ? reportHref(r.entity_id, r.name, cycle) : undefined;
+
   const internal = Number(result.internalAmount);
 
   return (
@@ -339,9 +406,15 @@ async function Payments({ ids, cycle }: { ids: string[]; cycle?: string }) {
       )}
       <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
         {rows.map((r) => (
-          <li key={`${r.entity_id}-${r.flow}`} className="flex items-start gap-3 px-4 py-2.5">
+          <Row
+            key={`${r.entity_id}-${r.flow}`}
+            href={href(r)}
+            className="flex items-start gap-3 px-4 py-2.5"
+          >
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm text-slate-200">{r.name}</span>
+              <span className={`block truncate text-sm text-slate-200 ${linked(href(r))}`}>
+                {r.name}
+              </span>
               <span className="block truncate text-xs text-slate-500">
                 {r.is_self && <span className="text-indigo-400">within this network · </span>}
                 {r.industry}
@@ -353,7 +426,7 @@ async function Payments({ ids, cycle }: { ids: string[]; cycle?: string }) {
             <span className="shrink-0 text-sm">
               <Money value={r.amount} tone="out" />
             </span>
-          </li>
+          </Row>
         ))}
       </ul>
     </div>
