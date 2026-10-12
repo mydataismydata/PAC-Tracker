@@ -1668,6 +1668,24 @@ export default function GraphCanvas({
        * which in a flex pane is often stale, so this is the fit that counts.
        */
       const settleView = () => {
+        // A layout stopped early, to frame the view or to make way for the
+        // next batch, leaves each node wherever its animation had got to:
+        // part of the way from the ring it was dropped on. Entities were left
+        // far from their only connection, with long lines across the middle.
+        // The layout worked out every position before animating, so each
+        // node goes straight to where it was headed. A layout that has been
+        // replaced leaves the nodes to the one that replaced it.
+        if (layoutRef.current === layout) {
+          cy.batch(() => {
+            cy.nodes().forEach((n) => {
+              const to = headed.get(n.id());
+              if (!to || held(n.id())) return;
+              n.stop();
+              const at = n.position();
+              if (at.x !== to.x || at.y !== to.y) n.position({ x: to.x, y: to.y });
+            });
+          });
+        }
         // The lock was only for the duration of the layout. Leaving it on would
         // make a pinned tile the one tile the reader can no longer drag.
         cy.nodes().unlock();
