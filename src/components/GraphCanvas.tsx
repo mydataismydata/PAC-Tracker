@@ -110,6 +110,9 @@ const LIT = 'dimmed highlighted reach far-end label-left';
 /** Where the canvas keeps the factor that sizes lines and dots against the zoom. */
 const SCREEN_SCALE = 'pactracker:screenScale';
 
+/** Where the canvas keeps the factor that stops names growing past zoom 1. */
+const TEXT_SCALE = 'pactracker:textScale';
+
 /** Where the canvas keeps the factor that fades lines as the graph fills up. */
 const LINE_DENSITY = 'pactracker:lineDensity';
 
@@ -123,6 +126,14 @@ const LINE_DENSITY = 'pactracker:lineDensity';
  */
 const onScreen = (px: number) => (el: NodeSingular | EdgeSingular) =>
   px * ((el.cy().scratch(SCREEN_SCALE) as number | undefined) ?? 1);
+
+/**
+ * A text size, or a gap beside text, of `px` screen pixels at zoom 1. It
+ * shrinks with the view when zoomed out, and stays at `px` when zoomed in.
+ * See `fitToZoom`.
+ */
+const onText = (px: number) => (el: NodeSingular | EdgeSingular) =>
+  px * ((el.cy().scratch(TEXT_SCALE) as number | undefined) ?? 1);
 
 /** A line's opacity, lowered on a crowded canvas. See `fitLinesToDensity`. */
 const crowdedOpacity = (opacity: number) => (e: EdgeSingular) =>
@@ -361,25 +372,34 @@ function bowAround(
 }
 
 /**
- * Keep the network look's lines thin and its dots small, at every zoom.
+ * Keep the network look's lines thin, its dots small and its names small, at
+ * every zoom.
  *
- * Cytoscape draws lines and dots in graph units, so they scale with the zoom.
+ * Cytoscape draws everything in graph units, so it all scales with the zoom.
  * Framing a large graph whole thins a 1px line to a sixth of a pixel, too
- * faint to follow, and zooming in to read the names turns lines into bars and
- * dots into discs. Here their size on screen moves with the square root of
- * the zoom instead, held between 0.6 and 1.3 times their size at zoom 1. Names
- * still scale with the zoom, so zooming in makes them readable. The factor
- * moves in steps of a tenth, so a zoom restyles the canvas now and then
- * rather than on every frame.
+ * faint to follow. Zooming in turns lines into bars, dots into discs and
+ * names into headlines. Here the size of lines and dots on screen moves with
+ * the square root of the zoom instead, held between 0.6 and 1.3 times their
+ * size at zoom 1.
+ *
+ * Names shrink with the view when it is zoomed out, which hides them once
+ * they are too small to read. Zoomed in, they stay the size they are at zoom
+ * 1, so zooming in spreads crowded names apart instead of enlarging the
+ * crowd.
+ *
+ * Both factors move in steps of 10%, so a zoom restyles the canvas now and
+ * then rather than on every frame.
  */
 function fitToZoom(cy: Core, look: GraphLook): void {
   if (look !== 'network') return;
   const zoom = cy.zoom();
-  const target = Math.min(1.3, Math.max(0.6, Math.sqrt(zoom)));
   const step = Math.log(1.1);
-  const scale = Math.exp(Math.round(Math.log(target / zoom) / step) * step);
-  if (cy.scratch(SCREEN_SCALE) === scale) return;
-  cy.scratch(SCREEN_SCALE, scale);
+  const quantize = (factor: number) => Math.exp(Math.round(Math.log(factor) / step) * step);
+  const screen = quantize(Math.min(1.3, Math.max(0.6, Math.sqrt(zoom))) / zoom);
+  const text = quantize(Math.min(1, 1 / zoom));
+  if (cy.scratch(SCREEN_SCALE) === screen && cy.scratch(TEXT_SCALE) === text) return;
+  cy.scratch(SCREEN_SCALE, screen);
+  cy.scratch(TEXT_SCALE, text);
   restyle(cy.elements());
 }
 
@@ -737,6 +757,8 @@ interface Hover {
   r: number;
   /** The canvas's width when the card opened, so the card can stay on it. */
   w: number;
+  /** The canvas's height, so the card opens upward in its lower half. */
+  h: number;
 }
 
 /**
@@ -959,11 +981,11 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       label: 'data(name)',
       color: '#cbd5e1',
       'text-opacity': 0.55,
-      'font-size': 10,
+      'font-size': onText(10),
       'font-weight': 400,
       'text-halign': 'right',
       'text-valign': 'center',
-      'text-margin-x': 4,
+      'text-margin-x': onText(4),
       'text-wrap': 'none',
       // A name too small to read is not drawn.
       'min-zoomed-font-size': 6,
@@ -1090,7 +1112,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'target-arrow-shape': 'triangle',
       'target-arrow-color': POLITICAL_LINE,
       'arrow-scale': 0.6,
-      'font-size': 9,
+      'font-size': onText(9),
       'font-weight': 500,
       color: '#f1f5f9',
       'text-rotation': 'none',
@@ -1159,7 +1181,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'text-max-width': '400px',
       'line-height': 1.3,
       // Half a line down, so the name stays level with its dot.
-      'text-margin-y': 6.5,
+      'text-margin-y': onText(6.5),
       color: '#f1f5f9',
       'text-opacity': 0.9,
       'min-zoomed-font-size': 4,
@@ -1168,7 +1190,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     // Moved off the side a lit line leaves from. See `labelGoesLeft`.
     selector: 'node.far-end.label-left',
-    style: { 'text-halign': 'left', 'text-margin-x': -4 },
+    style: { 'text-halign': 'left', 'text-margin-x': onText(-4) },
   },
   {
     // A borrowed hop's word for how it was found. An amount goes under the
@@ -1204,7 +1226,8 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   },
   {
     // The pointer brings a dot forward, above the lines and every other dot,
-    // larger and with its name at full strength, so it is easy to click.
+    // larger and ringed, so it is easy to click. Its name is at full strength
+    // whenever its card is closed, as while it is dragged.
     selector: 'node.hovered',
     style: {
       width: onScreen(DOT * 1.5),
@@ -1219,6 +1242,12 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'z-index': 30,
     },
   },
+  {
+    // The hover card names the dot in larger type, so its own name steps
+    // aside rather than peek out from under the card. See `HoverCard`.
+    selector: 'node.carded',
+    style: { 'text-opacity': 0 },
+  },
 ];
 
 const STYLES: Record<GraphLook, cytoscape.StylesheetJson> = {
@@ -1230,7 +1259,9 @@ const STYLES: Record<GraphLook, cytoscape.StylesheetJson> = {
  * The card beside a hovered dot, in the network look.
  *
  * The dots carry only a name, so this is where an entity's money shows
- * without a click. In and out use the panel's emerald and amber.
+ * without a click. In and out use the panel's emerald and amber. Its text is
+ * well above the size of the names on the canvas, since it is the one thing
+ * the reader is looking at.
  */
 function HoverCard({ hover }: { hover: Hover }) {
   const n = hover.node;
@@ -1242,27 +1273,35 @@ function HoverCard({ hover }: { hover: Hover }) {
     : [kindLabel(n), n.party, n.office].filter(Boolean).join(' · ');
 
   // The card goes to the right of the dot, or to its left where the right
-  // side would run off the canvas.
-  const CARD_W = 240;
-  const right = hover.x + hover.r + 10;
-  const left = right + CARD_W > hover.w ? Math.max(4, hover.x - hover.r - 10 - CARD_W) : right;
+  // side would run off the canvas. In the lower half of the canvas it opens
+  // upward from the dot, so it does not run off the bottom.
+  const CARD_W = 320;
+  const right = hover.x + hover.r + 12;
+  const left = right + CARD_W > hover.w ? Math.max(4, hover.x - hover.r - 12 - CARD_W) : right;
+  const upward = hover.y > hover.h / 2;
 
   return (
     <div
-      className="pointer-events-none absolute z-10 rounded-md border border-slate-700
-                 bg-slate-900/95 px-3 py-2 text-xs shadow-lg shadow-black/40"
-      style={{ left, top: Math.max(4, hover.y - 18), width: CARD_W }}
+      className="pointer-events-none absolute z-10 rounded-lg border border-slate-700
+                 bg-slate-900/95 px-4 py-3 text-sm shadow-lg shadow-black/40"
+      style={{
+        left,
+        width: CARD_W,
+        ...(upward
+          ? { bottom: Math.max(4, hover.h - hover.y - 24) }
+          : { top: Math.max(4, hover.y - 24) }),
+      }}
     >
-      <div className="font-semibold leading-snug text-slate-100">{n.name}</div>
-      {detail && <div className="mt-0.5 text-[11px] text-slate-400">{detail}</div>}
+      <div className="text-lg font-semibold leading-snug text-slate-100">{n.name}</div>
+      {detail && <div className="mt-1 text-slate-400">{detail}</div>}
       {!officer && (received > 0 || given > 0) && (
-        <div className="mt-1.5 flex gap-3 tabular-nums">
+        <div className="mt-2 flex gap-4 text-base tabular-nums">
           {received > 0 && <span className="text-emerald-400">in {formatMoney(received)}</span>}
           {given > 0 && <span className="text-amber-400">out {formatMoney(given)}</span>}
         </div>
       )}
       {n.isTraversable && (
-        <div className="mt-1.5 text-[10px] text-slate-500">Double-click to follow its money</div>
+        <div className="mt-2 text-xs text-slate-500">Double-click to follow its money</div>
       )}
     </div>
   );
@@ -1423,6 +1462,7 @@ export default function GraphCanvas({
         y: p.y,
         r: n.renderedOuterWidth() / 2,
         w: cy.width(),
+        h: cy.height(),
       });
     });
     cy.on('mouseout', 'node', (evt: EventObject) => {
@@ -1759,11 +1799,13 @@ export default function GraphCanvas({
   const exportPng = useCallback((filename: string) => {
     const cy = cyRef.current;
     if (!cy) return;
-    // The file is drawn at its own scale, not the screen's zoom, so lines and
-    // dots go back to graph-unit sizes for it and return to the zoom afterwards.
-    const held = cy.scratch(SCREEN_SCALE) as number | undefined;
-    if (held !== undefined) {
-      cy.scratch(SCREEN_SCALE, 1);
+    // The file is drawn at its own scale, not the screen's zoom, so lines, dots
+    // and names go back to graph-unit sizes for it and return to the zoom
+    // afterwards.
+    const held = [SCREEN_SCALE, TEXT_SCALE].map((key) => [key, cy.scratch(key)] as const);
+    const scaled = held.some(([, factor]) => factor !== undefined);
+    if (scaled) {
+      for (const [key] of held) cy.scratch(key, 1);
       restyle(cy.elements());
     }
     const png = cy.png({
@@ -1774,8 +1816,11 @@ export default function GraphCanvas({
       maxWidth: 6000,
       maxHeight: 6000,
     });
-    if (held !== undefined) {
-      cy.scratch(SCREEN_SCALE, held);
+    if (scaled) {
+      for (const [key, factor] of held) {
+        if (factor === undefined) cy.removeScratch(key);
+        else cy.scratch(key, factor);
+      }
       restyle(cy.elements());
     }
     const url = URL.createObjectURL(png);
@@ -1967,6 +2012,15 @@ export default function GraphCanvas({
   useEffect(() => {
     handlersRef.current = { onSelectNode, onExpandNode };
   }, [onSelectNode, onExpandNode]);
+
+  // Marks the dot whose card is open. A dot stays hovered while it is dragged
+  // or the view moves, but its card closes then, and its name comes back.
+  useEffect(() => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    cy.nodes('.carded').removeClass('carded');
+    if (hover) cy.getElementById(hover.id).addClass('carded');
+  }, [hover]);
 
   /**
    * Lay in the routes' missing tiles, and take the previous set away.
