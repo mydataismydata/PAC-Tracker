@@ -1276,6 +1276,7 @@ export default function Home() {
                 keepLit={keepLit}
                 ghost={canvasGhost}
                 look={look}
+                depth={settings.depth}
                 onReady={(h) => {
                   canvasRef.current = h;
                 }}
@@ -2005,7 +2006,7 @@ function Legend({ look }: { look: GraphLook }) {
 }
 
 /**
- * The network look's key: what a dot's color and size say, and what the three
+ * The network look's key: what a dot's color and size say, and what the two
  * kinds of line say. Two columns, so it covers as little of the canvas as the
  * tiles' key does.
  */
@@ -2021,7 +2022,6 @@ function NetworkLegend() {
   const lines = [
     { label: 'Political money', color: '#f8fafc', opacity: 0.75 },
     { label: 'Paid to vendors', color: '#f2e3a0', opacity: 0.45 },
-    { label: 'Same-depth links', color: '#f8fafc', opacity: 0.2 },
   ];
   return (
     <div
@@ -2057,7 +2057,7 @@ function NetworkLegend() {
         ))}
       </div>
       <p className="mt-1.5 text-[10px] text-slate-500">
-        Dot size is money moved. Click a dot to light its lines.
+        Dot size is money moved. Click a dot to light its own lines.
       </p>
     </div>
   );

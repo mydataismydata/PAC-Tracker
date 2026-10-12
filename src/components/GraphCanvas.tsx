@@ -86,7 +86,7 @@ const VENDOR_LINE = '#f2e3a0';
 const ARC = 0.22;
 
 /** Every class a highlight puts on. A new highlight takes all of them off first. */
-const LIT = 'dimmed highlighted far-source far-target';
+const LIT = 'dimmed highlighted reach far-source far-target';
 
 /** Where the canvas keeps the factor that sets line widths against the zoom. */
 const LINE_SCALE = 'pactracker:lineScale';
@@ -243,8 +243,24 @@ function mergePairs(cy: Core): void {
         else back += e.data('amount');
         if (e.data('ownTone') === 'political') tone = 'political';
       }
-      if (lead.data('fwd') !== fwd || lead.data('back') !== back || lead.data('tone') !== tone) {
-        lead.data({ fwd, back, tone });
+      // On the searched entity's own lines, the money as seen from it, written
+      // at the other end. Drawn when its whole network is lit. The lines
+      // further out carry no amount then: two hundred amounts at once bury the
+      // lines they label.
+      const nearIsSource = levelOf(lead.source()) <= levelOf(lead.target());
+      const fromSeed = Boolean((nearIsSource ? lead.source() : lead.target()).data('isSeed'));
+      const reachLabel = fromSeed
+        ? moneyLabel(nearIsSource ? fwd : back, nearIsSource ? back : fwd)
+        : '';
+      const reachEnd = fromSeed ? (nearIsSource ? 'target' : 'source') : 'none';
+      if (
+        lead.data('fwd') !== fwd ||
+        lead.data('back') !== back ||
+        lead.data('tone') !== tone ||
+        lead.data('reachLabel') !== reachLabel ||
+        lead.data('reachEnd') !== reachEnd
+      ) {
+        lead.data({ fwd, back, tone, reachLabel, reachEnd });
       }
       lead.removeClass('twin');
       for (const e of rest) e.addClass('twin');
@@ -253,14 +269,28 @@ function mergePairs(cy: Core): void {
 }
 
 /**
- * Bow each line into an arc, a fixed share of its length.
+ * A number from 0 to 1 that belongs to a pair of entities, the same whichever
+ * way round they are given and on every visit. FNV-1a over the two ids.
+ */
+function pairNoise(a: string, b: string): number {
+  const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+/**
+ * Bow each line into an arc, a share of its length.
  *
- * Cytoscape takes the bow as a distance, not a share, so it is worked out
- * from where the two ends stand and redone whenever they move. `at` gives a
- * node's position: while a layout animates, the one the node is headed for.
- * Every line bends the same way as seen from its end nearer the searched
- * entity, so a hub's lines fan out around it in one direction instead of
- * crossing each other.
+ * Which side a line bows to, and how deep, varies from pair to pair, so the
+ * lines do not all swirl one way. The variation comes from the pair's ids, so
+ * a line keeps its bend from one visit to the next. Cytoscape takes the bow
+ * as a distance, not a share, so it is worked out from where the two ends
+ * stand and redone whenever they move. `at` gives a node's position: while a
+ * layout animates, the one the node is headed for.
  */
 function bendArcs(
   edges: EdgeCollection,
@@ -274,8 +304,16 @@ function bendArcs(
       const p = at(s);
       const q = at(t);
       const length = Math.hypot(q.x - p.x, q.y - p.y);
-      const outward = levelOf(s) < levelOf(t) || (levelOf(s) === levelOf(t) && s.id() < t.id());
-      const arc = Math.round(length * ARC * (outward ? 1 : -1));
+      const noise = pairNoise(s.id(), t.id());
+      // The lower half of the noise bows one way, the upper half the other,
+      // and the position within the half sets the depth: 0.55 to 1.45 of ARC.
+      const side = noise < 0.5 ? 1 : -1;
+      const bow = 0.55 + ((noise * 2) % 1) * 0.9;
+      // Cytoscape measures the bow from source to target. Measuring the side
+      // from the pair's own order keeps a line on its side even when the edge
+      // standing for the pair is replaced by one running the other way.
+      const order = s.id() < t.id() ? 1 : -1;
+      const arc = Math.round(length * ARC * bow * side * order);
       if (e.data('arc') !== arc) e.data('arc', arc);
     });
   });
@@ -410,11 +448,27 @@ export const PAN_STEP = 0.2;
  * Shared by tapping a tile and by focusing one from search or the ledger, so
  * an entity reached any of those ways reads the same on the canvas.
  */
-function highlightNeighborhood(cy: Core, node: NodeSingular, keepLit: string[] = []): void {
+function highlightNeighborhood(
+  cy: Core,
+  node: NodeSingular,
+  keepLit: string[] = [],
+  look: GraphLook = 'tiles',
+): void {
   cy.elements().removeClass(LIT).addClass('dimmed');
   for (const id of keepLit) {
     const el = cy.getElementById(id);
     if (el.nonempty() && el.isNode()) el.removeClass('dimmed');
+  }
+  // In the network look the searched entity's network is everything within
+  // the chosen depth, and it lights alike: a line two hops out is as much a
+  // part of it as a line one hop out. Only a line past the depth, or a hop
+  // borrowed to draw a route, stays dim.
+  if (look === 'network' && node.data('isSeed')) {
+    cy.elements()
+      .filter((el) => !el.hasClass('ghost') && !(el.isEdge() && el.data('beyond')))
+      .removeClass('dimmed')
+      .addClass('highlighted reach');
+    return;
   }
   const near = node.closedNeighborhood();
   near.removeClass('dimmed').addClass('highlighted');
@@ -434,13 +488,15 @@ function labelFarEnd(e: EdgeSingular, near: cytoscape.CollectionArgument): void 
   const fromNear = e.source().same(near);
   const paid: number = fromNear ? e.data('fwd') : e.data('back');
   const got: number = fromNear ? e.data('back') : e.data('fwd');
-  e.data(
-    'litLabel',
-    paid > 0 && got > 0
-      ? `${formatMoney(paid)} out · ${formatMoney(got)} in`
-      : formatMoney(paid || got),
-  );
+  e.data('litLabel', moneyLabel(paid, got));
   e.addClass(fromNear ? 'far-target' : 'far-source');
+}
+
+/** What one side paid and got along a line: "$12K", or "$12K out · $3K in" for both. */
+function moneyLabel(paid: number, got: number): string {
+  return paid > 0 && got > 0
+    ? `${formatMoney(paid)} out · ${formatMoney(got)} in`
+    : formatMoney(paid || got);
 }
 
 /**
@@ -584,6 +640,14 @@ interface Props {
   ghost?: GhostGraph | null;
   /** How to draw the graph. Switching it restyles the canvas and lays it out again. */
   look?: GraphLook;
+  /**
+   * How many hops out from the searched entity the crawl went.
+   *
+   * A line lies within the depth when it is on a path of that many hops or
+   * fewer from the searched entity, which is when either end is nearer than
+   * the full depth. The network look draws any other line faint.
+   */
+  depth?: number;
 }
 
 /** Where the hover card stands, in pixels from the canvas's top left, and whom it is about. */
@@ -796,10 +860,10 @@ const TILE_STYLE: cytoscape.StylesheetJson = [
  *
  * A dot's color is its kind, as in the panels, and its size is the money it
  * moved. Lines are all one width. White is political money, and pale yellow
- * is a payment to a vendor, drawn fainter. A line between two entities at the
- * same depth is off every path out from the searched entity, so it is fainter
- * still. Selecting an entity brings its lines up to full strength, with
- * arrows for the way the money went and amounts at the far ends.
+ * is a payment to a vendor, drawn fainter. A line past the chosen depth is
+ * fainter still. Selecting an entity brings its lines up to full strength,
+ * with arrows for the way the money went and amounts at the far ends. The
+ * searched entity's lines are every line within the depth.
  */
 const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
@@ -881,9 +945,8 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: { 'line-color': VENDOR_LINE, width: screenWidth(0.8), opacity: crowdedOpacity(0.28) },
   },
   {
-    // Off every path out from the searched entity: a link between two
-    // entities at the same depth, or a hop borrowed to show a route.
-    selector: 'edge[?side]',
+    // Past the chosen depth, or a hop borrowed to show a route.
+    selector: 'edge[?beyond]',
     style: { opacity: crowdedOpacity(0.1) },
   },
   {
@@ -973,6 +1036,31 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     selector: 'edge.highlighted.far-source',
     style: { 'source-label': 'data(litLabel)', 'source-text-offset': 34 },
+  },
+  {
+    // The searched entity's whole network, every line alike. Lighter than one
+    // entity's lines picked out of the graph, because here they are all lit
+    // at once, and a crowded canvas thins them further.
+    selector: 'edge.highlighted.reach',
+    style: { width: screenWidth(1.1), opacity: crowdedOpacity(0.8) },
+  },
+  {
+    selector: 'edge.highlighted.reach[tone = "vendor"]',
+    style: { width: screenWidth(0.9), opacity: crowdedOpacity(0.45) },
+  },
+  {
+    selector: 'edge.highlighted.reach[reachEnd = "target"]',
+    style: { 'target-label': 'data(reachLabel)', 'target-text-offset': 34 },
+  },
+  {
+    selector: 'edge.highlighted.reach[reachEnd = "source"]',
+    style: { 'source-label': 'data(reachLabel)', 'source-text-offset': 34 },
+  },
+  {
+    // Names keep their zoomed-out thinning when the whole network is lit, or
+    // six hundred of them are drawn at once.
+    selector: 'node.highlighted.reach',
+    style: { 'min-zoomed-font-size': 7 },
   },
   {
     selector: 'edge.highlighted.ghost',
@@ -1066,6 +1154,7 @@ export default function GraphCanvas({
   keepLit,
   ghost,
   look = 'tiles',
+  depth = Infinity,
 }: Props) {
 
 
@@ -1138,7 +1227,7 @@ export default function GraphCanvas({
   const applyHighlight = useCallback((cy: Core, node: NodeSingular) => {
     const chains = chainsRef.current;
     if (chains.length > 0 && highlightRoutes(cy, chains, keepLitRef.current, node)) return;
-    highlightNeighborhood(cy, node, keepLitRef.current);
+    highlightNeighborhood(cy, node, keepLitRef.current, lookRef.current);
   }, []);
 
   /* ---------------------------------------------------------------- init -- */
@@ -1164,7 +1253,7 @@ export default function GraphCanvas({
     cy.on('tap', 'node', (evt: EventObject) => {
       const n = evt.target as NodeSingular;
       handlersRef.current.onSelectNode?.(n.data('entity') as GraphNode);
-      highlightNeighborhood(cy, n);
+      highlightNeighborhood(cy, n, [], lookRef.current);
     });
 
     cy.on('tap', (evt: EventObject) => {
@@ -1449,8 +1538,8 @@ export default function GraphCanvas({
     }
 
     // In registration mode a node's depth counts shared officers, not
-    // payments, so no money line there is off a path by depth. Officer hubs
-    // are in the crawl in that mode and in no other.
+    // payments, so no money line there is past the depth. Officer hubs are in
+    // the crawl in that mode and in no other.
     let byOfficers = false;
     for (const n of nodes.values()) {
       if (n.kind === 'officer') {
@@ -1491,9 +1580,13 @@ export default function GraphCanvas({
           // `mergePairs` and `bendArcs`.
           ownTone: tone,
           tone,
-          // Two entities at the same depth: the line is off every path out
-          // from the searched entity, so it is drawn faint.
-          side: !isRegistration && !byOfficers && from?.level === to?.level,
+          // Both ends at the full depth: no path of `depth` hops from the
+          // searched entity runs along this line. A money crawl never draws
+          // one, since it does not expand the entities at the full depth.
+          beyond:
+            !isRegistration &&
+            !byOfficers &&
+            Math.min(from?.level ?? 0, to?.level ?? 0) >= depth,
           fwd: isRegistration ? 0 : amount,
           back: 0,
           arc: 0,
@@ -1524,7 +1617,7 @@ export default function GraphCanvas({
     // cyEpoch is a dependency so a rebuilt instance gets repopulated; without
     // it a remount leaves the new canvas permanently empty. `ready` is derived
     // from cyEpoch and listed only to satisfy exhaustive-deps.
-  }, [nodes, edges, seedId, maxAmount, cyEpoch, ready, initialPositions, scheduleLayout]);
+  }, [nodes, edges, seedId, maxAmount, cyEpoch, ready, initialPositions, scheduleLayout, depth]);
 
   /**
    * Switch look: restyle, repaint the ground, lay the graph out afresh.
@@ -1832,7 +1925,7 @@ export default function GraphCanvas({
             width: 2,
             // Borrowed, so off the crawl's paths and faint until lit.
             tone: 'political',
-            side: true,
+            beyond: true,
             arc: 0,
           },
         });
