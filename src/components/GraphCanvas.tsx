@@ -42,13 +42,13 @@ import {
   DOT,
   DOT_GAP,
   FCOSE_LAYOUT,
-  FCOSE_NETWORK_LAYOUT,
   SEED_H,
   SEED_W,
   TILE_GAP,
   TILE_H,
   TILE_W,
   edgeWidth,
+  networkLayout,
   separateTiles,
   type GraphLook,
 } from '@/lib/graph/layout';
@@ -169,7 +169,8 @@ const TILE_RADIUS = Math.sqrt(((TILE_W + TILE_GAP) * (TILE_H + TILE_GAP)) / Math
  * built once.
  */
 interface Geometry {
-  layout: typeof FCOSE_LAYOUT | typeof FCOSE_NETWORK_LAYOUT;
+  /** The force layout's settings for the graph on the canvas. */
+  layout: (cy: Core) => typeof FCOSE_LAYOUT | ReturnType<typeof networkLayout>;
   /** Room one node takes, for sizing the ring a new batch is seeded on. */
   unitRadius: number;
   /** Clear space the overlap pass keeps around each node. */
@@ -184,7 +185,7 @@ interface Geometry {
 
 const GEOMETRY: Record<GraphLook, Geometry> = {
   tiles: {
-    layout: FCOSE_LAYOUT,
+    layout: () => FCOSE_LAYOUT,
     unitRadius: TILE_RADIUS,
     gap: TILE_GAP,
     ghostStep: { dx: GHOST_DX, dy: GHOST_DY },
@@ -192,7 +193,7 @@ const GEOMETRY: Record<GraphLook, Geometry> = {
     focusZoom: 1.1,
   },
   network: {
-    layout: FCOSE_NETWORK_LAYOUT,
+    layout: networkLayout,
     // A dot's neighbors settle about an ideal edge length away, so each one
     // holds roughly a disc of half that.
     unitRadius: 60,
@@ -1645,7 +1646,7 @@ export default function GraphCanvas({
       // Through `unknown`: Cytoscape's typings know only its built-in layouts,
       // and fcose ships no types of its own.
       const layout = cy.layout({
-        ...geometry.layout,
+        ...geometry.layout(cy),
         animate: true,
         animationDuration: 500,
         randomize: fixed.length === 0,
