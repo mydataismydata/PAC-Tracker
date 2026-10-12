@@ -42,6 +42,79 @@ export const FCOSE_LAYOUT = {
   tile: true,
 } as const;
 
+/**
+ * The two ways the explorer can draw a graph.
+ *
+ * `tiles` gives every entity a labeled box with its money written inside.
+ * `network` draws every entity as a dot sized by the money it moved, with only
+ * its name beside it, so the shape of the connections reads before the words
+ * do. The shareable picture still draws tiles.
+ */
+export const GRAPH_LOOKS = ['network', 'tiles'] as const;
+export type GraphLook = (typeof GRAPH_LOOKS)[number];
+
+/** Smallest and largest dot in the network look, in graph units. */
+export const DOT_MIN = 8;
+export const DOT_MAX = 30;
+
+/** The seed's dot is never smaller than this, so the anchor stays easy to find. */
+export const SEED_DOT = 24;
+
+/** Clear space kept around every dot. */
+export const DOT_GAP = 16;
+
+/**
+ * The force layout for dots.
+ *
+ * Shorter edges and far less repulsion than the tile layout, because a dot
+ * needs a small part of a tile's room. Labels are left out of the node size
+ * so that a long name does not push its neighbors across the canvas. A label
+ * sits beside its dot and may cross a neighbor's line.
+ */
+export const FCOSE_NETWORK_LAYOUT = {
+  ...FCOSE_LAYOUT,
+  padding: 40,
+  nodeDimensionsIncludeLabels: false,
+  nodeSeparation: 70,
+  idealEdgeLength: 120,
+  nodeRepulsion: 18000,
+  gravity: 0.25,
+} as const;
+
+/** Where a value falls between nothing and the largest value, on a log scale, as 0 to 1. */
+function logShare(value: number, max: number): number {
+  const share = Math.log10(Math.max(value, 0) + 1) / Math.log10(Math.max(max, 1) + 1);
+  return Number.isFinite(share) ? Math.min(1, Math.max(0, share)) : 0;
+}
+
+/**
+ * A dot's diameter, from the money its entity moved.
+ *
+ * Log scale, as for edge widths, and then squared. Without the square a $500
+ * donor and a $5M committee come out within a few pixels of each other.
+ */
+export function dotSize(volume: number, maxVolume: number): number {
+  const share = logShare(volume, maxVolume);
+  return DOT_MIN + (DOT_MAX - DOT_MIN) * share * share;
+}
+
+/**
+ * A line's weight in the network look: width and opacity at rest, and width
+ * when lit.
+ *
+ * The tile look's widths run to 8px, and at that weight a hub's lines merge
+ * into one solid fan. Here the size of a payment shows as width and brightness
+ * together, inside a thin range, so the large flows stand out and the small
+ * ones read as texture.
+ */
+export function hairline(
+  amount: number,
+  maxAmount: number,
+): { width: number; opacity: number; litWidth: number } {
+  const share = logShare(amount, maxAmount);
+  return { width: 0.6 + share * 2.2, opacity: 0.22 + share * 0.43, litWidth: 1.4 + share * 3 };
+}
+
 /** Enough sweeps to open a pile of six hundred tiles stacked on one point. */
 const SEPARATION_PASSES = 400;
 
@@ -80,8 +153,15 @@ export function edgeWidth(amount: number, maxAmount: number): number {
  * a dense pile from exploding on its first sweep.
  *
  * A tile the reader placed is never moved. Its neighbours give way instead.
+ *
+ * `gap` is the clear space kept around each one. The dots of the network look
+ * pass their own, smaller gap.
  */
-export function separateTiles(cy: Core, isFixed: (id: string) => boolean): void {
+export function separateTiles(
+  cy: Core,
+  isFixed: (id: string) => boolean,
+  gap: number = TILE_GAP,
+): void {
   const boxes = cy.nodes().map((n, index) => {
     const p = n.position();
     return {
@@ -89,8 +169,8 @@ export function separateTiles(cy: Core, isFixed: (id: string) => boolean): void 
       index,
       x: p.x,
       y: p.y,
-      halfW: n.outerWidth() / 2 + TILE_GAP / 2,
-      halfH: n.outerHeight() / 2 + TILE_GAP / 2,
+      halfW: n.outerWidth() / 2 + gap / 2,
+      halfH: n.outerHeight() / 2 + gap / 2,
       movable: !isFixed(n.id()),
     };
   });
