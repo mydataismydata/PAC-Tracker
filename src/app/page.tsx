@@ -2032,7 +2032,11 @@ function NetworkLegend() {
       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
         {kinds.map(([kind, label]) => (
           <div key={kind} className="flex items-center gap-2">
-            <KindDot kind={kind} />
+            {/* The canvas fills an organization's dot at 55%, so its amber
+                does not outshine the rest. */}
+            <span className={kind === 'organization' ? 'flex opacity-55' : 'flex'}>
+              <KindDot kind={kind} />
+            </span>
             {label}
           </div>
         ))}

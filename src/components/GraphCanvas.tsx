@@ -62,9 +62,14 @@ const GHOST_DY = TILE_H + 70;
 /** The canvas behind the network look. Dots are ringed in it. */
 const GROUND = '#020617';
 
-/** The background grid of the network look: dot color and spacing at zoom 1. */
-const GRID_DOT = '#1e293b';
-const GRID_STEP = 24;
+/**
+ * How strongly an organization's dot is filled.
+ *
+ * Amber is far brighter than the other kinds' colors on the dark ground, so
+ * at full strength the vendors outshine the committees they were paid by.
+ * The legend's swatch uses the same value.
+ */
+const ORGANIZATION_FILL = 0.55;
 
 /**
  * Line colors in the network look.
@@ -100,23 +105,24 @@ const MAX_DODGED = 2;
 const MAX_BOW = 0.6;
 
 /** Every class a highlight puts on. A new highlight takes all of them off first. */
-const LIT = 'dimmed highlighted reach far-source far-target';
+const LIT = 'dimmed highlighted reach far-end label-left';
 
-/** Where the canvas keeps the factor that sets line widths against the zoom. */
-const LINE_SCALE = 'pactracker:lineScale';
+/** Where the canvas keeps the factor that sizes lines and dots against the zoom. */
+const SCREEN_SCALE = 'pactracker:screenScale';
 
 /** Where the canvas keeps the factor that fades lines as the graph fills up. */
 const LINE_DENSITY = 'pactracker:lineDensity';
 
 /**
- * A line `px` screen pixels wide at zoom 1, thinning gently as the graph is
- * zoomed out. See `fitLinesToZoom`.
+ * A length of `px` screen pixels at zoom 1, which changes only gently as the
+ * graph is zoomed. Used for line widths and for the size of dots and their
+ * rings. See `fitToZoom`.
  *
  * Functions rather than numbers, so that a fresh style pass reads the factor
  * in force at the time.
  */
-const screenWidth = (px: number) => (e: EdgeSingular) =>
-  px * ((e.cy().scratch(LINE_SCALE) as number | undefined) ?? 1);
+const onScreen = (px: number) => (el: NodeSingular | EdgeSingular) =>
+  px * ((el.cy().scratch(SCREEN_SCALE) as number | undefined) ?? 1);
 
 /** A line's opacity, lowered on a crowded canvas. See `fitLinesToDensity`. */
 const crowdedOpacity = (opacity: number) => (e: EdgeSingular) =>
@@ -197,11 +203,6 @@ function edgeTone(recipient: GraphNode | undefined): 'political' | 'vendor' {
   return recipient?.kind === 'organization' ? 'vendor' : 'political';
 }
 
-/** A node's distance in hops from the searched entity. */
-function levelOf(n: NodeSingular): number {
-  return (n.data('entity') as GraphNode | undefined)?.level ?? 0;
-}
-
 /**
  * Draw one line for each pair of entities, whatever passed between them.
  *
@@ -234,24 +235,16 @@ function mergePairs(cy: Core): void {
         else back += e.data('amount');
         if (e.data('ownTone') === 'political') tone = 'political';
       }
-      // On the searched entity's own lines, the money as seen from it, written
-      // at the other end. Drawn when its whole network is lit. The lines
-      // further out carry no amount then: two hundred amounts at once bury the
-      // lines they label.
-      const nearIsSource = levelOf(lead.source()) <= levelOf(lead.target());
-      const fromSeed = Boolean((nearIsSource ? lead.source() : lead.target()).data('isSeed'));
-      const reachLabel = fromSeed
-        ? moneyLabel(nearIsSource ? fwd : back, nearIsSource ? back : fwd)
-        : '';
-      const reachEnd = fromSeed ? (nearIsSource ? 'target' : 'source') : 'none';
+      // One of the searched entity's own lines. With its whole network lit,
+      // only these carry arrows.
+      const seedLine = Boolean(lead.source().data('isSeed') || lead.target().data('isSeed'));
       if (
         lead.data('fwd') !== fwd ||
         lead.data('back') !== back ||
         lead.data('tone') !== tone ||
-        lead.data('reachLabel') !== reachLabel ||
-        lead.data('reachEnd') !== reachEnd
+        lead.data('seedLine') !== seedLine
       ) {
-        lead.data({ fwd, back, tone, reachLabel, reachEnd });
+        lead.data({ fwd, back, tone, seedLine });
       }
       lead.removeClass('twin');
       for (const e of rest) e.addClass('twin');
@@ -274,6 +267,9 @@ type Point = { x: number; y: number };
  *
  * `at` gives a node's position: while a layout animates, the one the node is
  * headed for.
+ *
+ * A name with money written under it moves to whichever side of its dot the
+ * lines now leave clear. See `labelFarEnds`.
  */
 function routeLines(
   edges: EdgeCollection,
@@ -289,6 +285,9 @@ function routeLines(
       const t = e.target();
       const arc = bowAround(at(s), at(t), s.id(), t.id(), dots);
       if (e.data('arc') !== arc) e.data('arc', arc);
+    });
+    edges.connectedNodes('.far-end').forEach((n) => {
+      n.toggleClass('label-left', labelGoesLeft(n));
     });
   });
 }
@@ -362,46 +361,26 @@ function bowAround(
 }
 
 /**
- * Paint the network look's background grid, or clear it for tiles.
+ * Keep the network look's lines thin and its dots small, at every zoom.
  *
- * The grid moves and scales with the graph, so it reads as the surface the
- * graph is drawn on. The spacing doubles or halves to stay between 12 and 48
- * pixels, so zooming far out does not turn it into a solid gray.
- */
-function paintGrid(cy: Core, el: HTMLElement | null, look: GraphLook): void {
-  if (!el) return;
-  if (look !== 'network') {
-    el.style.backgroundImage = '';
-    return;
-  }
-  let step = GRID_STEP * cy.zoom();
-  while (step < 12) step *= 2;
-  while (step > 48) step /= 2;
-  const pan = cy.pan();
-  el.style.backgroundImage = `radial-gradient(circle, ${GRID_DOT} 1px, transparent 1.5px)`;
-  el.style.backgroundSize = `${step}px ${step}px`;
-  el.style.backgroundPosition = `${pan.x}px ${pan.y}px`;
-}
-
-/**
- * Keep the network look's lines thin, and visible, at every zoom.
- *
- * Cytoscape draws a line's width in graph units, so it scales with the zoom.
+ * Cytoscape draws lines and dots in graph units, so they scale with the zoom.
  * Framing a large graph whole thins a 1px line to a sixth of a pixel, too
- * faint to follow, and zooming in thickens it into a bar. Here a line's width
- * on screen moves with the square root of the zoom instead, held between 0.6
- * and 1.3 times its width at zoom 1. The factor moves in steps of a quarter,
- * so a zoom restyles the lines a handful of times rather than on every frame.
+ * faint to follow, and zooming in to read the names turns lines into bars and
+ * dots into discs. Here their size on screen moves with the square root of
+ * the zoom instead, held between 0.6 and 1.3 times their size at zoom 1. Names
+ * still scale with the zoom, so zooming in makes them readable. The factor
+ * moves in steps of a tenth, so a zoom restyles the canvas now and then
+ * rather than on every frame.
  */
-function fitLinesToZoom(cy: Core, look: GraphLook): void {
+function fitToZoom(cy: Core, look: GraphLook): void {
   if (look !== 'network') return;
   const zoom = cy.zoom();
-  const onScreen = Math.min(1.3, Math.max(0.6, Math.sqrt(zoom)));
-  const step = Math.log(1.25);
-  const scale = Math.exp(Math.round(Math.log(onScreen / zoom) / step) * step);
-  if (cy.scratch(LINE_SCALE) === scale) return;
-  cy.scratch(LINE_SCALE, scale);
-  restyle(cy.edges());
+  const target = Math.min(1.3, Math.max(0.6, Math.sqrt(zoom)));
+  const step = Math.log(1.1);
+  const scale = Math.exp(Math.round(Math.log(target / zoom) / step) * step);
+  if (cy.scratch(SCREEN_SCALE) === scale) return;
+  cy.scratch(SCREEN_SCALE, scale);
+  restyle(cy.elements());
 }
 
 /**
@@ -421,8 +400,8 @@ function fitLinesToDensity(cy: Core): void {
 }
 
 /** Send elements through a fresh style pass. Cytoscape has this; its typings leave it out. */
-function restyle(edges: EdgeCollection): void {
-  (edges as unknown as { updateStyle(): void }).updateStyle();
+function restyle(elements: cytoscape.Collection | EdgeCollection): void {
+  (elements as unknown as { updateStyle(): void }).updateStyle();
 }
 
 
@@ -502,33 +481,99 @@ function highlightNeighborhood(
       .addClass('highlighted reach');
     return;
   }
-  const near = node.closedNeighborhood();
-  near.removeClass('dimmed').addClass('highlighted');
-  near.edges().forEach((e) => labelFarEnd(e, node));
+  node.closedNeighborhood().removeClass('dimmed').addClass('highlighted');
 }
 
 /**
- * Write a lit line's money at its far end from `near`, beside the other party.
+ * Write the money along each lit line under the name at its far end.
  *
- * Worded from `near`'s side: what it paid, what it got, or both where the
- * line stands for money both ways. Written at the middle of their lines, a
- * hub's two dozen amounts pile up around the hub. At the far ends they spread
- * out. Only the network look draws these.
+ * `ends` pairs each lit line with its end nearer the entity the panel is
+ * about. The other end is the entity the reader picked, and the money is
+ * worded from its side: what it received along the line, what it gave, or
+ * both, summed over every lit line that ends there. Under its name, "$12K
+ * out" would read as money it paid out when it was money paid to it. Only the
+ * network look draws these, and it writes no amount on a line.
  */
-function labelFarEnd(e: EdgeSingular, near: cytoscape.CollectionArgument): void {
-  if (e.data('kind') !== 'money' || e.hasClass('twin')) return;
-  const fromNear = e.source().same(near);
-  const paid: number = fromNear ? e.data('fwd') : e.data('back');
-  const got: number = fromNear ? e.data('back') : e.data('fwd');
-  e.data('litLabel', moneyLabel(paid, got));
-  e.addClass(fromNear ? 'far-target' : 'far-source');
+function labelFarEnds(ends: [EdgeSingular, NodeSingular][]): void {
+  const farEnds = new Map<string, { node: NodeSingular; received: number; gave: number; also: string[] }>();
+  for (const [e, near] of ends) {
+    if (e.hasClass('twin')) continue;
+    const far = e.source().same(near) ? e.target() : e.source();
+    const farIsTarget = e.target().same(far);
+    let sum = farEnds.get(far.id());
+    if (!sum) {
+      sum = { node: far, received: 0, gave: 0, also: [] };
+      farEnds.set(far.id(), sum);
+    }
+    if (e.data('kind') === 'money') {
+      sum.received += farIsTarget ? e.data('fwd') : e.data('back');
+      sum.gave += farIsTarget ? e.data('back') : e.data('fwd');
+    } else if (e.data('amountLabel')) {
+      // A borrowed hop knows its amount only as text, and points the way the
+      // money went.
+      sum.also.push(`${farIsTarget ? 'received' : 'gave'} ${e.data('amountLabel')}`);
+    }
+  }
+
+  for (const { node, received, gave, also } of farEnds.values()) {
+    const money = [
+      received > 0 ? `received ${formatMoney(received)}` : '',
+      gave > 0 ? `gave ${formatMoney(gave)}` : '',
+      ...also,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    if (!money) continue;
+    node.data('farLabel', `${node.data('name')}\n${money}`);
+    node.addClass('far-end');
+    node.toggleClass('label-left', labelGoesLeft(node));
+  }
 }
 
-/** What one side paid and got along a line: "$12K", or "$12K out · $3K in" for both. */
-function moneyLabel(paid: number, got: number): string {
-  return paid > 0 && got > 0
-    ? `${formatMoney(paid)} out · ${formatMoney(got)} in`
-    : formatMoney(paid || got);
+/**
+ * Whether a dot's name belongs on its left, clear of its lit lines.
+ *
+ * A name sits to the right of its dot. With money written under it, the two
+ * lines of text fill a band beside the dot, and a lit line leaving the dot
+ * into that band runs straight through them. A line climbing more steeply than
+ * 45 degrees passes over the text, and one dropping more steeply than about
+ * 70 degrees passes under it. The text goes on the left only when fewer lit
+ * lines cross that side.
+ */
+function labelGoesLeft(node: NodeSingular): boolean {
+  const p = node.position();
+  let right = 0;
+  let left = 0;
+  node.connectedEdges('.highlighted').forEach((e) => {
+    if (e.hasClass('twin')) return;
+    const toward = leavesToward(e, node);
+    const dx = toward.x - p.x;
+    const dy = toward.y - p.y;
+    if (dx === 0) return;
+    // Screen y grows downward.
+    const slope = dy / Math.abs(dx);
+    if (slope < -1 || slope > 3) return;
+    if (dx > 0) right++;
+    else left++;
+  });
+  return left < right;
+}
+
+/**
+ * A point on the way a line sets off from `end`: the line's control point
+ * where it bows, otherwise its other end. See `bowAround` for the control
+ * point.
+ */
+function leavesToward(e: EdgeSingular, end: NodeSingular): Point {
+  const a = e.source().position();
+  const b = e.target().position();
+  const arc: number = e.data('arc') ?? 0;
+  if (arc === 0) return e.source().same(end) ? b : a;
+  const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  return {
+    x: (a.x + b.x) / 2 - (arc * (b.y - a.y)) / length,
+    y: (a.y + b.y) / 2 + (arc * (b.x - a.x)) / length,
+  };
 }
 
 /**
@@ -543,7 +588,7 @@ function moneyLabel(paid: number, got: number): string {
  * to the neighbourhood rather than dimming the whole map down to a single tile.
  *
  * `focus` is the entity the panel is about. Each lit line's money is written
- * at its end away from the focus, as seen from the hop nearer it. Names
+ * under the name at its end away from the focus. See `labelFarEnds`. Names
  * clicked down in the panel start their route from the focus, and a name
  * opened from the panel ends its route on it, so it can sit at either end.
  */
@@ -554,12 +599,12 @@ function highlightRoutes(
   focus: NodeSingular,
 ): boolean {
   let route = cy.collection();
-  const ends: [EdgeSingular, cytoscape.CollectionArgument][] = [];
+  const ends: [EdgeSingular, NodeSingular][] = [];
   let drawn = 0;
 
   for (const chain of chains) {
     const hops = chain
-      .map((id) => cy.getElementById(id))
+      .map((id) => cy.getElementById(id) as NodeSingular)
       .filter((el) => el.nonempty() && el.isNode());
     if (hops.length < 2) continue;
     drawn++;
@@ -605,7 +650,7 @@ function highlightRoutes(
   cy.elements().removeClass(LIT).addClass('dimmed');
   lit.removeClass('dimmed');
   route.removeClass('dimmed').addClass('highlighted');
-  for (const [e, near] of ends) labelFarEnd(e, near);
+  labelFarEnds(ends);
   return true;
 }
 
@@ -891,24 +936,25 @@ const TILE_STYLE: cytoscape.StylesheetJson = [
  * The network look: a dot per entity and a thin arc per pair of entities.
  *
  * The graph is the picture, so the entities stay quiet. Every dot is the same
- * size, colored by its kind, and its name is faint. Both sit beneath the
- * lines, until the pointer brings one forward. Lines are all one width.
+ * small size, colored by its kind, and its name is faint. Both sit beneath
+ * the lines, until the pointer brings one forward. Lines are all one width.
  * White is political money, and pale yellow is a payment to a vendor, drawn
  * fainter. A line past the chosen depth is fainter still. Selecting an entity
  * brings its lines up to full strength, with arrows for the way the money
- * went and amounts at the far ends. The searched entity's lines are every
- * line within the depth.
+ * went. The searched entity's lines are every line within the depth. No line
+ * carries an amount. A name picked in the panel has its money written under
+ * it, off the line.
  */
 const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     selector: 'node',
     style: {
       shape: 'ellipse',
-      width: DOT,
-      height: DOT,
+      width: onScreen(DOT),
+      height: onScreen(DOT),
       'background-color': kindFill,
       // Ringed in the ground color, so dots that touch still read as two.
-      'border-width': 1.5,
+      'border-width': onScreen(1),
       'border-color': GROUND,
       label: 'data(name)',
       color: '#cbd5e1',
@@ -936,12 +982,16 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       color: '#f1f5f9',
       'text-opacity': 0.9,
       'font-weight': 500,
-      'outline-width': 1.5,
+      'outline-width': onScreen(1.5),
       'outline-color': '#cbd5e1',
-      'outline-offset': 2,
+      'outline-offset': onScreen(2),
       'min-zoomed-font-size': 4,
       'z-index': 3,
     },
+  },
+  {
+    selector: 'node[kind = "organization"]',
+    style: { 'background-opacity': ORGANIZATION_FILL },
   },
   {
     // A person named on filings. Hollow, so it cannot be read as something
@@ -949,7 +999,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     selector: 'node[kind = "officer"]',
     style: {
       'background-opacity': 0,
-      'border-width': 1.5,
+      'border-width': onScreen(1.5),
       'border-color': '#a78bfa',
       'border-style': 'dashed',
       color: '#c4b5fd',
@@ -960,16 +1010,16 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     selector: 'node.ghost',
     style: {
       'background-opacity': 0.35,
-      'outline-width': 1.5,
+      'outline-width': onScreen(1.5),
       'outline-style': 'dotted',
       'outline-color': kindFill,
-      'outline-offset': 2,
+      'outline-offset': onScreen(2),
     },
   },
   {
     selector: 'edge',
     style: {
-      width: screenWidth(1),
+      width: onScreen(1),
       'line-color': POLITICAL_LINE,
       opacity: crowdedOpacity(0.55),
       'curve-style': 'unbundled-bezier',
@@ -985,7 +1035,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   },
   {
     selector: 'edge[tone = "vendor"]',
-    style: { 'line-color': VENDOR_LINE, width: screenWidth(0.8), opacity: crowdedOpacity(0.28) },
+    style: { 'line-color': VENDOR_LINE, width: onScreen(0.8), opacity: crowdedOpacity(0.28) },
   },
   {
     // Past the chosen depth, or a hop borrowed to show a route.
@@ -1036,7 +1086,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     selector: 'edge.highlighted',
     style: {
       opacity: 1,
-      width: screenWidth(1.5),
+      width: onScreen(1.5),
       'target-arrow-shape': 'triangle',
       'target-arrow-color': POLITICAL_LINE,
       'arrow-scale': 0.6,
@@ -1060,7 +1110,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     // Still the fainter of the two kinds of line when lit.
     selector: 'edge.highlighted[tone = "vendor"]',
     style: {
-      width: screenWidth(1.1),
+      width: onScreen(1.1),
       opacity: 0.75,
       'target-arrow-color': VENDOR_LINE,
       'source-arrow-color': VENDOR_LINE,
@@ -1068,22 +1118,14 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     },
   },
   {
-    selector: 'edge.highlighted.far-target',
-    style: { 'target-label': 'data(litLabel)', 'target-text-offset': 34 },
-  },
-  {
-    selector: 'edge.highlighted.far-source',
-    style: { 'source-label': 'data(litLabel)', 'source-text-offset': 34 },
-  },
-  {
     // The searched entity's whole network, every line alike. Lighter than one
     // entity's lines picked out of the graph, because here they are all lit
-    // at once, and a crowded canvas thins them further. Arrows, like amounts,
-    // are kept for the searched entity's own lines: on every line, they ring
-    // each busy dot with arrowheads.
+    // at once, and a crowded canvas thins them further. Arrows are kept for
+    // the searched entity's own lines: on every line, they ring each busy dot
+    // with arrowheads.
     selector: 'edge.highlighted.reach',
     style: {
-      width: screenWidth(1.1),
+      width: onScreen(1.1),
       opacity: crowdedOpacity(0.8),
       'target-arrow-shape': 'none',
       'source-arrow-shape': 'none',
@@ -1091,23 +1133,15 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   },
   {
     selector: 'edge.highlighted.reach[tone = "vendor"]',
-    style: { width: screenWidth(0.9), opacity: crowdedOpacity(0.45) },
+    style: { width: onScreen(0.9), opacity: crowdedOpacity(0.45) },
   },
   {
-    selector: 'edge.highlighted.reach[reachEnd != "none"]',
+    selector: 'edge.highlighted.reach[?seedLine]',
     style: { 'target-arrow-shape': 'triangle' },
   },
   {
-    selector: 'edge.highlighted.reach[reachEnd != "none"][back > 0]',
+    selector: 'edge.highlighted.reach[?seedLine][back > 0]',
     style: { 'source-arrow-shape': 'triangle' },
-  },
-  {
-    selector: 'edge.highlighted.reach[reachEnd = "target"]',
-    style: { 'target-label': 'data(reachLabel)', 'target-text-offset': 34 },
-  },
-  {
-    selector: 'edge.highlighted.reach[reachEnd = "source"]',
-    style: { 'source-label': 'data(reachLabel)', 'source-text-offset': 34 },
   },
   {
     // With the whole network lit, names stay as quiet as at rest, or six
@@ -1116,15 +1150,38 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: { 'text-opacity': 0.55, color: '#cbd5e1', 'min-zoomed-font-size': 6 },
   },
   {
+    // The far end of a route picked in the panel, with the money along the
+    // route written under its name. See `labelFarEnds`.
+    selector: 'node.far-end',
+    style: {
+      label: 'data(farLabel)',
+      'text-wrap': 'wrap',
+      'text-max-width': '400px',
+      'line-height': 1.3,
+      // Half a line down, so the name stays level with its dot.
+      'text-margin-y': 6.5,
+      color: '#f1f5f9',
+      'text-opacity': 0.9,
+      'min-zoomed-font-size': 4,
+    },
+  },
+  {
+    // Moved off the side a lit line leaves from. See `labelGoesLeft`.
+    selector: 'node.far-end.label-left',
+    style: { 'text-halign': 'left', 'text-margin-x': -4 },
+  },
+  {
+    // A borrowed hop's word for how it was found. An amount goes under the
+    // name at the far end instead.
     selector: 'edge.highlighted.ghost',
-    style: { label: 'data(label)' },
+    style: { label: 'data(lineLabel)' },
   },
   {
     // A shared officer, named on the line rather than at an end, since
     // neither end is where anything went.
     selector: 'edge.highlighted[kind = "registration"]',
     style: {
-      width: screenWidth(1.5),
+      width: onScreen(1.5),
       'line-color': '#a78bfa',
       'target-arrow-shape': 'none',
       'source-arrow-shape': 'none',
@@ -1135,9 +1192,9 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     selector: 'node:selected',
     style: {
-      'outline-width': 2,
+      'outline-width': onScreen(2),
       'outline-color': '#f8fafc',
-      'outline-offset': 2,
+      'outline-offset': onScreen(2),
       color: '#f8fafc',
       'text-opacity': 1,
       'font-weight': 500,
@@ -1147,15 +1204,15 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   },
   {
     // The pointer brings a dot forward, above the lines and every other dot,
-    // a little larger and with its name at full strength.
+    // larger and with its name at full strength, so it is easy to click.
     selector: 'node.hovered',
     style: {
-      width: DOT * 1.35,
-      height: DOT * 1.35,
+      width: onScreen(DOT * 1.5),
+      height: onScreen(DOT * 1.5),
       opacity: 1,
-      'outline-width': 2,
+      'outline-width': onScreen(1.5),
       'outline-color': '#cbd5e1',
-      'outline-offset': 2,
+      'outline-offset': onScreen(2),
       color: '#f8fafc',
       'text-opacity': 1,
       'min-zoomed-font-size': 0,
@@ -1383,13 +1440,11 @@ export default function GraphCanvas({
     });
     cy.on('viewport', () => {
       setHover(null);
-      paintGrid(cy, containerRef.current, lookRef.current);
-      fitLinesToZoom(cy, lookRef.current);
+      fitToZoom(cy, lookRef.current);
     });
 
     appliedLookRef.current = lookRef.current;
-    paintGrid(cy, containerRef.current, lookRef.current);
-    fitLinesToZoom(cy, lookRef.current);
+    fitToZoom(cy, lookRef.current);
 
     cyRef.current = cy;
     setCyEpoch((e) => e + 1);
@@ -1684,7 +1739,7 @@ export default function GraphCanvas({
   }, [nodes, edges, seedId, maxAmount, cyEpoch, ready, initialPositions, scheduleLayout, depth]);
 
   /**
-   * Switch look: restyle, repaint the ground, lay the graph out afresh.
+   * Switch look: restyle, and lay the graph out afresh.
    *
    * Places the reader dragged tiles to are let go, for the reason given at
    * `scheduleLayout`.
@@ -1695,8 +1750,7 @@ export default function GraphCanvas({
     appliedLookRef.current = look;
     lookRef.current = look;
     cy.style(STYLES[look]);
-    paintGrid(cy, containerRef.current, look);
-    fitLinesToZoom(cy, look);
+    fitToZoom(cy, look);
     pinnedRef.current.clear();
     if (cy.nodes().nonempty()) scheduleLayout(true);
   }, [look, ready, cyEpoch, scheduleLayout]);
@@ -1705,12 +1759,12 @@ export default function GraphCanvas({
   const exportPng = useCallback((filename: string) => {
     const cy = cyRef.current;
     if (!cy) return;
-    // The file is drawn at its own scale, not the screen's zoom, so the lines
-    // go back to graph-unit widths for it and return to the zoom afterwards.
-    const held = cy.scratch(LINE_SCALE) as number | undefined;
+    // The file is drawn at its own scale, not the screen's zoom, so lines and
+    // dots go back to graph-unit sizes for it and return to the zoom afterwards.
+    const held = cy.scratch(SCREEN_SCALE) as number | undefined;
     if (held !== undefined) {
-      cy.scratch(LINE_SCALE, 1);
-      restyle(cy.edges());
+      cy.scratch(SCREEN_SCALE, 1);
+      restyle(cy.elements());
     }
     const png = cy.png({
       output: 'blob',
@@ -1721,8 +1775,8 @@ export default function GraphCanvas({
       maxHeight: 6000,
     });
     if (held !== undefined) {
-      cy.scratch(LINE_SCALE, held);
-      restyle(cy.edges());
+      cy.scratch(SCREEN_SCALE, held);
+      restyle(cy.elements());
     }
     const url = URL.createObjectURL(png);
     const a = document.createElement('a');
@@ -1977,6 +2031,10 @@ export default function GraphCanvas({
         // Both ends have to exist first, and one of them can be an officer hub
         // that this route never managed to resolve.
         if (cy.getElementById(e.source).empty() || cy.getElementById(e.target).empty()) continue;
+        // A hop's label is the amount the panel row showed, or a word such as
+        // "traced" or an officer's role. The network look writes an amount
+        // under the name at the far end and keeps a word on the line.
+        const isAmount = e.label.startsWith('$');
         cy.add({
           group: 'edges',
           classes: 'ghost',
@@ -1985,6 +2043,8 @@ export default function GraphCanvas({
             source: e.source,
             target: e.target,
             label: e.label,
+            lineLabel: isAmount ? '' : e.label,
+            amountLabel: isAmount ? e.label : '',
             width: 2,
             // Borrowed, so off the crawl's paths and faint until lit.
             tone: 'political',

@@ -54,12 +54,14 @@ export const GRAPH_LOOKS = ['network', 'tiles'] as const;
 export type GraphLook = (typeof GRAPH_LOOKS)[number];
 
 /**
- * The size of every dot in the network look, in graph units.
+ * The size of every dot in the network look at zoom 1, in graph units.
  *
  * One size for all of them. An entity is one point in the picture, and the
- * picture is the graph.
+ * picture is the graph. On screen the explorer keeps a dot between 0.6 and
+ * 1.3 times this size at any zoom, so zooming in spreads the dots out rather
+ * than blowing them up.
  */
-export const DOT = 12;
+export const DOT = 8;
 
 /** Clear space kept around every dot. */
 export const DOT_GAP = 16;
