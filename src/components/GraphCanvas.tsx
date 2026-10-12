@@ -717,10 +717,11 @@ export default function GraphCanvas({
       // run is the one thing this must not do, because it would throw every
       // other tile somewhere new while the reader is looking at them. A locked
       // node is one Cytoscape itself refuses to move, whatever the layout asks.
+      const held = (id: string) => pinnedRef.current.has(id) || Boolean(initialPositions?.[id]);
       const fixed: { nodeId: string; position: { x: number; y: number } }[] = [];
       cy.nodes().forEach((n) => {
         const id = n.id();
-        if (pinnedRef.current.has(id) || initialPositions?.[id]) {
+        if (held(id)) {
           const p = n.position();
           fixed.push({ nodeId: id, position: { x: p.x, y: p.y } });
           n.lock();
@@ -729,6 +730,10 @@ export default function GraphCanvas({
         }
       });
 
+      // Where each tile is headed, as the layout hands it over. fcose works
+      // out every position before it starts animating.
+      const headed = new Map<string, { x: number; y: number }>();
+
       const layout = cy.layout({
         ...FCOSE_LAYOUT,
         animate: true,
@@ -736,6 +741,10 @@ export default function GraphCanvas({
         randomize: fixed.length === 0,
         fit: false,
         fixedNodeConstraint: fixed.length > 0 ? fixed : undefined,
+        transform: (n: NodeSingular, p: { x: number; y: number }) => {
+          headed.set(n.id(), p);
+          return p;
+        },
       } as cytoscape.LayoutOptions);
 
       /**
@@ -749,10 +758,30 @@ export default function GraphCanvas({
        * which in a flex pane is often stale, so this is the fit that counts.
        */
       const settleView = () => {
+        // A layout stopped early, to frame the view or to make way for the
+        // next batch, leaves each tile wherever its animation had got to:
+        // part of the way from the ring it was dropped on. The first fit
+        // lands about 800 ms after the crawl finishes, often inside the
+        // animation, and left the graph half spread, with tiles far from
+        // their only connection and long lines across the middle. The layout
+        // worked out every position before animating, so each tile goes
+        // straight to where it was headed. A layout that has been replaced
+        // leaves the tiles to the one that replaced it.
+        if (layoutRef.current === layout) {
+          cy.batch(() => {
+            cy.nodes().forEach((n) => {
+              const to = headed.get(n.id());
+              if (!to || held(n.id())) return;
+              n.stop();
+              const at = n.position();
+              if (at.x !== to.x || at.y !== to.y) n.position({ x: to.x, y: to.y });
+            });
+          });
+        }
         // The lock was only for the duration of the layout. Leaving it on would
         // make a pinned tile the one tile the reader can no longer drag.
         cy.nodes().unlock();
-        separateTiles(cy, (id) => pinnedRef.current.has(id) || Boolean(initialPositions?.[id]));
+        separateTiles(cy, held);
         if (pinnedRef.current.size > 0) return;
         cy.resize();
         cy.fit(cy.elements(), 60);
