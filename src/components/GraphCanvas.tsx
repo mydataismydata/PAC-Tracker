@@ -113,6 +113,12 @@ const SCREEN_SCALE = 'pactracker:screenScale';
 /** Where the canvas keeps the factor that stops names growing past zoom 1. */
 const TEXT_SCALE = 'pactracker:textScale';
 
+/** Where the canvas keeps the factor that holds a size steady at every zoom. */
+const FIXED_SCALE = 'pactracker:fixedScale';
+
+/** Every factor `fitToZoom` keeps, which an export sets back to 1. */
+const ZOOM_FACTORS = [SCREEN_SCALE, TEXT_SCALE, FIXED_SCALE];
+
 /** Where the canvas keeps the factor that fades lines as the graph fills up. */
 const LINE_DENSITY = 'pactracker:lineDensity';
 
@@ -134,6 +140,33 @@ const onScreen = (px: number) => (el: NodeSingular | EdgeSingular) =>
  */
 const onText = (px: number) => (el: NodeSingular | EdgeSingular) =>
   px * ((el.cy().scratch(TEXT_SCALE) as number | undefined) ?? 1);
+
+/** A length of `px` screen pixels at every zoom. See `fitToZoom`. */
+const onFixed = (px: number) => (el: NodeSingular | EdgeSingular) =>
+  px * ((el.cy().scratch(FIXED_SCALE) as number | undefined) ?? 1);
+
+/** The size of a dot's name on screen at zoom 1, in pixels. */
+const NAME = 10;
+
+/**
+ * The size of the searched entity's name and the selected entity's, in
+ * pixels. They stay this size at every zoom, so the two the reader is
+ * following are always named, even with the whole graph framed.
+ */
+const NAME_LARGE = 14;
+
+/** Whether a dot's name is drawn large. See `NAME_LARGE`. */
+const largeName = (n: NodeSingular) => Boolean(n.data('isSeed')) || n.selected();
+
+/** The size of a dot's name, in graph units. */
+const nameSize = (n: NodeSingular) => (largeName(n) ? onFixed(NAME_LARGE)(n) : onText(NAME)(n));
+
+/**
+ * How far a dot's name sits from the dot, in graph units. A large name's dot
+ * wears a ring about 4 pixels wide, and the name clears it.
+ */
+const nameGap = (n: NodeSingular) =>
+  largeName(n) ? onScreen(4)(n) + onFixed(5)(n) : onText(4)(n);
 
 /** A line's opacity, lowered on a crowded canvas. See `fitLinesToDensity`. */
 const crowdedOpacity = (opacity: number) => (e: EdgeSingular) =>
@@ -246,16 +279,8 @@ function mergePairs(cy: Core): void {
         else back += e.data('amount');
         if (e.data('ownTone') === 'political') tone = 'political';
       }
-      // One of the searched entity's own lines. With its whole network lit,
-      // only these carry arrows.
-      const seedLine = Boolean(lead.source().data('isSeed') || lead.target().data('isSeed'));
-      if (
-        lead.data('fwd') !== fwd ||
-        lead.data('back') !== back ||
-        lead.data('tone') !== tone ||
-        lead.data('seedLine') !== seedLine
-      ) {
-        lead.data({ fwd, back, tone, seedLine });
+      if (lead.data('fwd') !== fwd || lead.data('back') !== back || lead.data('tone') !== tone) {
+        lead.data({ fwd, back, tone });
       }
       lead.removeClass('twin');
       for (const e of rest) e.addClass('twin');
@@ -385,9 +410,10 @@ function bowAround(
  * Names shrink with the view when it is zoomed out, which hides them once
  * they are too small to read. Zoomed in, they stay the size they are at zoom
  * 1, so zooming in spreads crowded names apart instead of enlarging the
- * crowd.
+ * crowd. The searched entity's name and the selected one's stay one size at
+ * every zoom.
  *
- * Both factors move in steps of 10%, so a zoom restyles the canvas now and
+ * The factors move in steps of 10%, so a zoom restyles the canvas now and
  * then rather than on every frame.
  */
 function fitToZoom(cy: Core, look: GraphLook): void {
@@ -395,11 +421,13 @@ function fitToZoom(cy: Core, look: GraphLook): void {
   const zoom = cy.zoom();
   const step = Math.log(1.1);
   const quantize = (factor: number) => Math.exp(Math.round(Math.log(factor) / step) * step);
-  const screen = quantize(Math.min(1.3, Math.max(0.6, Math.sqrt(zoom))) / zoom);
-  const text = quantize(Math.min(1, 1 / zoom));
-  if (cy.scratch(SCREEN_SCALE) === screen && cy.scratch(TEXT_SCALE) === text) return;
-  cy.scratch(SCREEN_SCALE, screen);
-  cy.scratch(TEXT_SCALE, text);
+  const factors: Record<string, number> = {
+    [SCREEN_SCALE]: quantize(Math.min(1.3, Math.max(0.6, Math.sqrt(zoom))) / zoom),
+    [TEXT_SCALE]: quantize(Math.min(1, 1 / zoom)),
+    [FIXED_SCALE]: quantize(1 / zoom),
+  };
+  if (ZOOM_FACTORS.every((key) => cy.scratch(key) === factors[key])) return;
+  for (const key of ZOOM_FACTORS) cy.scratch(key, factors[key]);
   restyle(cy.elements());
 }
 
@@ -962,10 +990,10 @@ const TILE_STYLE: cytoscape.StylesheetJson = [
  * the lines, until the pointer brings one forward. Lines are all one width.
  * White is political money, and pale yellow is a payment to a vendor, drawn
  * fainter. A line past the chosen depth is fainter still. Selecting an entity
- * brings its lines up to full strength, with arrows for the way the money
- * went. The searched entity's lines are every line within the depth. No line
- * carries an amount. A name picked in the panel has its money written under
- * it, off the line.
+ * brings its lines up to full strength. The searched entity's lines are every
+ * line within the depth. No line carries an arrow or an amount. A name picked
+ * in the panel has its money written under it, off the line, in words that
+ * say which way it went.
  */
 const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
@@ -981,11 +1009,11 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       label: 'data(name)',
       color: '#cbd5e1',
       'text-opacity': 0.55,
-      'font-size': onText(10),
+      'font-size': nameSize,
       'font-weight': 400,
       'text-halign': 'right',
       'text-valign': 'center',
-      'text-margin-x': onText(4),
+      'text-margin-x': nameGap,
       'text-wrap': 'none',
       // A name too small to read is not drawn.
       'min-zoomed-font-size': 6,
@@ -997,17 +1025,17 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     },
   },
   {
-    // The anchor of the view stays above the lines, ringed, so it can always
-    // be found.
+    // The anchor of the view stays above the lines, ringed and named large,
+    // so it can always be found.
     selector: 'node[?isSeed]',
     style: {
-      color: '#f1f5f9',
-      'text-opacity': 0.9,
-      'font-weight': 500,
+      color: '#f8fafc',
+      'text-opacity': 1,
+      'font-weight': 600,
       'outline-width': onScreen(1.5),
       'outline-color': '#cbd5e1',
       'outline-offset': onScreen(2),
-      'min-zoomed-font-size': 4,
+      'min-zoomed-font-size': 0,
       'z-index': 3,
     },
   },
@@ -1065,7 +1093,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: { opacity: crowdedOpacity(0.1) },
   },
   {
-    // Paperwork, not payment: dashed, and never given an arrow.
+    // Paperwork, not payment, so dashed.
     selector: 'edge[kind = "registration"]',
     style: {
       'line-style': 'dashed',
@@ -1109,9 +1137,6 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: {
       opacity: 1,
       width: onScreen(1.5),
-      'target-arrow-shape': 'triangle',
-      'target-arrow-color': POLITICAL_LINE,
-      'arrow-scale': 0.6,
       'font-size': onText(9),
       'font-weight': 500,
       color: '#f1f5f9',
@@ -1124,46 +1149,20 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     },
   },
   {
-    // The line stands for money both ways, so it points both ways.
-    selector: 'edge.highlighted[back > 0]',
-    style: { 'source-arrow-shape': 'triangle', 'source-arrow-color': POLITICAL_LINE },
-  },
-  {
     // Still the fainter of the two kinds of line when lit.
     selector: 'edge.highlighted[tone = "vendor"]',
-    style: {
-      width: onScreen(1.1),
-      opacity: 0.75,
-      'target-arrow-color': VENDOR_LINE,
-      'source-arrow-color': VENDOR_LINE,
-      color: VENDOR_LINE,
-    },
+    style: { width: onScreen(1.1), opacity: 0.75, color: VENDOR_LINE },
   },
   {
     // The searched entity's whole network, every line alike. Lighter than one
     // entity's lines picked out of the graph, because here they are all lit
-    // at once, and a crowded canvas thins them further. Arrows are kept for
-    // the searched entity's own lines: on every line, they ring each busy dot
-    // with arrowheads.
+    // at once, and a crowded canvas thins them further.
     selector: 'edge.highlighted.reach',
-    style: {
-      width: onScreen(1.1),
-      opacity: crowdedOpacity(0.8),
-      'target-arrow-shape': 'none',
-      'source-arrow-shape': 'none',
-    },
+    style: { width: onScreen(1.1), opacity: crowdedOpacity(0.8) },
   },
   {
     selector: 'edge.highlighted.reach[tone = "vendor"]',
     style: { width: onScreen(0.9), opacity: crowdedOpacity(0.45) },
-  },
-  {
-    selector: 'edge.highlighted.reach[?seedLine]',
-    style: { 'target-arrow-shape': 'triangle' },
-  },
-  {
-    selector: 'edge.highlighted.reach[?seedLine][back > 0]',
-    style: { 'source-arrow-shape': 'triangle' },
   },
   {
     // With the whole network lit, names stay as quiet as at rest, or six
@@ -1181,7 +1180,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'text-max-width': '400px',
       'line-height': 1.3,
       // Half a line down, so the name stays level with its dot.
-      'text-margin-y': onText(6.5),
+      'text-margin-y': (n: NodeSingular) => nameSize(n) * 0.65,
       color: '#f1f5f9',
       'text-opacity': 0.9,
       'min-zoomed-font-size': 4,
@@ -1190,7 +1189,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     // Moved off the side a lit line leaves from. See `labelGoesLeft`.
     selector: 'node.far-end.label-left',
-    style: { 'text-halign': 'left', 'text-margin-x': onText(-4) },
+    style: { 'text-halign': 'left', 'text-margin-x': (n: NodeSingular) => -nameGap(n) },
   },
   {
     // A borrowed hop's word for how it was found. An amount goes under the
@@ -1205,13 +1204,12 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: {
       width: onScreen(1.5),
       'line-color': '#a78bfa',
-      'target-arrow-shape': 'none',
-      'source-arrow-shape': 'none',
       color: '#c4b5fd',
       label: 'data(label)',
     },
   },
   {
+    // Ringed in white and named large. See `NAME_LARGE`.
     selector: 'node:selected',
     style: {
       'outline-width': onScreen(2),
@@ -1219,8 +1217,8 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'outline-offset': onScreen(2),
       color: '#f8fafc',
       'text-opacity': 1,
-      'font-weight': 500,
-      'min-zoomed-font-size': 4,
+      'font-weight': 600,
+      'min-zoomed-font-size': 0,
       'z-index': 20,
     },
   },
@@ -1802,7 +1800,7 @@ export default function GraphCanvas({
     // The file is drawn at its own scale, not the screen's zoom, so lines, dots
     // and names go back to graph-unit sizes for it and return to the zoom
     // afterwards.
-    const held = [SCREEN_SCALE, TEXT_SCALE].map((key) => [key, cy.scratch(key)] as const);
+    const held = ZOOM_FACTORS.map((key) => [key, cy.scratch(key)] as const);
     const scaled = held.some(([, factor]) => factor !== undefined);
     if (scaled) {
       for (const [key] of held) cy.scratch(key, 1);
