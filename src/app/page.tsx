@@ -2006,9 +2006,9 @@ function Legend({ look }: { look: GraphLook }) {
 }
 
 /**
- * The network look's key: what a dot's color and size say, and what the two
- * kinds of line say. Two columns, so it covers as little of the canvas as the
- * tiles' key does.
+ * The network look's key: what a dot's color says, and what the two kinds of
+ * line say. Two columns, so it covers as little of the canvas as the tiles'
+ * key does.
  */
 function NetworkLegend() {
   const kinds = [
@@ -2056,9 +2056,7 @@ function NetworkLegend() {
           </div>
         ))}
       </div>
-      <p className="mt-1.5 text-[10px] text-slate-500">
-        Dot size is money moved. Click a dot to light its own lines.
-      </p>
+      <p className="mt-1.5 text-[10px] text-slate-500">Click a dot to light its own lines.</p>
     </div>
   );
 }

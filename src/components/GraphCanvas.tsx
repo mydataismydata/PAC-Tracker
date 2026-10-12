@@ -39,18 +39,15 @@ import {
   type ViewIntent,
 } from '@/lib/graph/types';
 import {
+  DOT,
   DOT_GAP,
-  DOT_MAX,
-  DOT_MIN,
   FCOSE_LAYOUT,
   FCOSE_NETWORK_LAYOUT,
-  SEED_DOT,
   SEED_H,
   SEED_W,
   TILE_GAP,
   TILE_H,
   TILE_W,
-  dotSize,
   edgeWidth,
   separateTiles,
   type GraphLook,
@@ -166,32 +163,9 @@ function fitLabel(name: string, max = 38): string {
   return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
 }
 
-/**
- * The money an entity moved, for sizing its dot.
- *
- * The larger of what came in and what went out, not their sum. A committee
- * that passes $1M straight through moved $1M, not $2M.
- */
-function moneyMoved(n: GraphNode): number {
-  return Math.max(Number(n.totalReceived) || 0, Number(n.totalGiven) || 0);
-}
-
-/**
- * What the network look reads off a node.
- *
- * A dot's size is measured against the largest one on the canvas, so it is
- * worked out again whenever that changes. The label's size follows the dot,
- * so that zoomed out, the names left readable are the large ones.
- */
-function dotData(n: GraphNode, isSeed: boolean, maxMoved: number) {
-  // A person named on filings moved no money. A fixed ring, so a hub of a
-  // hundred committees does not shrink to the smallest dot on the canvas.
-  const dot =
-    n.kind === 'officer'
-      ? 16
-      : Math.max(dotSize(moneyMoved(n), maxMoved), isSeed ? SEED_DOT : DOT_MIN);
-  const share = Math.min(1, (dot - DOT_MIN) / (DOT_MAX - DOT_MIN));
-  return { name: fitLabel(n.name, 30), dot, fontSize: isSeed ? 13 : 9 + 4 * share };
+/** The name the network look writes beside a dot. */
+function dotName(n: GraphNode): string {
+  return fitLabel(n.name, 30);
 }
 
 /**
@@ -317,16 +291,6 @@ function bendArcs(
       if (e.data('arc') !== arc) e.data('arc', arc);
     });
   });
-}
-
-/** The largest amount of money any entity on the canvas moved. */
-function canvasMaxMoved(cy: Core): number {
-  let max = 0;
-  cy.nodes().forEach((n) => {
-    const entity = n.data('entity') as GraphNode | undefined;
-    if (entity) max = Math.max(max, moneyMoved(entity));
-  });
-  return max || 1;
 }
 
 /**
@@ -858,50 +822,57 @@ const TILE_STYLE: cytoscape.StylesheetJson = [
 /**
  * The network look: a dot per entity and a thin arc per pair of entities.
  *
- * A dot's color is its kind, as in the panels, and its size is the money it
- * moved. Lines are all one width. White is political money, and pale yellow
- * is a payment to a vendor, drawn fainter. A line past the chosen depth is
- * fainter still. Selecting an entity brings its lines up to full strength,
- * with arrows for the way the money went and amounts at the far ends. The
- * searched entity's lines are every line within the depth.
+ * The graph is the picture, so the entities stay quiet. Every dot is the same
+ * size, colored by its kind, and its name is faint. Both sit beneath the
+ * lines, until the pointer brings one forward. Lines are all one width.
+ * White is political money, and pale yellow is a payment to a vendor, drawn
+ * fainter. A line past the chosen depth is fainter still. Selecting an entity
+ * brings its lines up to full strength, with arrows for the way the money
+ * went and amounts at the far ends. The searched entity's lines are every
+ * line within the depth.
  */
 const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     selector: 'node',
     style: {
       shape: 'ellipse',
-      width: 'data(dot)',
-      height: 'data(dot)',
+      width: DOT,
+      height: DOT,
       'background-color': kindFill,
       // Ringed in the ground color, so dots that touch still read as two.
-      'border-width': 2,
+      'border-width': 1.5,
       'border-color': GROUND,
       label: 'data(name)',
-      color: '#94a3b8',
-      'font-size': 'data(fontSize)',
-      'font-weight': 500,
+      color: '#cbd5e1',
+      'text-opacity': 0.55,
+      'font-size': 10,
+      'font-weight': 400,
       'text-halign': 'right',
       'text-valign': 'center',
-      'text-margin-x': 5,
+      'text-margin-x': 4,
       'text-wrap': 'none',
-      // A dark halo keeps a name readable where it crosses a line.
-      'text-outline-color': GROUND,
-      'text-outline-width': 2,
-      // A name too small to read is not drawn. Zoomed out, only the large
-      // dots keep their names.
-      'min-zoomed-font-size': 7,
+      // A name too small to read is not drawn.
+      'min-zoomed-font-size': 6,
+      // Beneath the lines. Cytoscape draws a name with its dot, so the name
+      // can only go under the lines if the dot does too. `manual` lets an
+      // edge's z-index put it above a node's, which `auto` never does.
+      'z-index-compare': 'manual',
+      'z-index': 1,
     },
   },
   {
+    // The anchor of the view stays above the lines, ringed, so it can always
+    // be found.
     selector: 'node[?isSeed]',
     style: {
       color: '#f1f5f9',
-      'font-weight': 700,
+      'text-opacity': 0.9,
+      'font-weight': 500,
       'outline-width': 1.5,
       'outline-color': '#cbd5e1',
       'outline-offset': 2,
       'min-zoomed-font-size': 4,
-      'z-index': 10,
+      'z-index': 3,
     },
   },
   {
@@ -910,11 +881,10 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     selector: 'node[kind = "officer"]',
     style: {
       'background-opacity': 0,
-      'border-width': 2,
+      'border-width': 1.5,
       'border-color': '#a78bfa',
       'border-style': 'dashed',
       color: '#c4b5fd',
-      'z-index': 12,
     },
   },
   {
@@ -938,6 +908,11 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'control-point-distances': 'data(arc)',
       'control-point-weights': 0.5,
       'edge-distances': 'node-position',
+      'z-index-compare': 'manual',
+      'z-index': 2,
+      // Lines take no clicks or hovers, so a dot beneath one is still what
+      // the pointer reaches.
+      events: 'no',
     },
   },
   {
@@ -969,10 +944,6 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: { display: 'none' },
   },
   {
-    selector: 'node.hovered',
-    style: { 'outline-width': 2, 'outline-color': '#94a3b8', 'outline-offset': 2, color: '#e2e8f0' },
-  },
-  {
     selector: 'edge.hovered',
     style: { opacity: 0.9 },
   },
@@ -988,10 +959,9 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     selector: 'node.highlighted',
     style: {
       opacity: 1,
-      'text-opacity': 1,
+      'text-opacity': 0.8,
       color: '#e2e8f0',
       'min-zoomed-font-size': 4,
-      'z-index': 15,
     },
   },
   {
@@ -1003,11 +973,11 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'target-arrow-color': POLITICAL_LINE,
       'arrow-scale': 0.6,
       'font-size': 9,
-      'font-weight': 600,
+      'font-weight': 500,
       color: '#f1f5f9',
       'text-rotation': 'none',
       'text-background-color': GROUND,
-      'text-background-opacity': 0.92,
+      'text-background-opacity': 0.85,
       'text-background-padding': '2px',
       'text-background-shape': 'roundrectangle',
       'min-zoomed-font-size': 5,
@@ -1040,13 +1010,28 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     // The searched entity's whole network, every line alike. Lighter than one
     // entity's lines picked out of the graph, because here they are all lit
-    // at once, and a crowded canvas thins them further.
+    // at once, and a crowded canvas thins them further. Arrows, like amounts,
+    // are kept for the searched entity's own lines: on every line, they ring
+    // each busy dot with arrowheads.
     selector: 'edge.highlighted.reach',
-    style: { width: screenWidth(1.1), opacity: crowdedOpacity(0.8) },
+    style: {
+      width: screenWidth(1.1),
+      opacity: crowdedOpacity(0.8),
+      'target-arrow-shape': 'none',
+      'source-arrow-shape': 'none',
+    },
   },
   {
     selector: 'edge.highlighted.reach[tone = "vendor"]',
     style: { width: screenWidth(0.9), opacity: crowdedOpacity(0.45) },
+  },
+  {
+    selector: 'edge.highlighted.reach[reachEnd != "none"]',
+    style: { 'target-arrow-shape': 'triangle' },
+  },
+  {
+    selector: 'edge.highlighted.reach[reachEnd != "none"][back > 0]',
+    style: { 'source-arrow-shape': 'triangle' },
   },
   {
     selector: 'edge.highlighted.reach[reachEnd = "target"]',
@@ -1057,10 +1042,10 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     style: { 'source-label': 'data(reachLabel)', 'source-text-offset': 34 },
   },
   {
-    // Names keep their zoomed-out thinning when the whole network is lit, or
-    // six hundred of them are drawn at once.
+    // With the whole network lit, names stay as quiet as at rest, or six
+    // hundred of them are drawn at once.
     selector: 'node.highlighted.reach',
-    style: { 'min-zoomed-font-size': 7 },
+    style: { 'text-opacity': 0.55, color: '#cbd5e1', 'min-zoomed-font-size': 6 },
   },
   {
     selector: 'edge.highlighted.ghost',
@@ -1082,13 +1067,31 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     selector: 'node:selected',
     style: {
-      'outline-width': 2.5,
+      'outline-width': 2,
       'outline-color': '#f8fafc',
       'outline-offset': 2,
       color: '#f8fafc',
-      'font-weight': 700,
+      'text-opacity': 1,
+      'font-weight': 500,
       'min-zoomed-font-size': 4,
       'z-index': 20,
+    },
+  },
+  {
+    // The pointer brings a dot forward, above the lines and every other dot,
+    // a little larger and with its name at full strength.
+    selector: 'node.hovered',
+    style: {
+      width: DOT * 1.35,
+      height: DOT * 1.35,
+      opacity: 1,
+      'outline-width': 2,
+      'outline-color': '#cbd5e1',
+      'outline-offset': 2,
+      color: '#f8fafc',
+      'text-opacity': 1,
+      'min-zoomed-font-size': 0,
+      'z-index': 30,
     },
   },
 ];
@@ -1473,11 +1476,6 @@ export default function GraphCanvas({
     });
     if (stale.nonempty()) cy.remove(stale);
 
-    // Dots are sized against the entity on the canvas that moved the most, so
-    // every dot is worked out again when that changes.
-    let maxMoved = 1;
-    for (const n of nodes.values()) maxMoved = Math.max(maxMoved, moneyMoved(n));
-
     // Totals are cycle-dependent, so a node that survives the change still
     // needs its label rewritten.
     for (const n of nodes.values()) {
@@ -1485,13 +1483,8 @@ export default function GraphCanvas({
       if (el.empty()) continue;
       const label = tileLabel(n);
       const isSeed = n.id === seedId;
-      const dots = dotData(n, isSeed, maxMoved);
-      if (
-        el.data('label') !== label ||
-        el.data('isSeed') !== isSeed ||
-        el.data('dot') !== dots.dot
-      ) {
-        el.data({ label, entity: n, isSeed, ...dots });
+      if (el.data('label') !== label || el.data('isSeed') !== isSeed) {
+        el.data({ label, entity: n, isSeed, name: dotName(n) });
       }
     }
 
@@ -1529,7 +1522,7 @@ export default function GraphCanvas({
           // Dashed border hints there is more to pull in beyond what is drawn.
           hasMore: n.isTraversable && n.inDegree + n.outDegree > 0,
           entity: n,
-          ...dotData(n, n.id === seedId, maxMoved),
+          name: dotName(n),
         },
         position: initialPositions?.[n.id]
           ? { ...initialPositions[n.id] }
@@ -1872,7 +1865,6 @@ export default function GraphCanvas({
       let from = box ? { x: (box.x1 + box.x2) / 2, y: (box.y1 + box.y2) / 2 } : { x: 0, y: 0 };
       let step = 0;
       const { dx, dy } = GEOMETRY[lookRef.current].ghostStep;
-      const maxMoved = canvasMaxMoved(cy);
 
       for (const n of ghost.nodes) {
         const already = cy.getElementById(n.id);
@@ -1902,7 +1894,7 @@ export default function GraphCanvas({
             isSeed: false,
             hasMore: false,
             entity: n,
-            ...dotData(n, false, maxMoved),
+            name: dotName(n),
           },
           position,
         });

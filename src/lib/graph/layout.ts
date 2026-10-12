@@ -46,19 +46,20 @@ export const FCOSE_LAYOUT = {
  * The two ways the explorer can draw a graph.
  *
  * `tiles` gives every entity a labeled box with its money written inside.
- * `network` draws every entity as a dot sized by the money it moved, with only
- * its name beside it, so the shape of the connections reads before the words
- * do. The shareable picture still draws tiles.
+ * `network` draws every entity as a small dot of one size with its name
+ * beside it, so the shape of the connections reads before the words do. The
+ * shareable picture still draws tiles.
  */
 export const GRAPH_LOOKS = ['network', 'tiles'] as const;
 export type GraphLook = (typeof GRAPH_LOOKS)[number];
 
-/** Smallest and largest dot in the network look, in graph units. */
-export const DOT_MIN = 8;
-export const DOT_MAX = 30;
-
-/** The seed's dot is never smaller than this, so the anchor stays easy to find. */
-export const SEED_DOT = 24;
+/**
+ * The size of every dot in the network look, in graph units.
+ *
+ * One size for all of them. An entity is one point in the picture, and the
+ * picture is the graph.
+ */
+export const DOT = 12;
 
 /** Clear space kept around every dot. */
 export const DOT_GAP = 16;
@@ -80,23 +81,6 @@ export const FCOSE_NETWORK_LAYOUT = {
   nodeRepulsion: 18000,
   gravity: 0.25,
 } as const;
-
-/** Where a value falls between nothing and the largest value, on a log scale, as 0 to 1. */
-function logShare(value: number, max: number): number {
-  const share = Math.log10(Math.max(value, 0) + 1) / Math.log10(Math.max(max, 1) + 1);
-  return Number.isFinite(share) ? Math.min(1, Math.max(0, share)) : 0;
-}
-
-/**
- * A dot's diameter, from the money its entity moved.
- *
- * Log scale, as for edge widths, and then squared. Without the square a $500
- * donor and a $5M committee come out within a few pixels of each other.
- */
-export function dotSize(volume: number, maxVolume: number): number {
-  const share = logShare(volume, maxVolume);
-  return DOT_MIN + (DOT_MAX - DOT_MIN) * share * share;
-}
 
 /** Enough sweeps to open a pile of six hundred tiles stacked on one point. */
 const SEPARATION_PASSES = 400;
