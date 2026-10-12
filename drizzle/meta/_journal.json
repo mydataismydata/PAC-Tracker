@@ -92,6 +92,13 @@
       "when": 1789668772104,
       "tag": "0012_transaction_tombstones",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791828568574,
+      "tag": "0013_mirror_pairs",
+      "breakpoints": true
     }
   ]
 }

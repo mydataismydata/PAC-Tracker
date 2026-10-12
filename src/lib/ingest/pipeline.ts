@@ -45,6 +45,7 @@ import {
 import { manualKindEntityIds } from '@/lib/corrections';
 import { CandidateIndex, personKeys, type CandidateNode } from './candidates';
 import { classifyIndustry } from './industry';
+import { pairMirrors, type MirrorRow, type MirrorWindow } from './mirrors';
 
 /** Which cycle a transaction row belongs to; see `src/lib/cycles.ts`. */
 const derivedCycle = derivedCycleSql('t');
@@ -494,23 +495,55 @@ export async function ingestTransactionRows(
       // filer. Self-loops are exempt: a candidate reimbursing their own
       // campaign genuinely files both halves, and collapsing those would erase
       // a real transaction rather than a duplicate one.
+      //
+      // A receipt pairs with one payment at most, so a receipt that an earlier
+      // collapse or drop has already paired is not a mirror for this row. A
+      // filing that was collapsed before, whose receipt is still on file, stays
+      // collapsed rather than coming back for the rebuild to delete again. A row
+      // already stored goes on to the upsert; pairing it is the rebuild's job.
       if (!isContribution && from.entityId !== to.entityId) {
-        const [mirror] = await db
-          .select({ id: transactions.id })
-          .from(transactions)
-          .where(
-            and(
-              eq(transactions.direction, 'contribution'),
-              eq(transactions.fromEntityId, from.entityId),
-              eq(transactions.toEntityId, to.entityId),
-              eq(transactions.amount, row.amount),
-              row.date
-                ? eq(transactions.txnDate, row.date)
-                : isNull(transactions.txnDate),
-            ),
-          )
-          .limit(1);
+        const [state] = await db.execute<{ stored: boolean; settled: boolean }>(sql`
+          SELECT EXISTS (SELECT 1 FROM transactions t WHERE t.source_row_hash = ${row.rowHash}) AS stored,
+                 EXISTS (
+                   SELECT 1 FROM transaction_tombstones d
+                    WHERE d.source_row_hash = ${row.rowHash} AND d.paired_hash IS NOT NULL
+                      AND EXISTS (SELECT 1 FROM transactions c WHERE c.source_row_hash = d.paired_hash)
+                 ) AS settled
+        `);
+        if (!state.stored && state.settled) {
+          mirrored++;
+          continue;
+        }
+        const [mirror] = state.stored
+          ? []
+          : await db
+              .select({ hash: transactions.sourceRowHash })
+              .from(transactions)
+              .where(
+                and(
+                  eq(transactions.direction, 'contribution'),
+                  eq(transactions.fromEntityId, from.entityId),
+                  eq(transactions.toEntityId, to.entityId),
+                  eq(transactions.amount, row.amount),
+                  row.date
+                    ? eq(transactions.txnDate, row.date)
+                    : isNull(transactions.txnDate),
+                  sql`NOT EXISTS (
+                    SELECT 1 FROM transaction_tombstones d
+                     WHERE d.paired_hash = ${transactions.sourceRowHash}
+                       AND NOT EXISTS (SELECT 1 FROM transactions x WHERE x.source_row_hash = d.source_row_hash)
+                  )`,
+                ),
+              )
+              .orderBy(transactions.id)
+              .limit(1);
         if (mirror) {
+          // Never inserted, so it has no id; recorded under a fresh one so the
+          // receipt is spoken for here and on the replica.
+          await db.execute(sql`
+            INSERT INTO transaction_tombstones (id, source_row_hash, source_id, reason, paired_hash)
+            VALUES (gen_random_uuid(), ${row.rowHash}, ${ctx.sourceId}, 'mirror dropped at ingest', ${mirror.hash})
+          `);
           mirrored++;
           continue;
         }
@@ -1000,16 +1033,7 @@ export async function ingestCommitteeRegistrations(
  * window is asymmetric — the recipient may be dated well after the payer, the
  * payer only a little after the recipient. Both are overridable per run.
  */
-/**
- * How many times `rebuildAll` will sweep for mirrors before giving up.
- *
- * Each pass is strictly smaller than the last and the sweep converges in two
- * on the current data, so this is a guard against a pathological case rather
- * than a working limit.
- */
-export const MIRROR_PASSES = 10;
-
-export const MIRROR_WINDOW = {
+export const MIRROR_WINDOW: MirrorWindow = {
   /** Days the recipient's date may trail the payer's. */
   recipientLag: 60,
   /** Days the payer's date may trail the recipient's. */
@@ -1031,11 +1055,17 @@ export const MIRROR_WINDOW = {
  * filing dated a day apart, or an expenditure sweep that ran before the
  * contribution sweep, slips a mirror through. This pass is order-independent and
  * date-tolerant: inside each committee→committee pair that carries both
- * directions, it matches every expenditure to one unused contribution of the
- * same amount inside `MIRROR_WINDOW`, nearest date first, and deletes those
- * expenditures. The pairing is 1:1, so a genuine second transfer of the same
- * amount keeps its own record, and only same-amount rows between the same two
- * traversable nodes are ever touched.
+ * directions, `pairMirrors` matches expenditures to contributions of the same
+ * amount inside `MIRROR_WINDOW`, one to one, and this deletes the expenditures.
+ * A genuine second transfer of the same amount keeps its own record, and only
+ * same-amount rows between the same two traversable nodes are ever touched.
+ *
+ * One to one has to hold across runs, not only inside one. The expenditure is
+ * deleted and the contribution stays, so each deletion writes down the receipt
+ * it was paired with (`paired_hash` on its tombstone), and a receipt written
+ * down there is never offered to another expenditure. Before that record
+ * existed, every pass and every rebuild saw the receipt as free again, and
+ * repeated sweeps deleted nine $100 payments against five $100 receipts.
  *
  * Deleting the expenditure (not the contribution) follows the pipeline's standing
  * rule that the recipient's filing wins. Pass `entityIds` to limit the scan to
@@ -1044,7 +1074,7 @@ export const MIRROR_WINDOW = {
 export async function collapseMirrors(
   db: Db,
   entityIds?: string[],
-  opts: { dryRun?: boolean; window?: typeof MIRROR_WINDOW } = {},
+  opts: { dryRun?: boolean; window?: MirrorWindow } = {},
 ): Promise<{ deleted: number; pairs: number; dollars: number }> {
   const window = opts.window ?? MIRROR_WINDOW;
   const scoped = entityIds != null && entityIds.length > 0;
@@ -1060,13 +1090,14 @@ export async function collapseMirrors(
   // Every row in a committee→committee pair that carries *both* directions.
   const rows = await db.execute<{
     id: string;
+    source_row_hash: string;
     from_entity_id: string;
     to_entity_id: string;
     amount: string;
     txn_date: string | null;
     direction: 'contribution' | 'expenditure';
   }>(sql`
-    SELECT t.id, t.from_entity_id, t.to_entity_id, t.amount::text AS amount,
+    SELECT t.id, t.source_row_hash, t.from_entity_id, t.to_entity_id, t.amount::text AS amount,
            t.txn_date::text AS txn_date, t.direction
     FROM transactions t
     WHERE t.from_entity_id IS NOT NULL AND t.to_entity_id IS NOT NULL
@@ -1083,16 +1114,16 @@ export async function collapseMirrors(
         HAVING bool_or(x.direction = 'contribution')
            AND bool_or(x.direction = 'expenditure')
       )
-    -- Ordered because the matching below is greedy, and greedy depends on the
-    -- order it sees. Without this, two databases holding identical rows can
-    -- return them in different orders, match different pairs, and end up with
-    -- different totals — which is exactly what a production copy did.
+    -- Ordered because the pairing depends on the order it sees. Without this,
+    -- two databases holding identical rows can return them in different orders,
+    -- pair them differently, and end up with different totals — which is exactly
+    -- what a production copy did.
     ORDER BY t.from_entity_id, t.to_entity_id, t.amount, t.txn_date, t.id
   `);
 
-  type Contrib = { amount: number; date: number | null; used: boolean };
-  type Expend = { id: string; amount: number; date: number | null };
-  const groups = new Map<string, { contribs: Contrib[]; expends: Expend[] }>();
+  const { taken, prior } = await recordedMirrorPairs(db);
+
+  const groups = new Map<string, { contribs: MirrorRow[]; expends: MirrorRow[] }>();
   for (const r of rows) {
     const key = `${r.from_entity_id}\0${r.to_entity_id}`;
     let g = groups.get(key);
@@ -1100,56 +1131,86 @@ export async function collapseMirrors(
       g = { contribs: [], expends: [] };
       groups.set(key, g);
     }
-    const date = r.txn_date ? Date.parse(r.txn_date) : null;
-    if (r.direction === 'contribution') {
-      g.contribs.push({ amount: Number(r.amount), date, used: false });
-    } else {
-      g.expends.push({ id: r.id, amount: Number(r.amount), date });
-    }
+    const row: MirrorRow = {
+      id: r.id,
+      hash: r.source_row_hash,
+      amount: Number(r.amount),
+      date: r.txn_date ? Date.parse(r.txn_date) : null,
+    };
+    if (r.direction === 'expenditure') g.expends.push(row);
+    // A receipt an earlier collapse paired is spoken for, for good.
+    else if (!taken.has(row.hash)) g.contribs.push(row);
   }
 
-  const recipientLag = window.recipientLag * 86_400_000;
-  const payerLag = window.payerLag * 86_400_000;
   const toDelete: string[] = [];
+  const pairedWith: string[] = [];
   let pairsHit = 0;
   let dollars = 0;
   for (const g of groups.values()) {
-    let hit = false;
-    for (const e of g.expends) {
-      let best = -1;
-      let bestDiff = Infinity;
-      for (let i = 0; i < g.contribs.length; i++) {
-        const c = g.contribs[i];
-        // Same amount, both dated, within the window; when unsure, leave it be.
-        if (c.used || c.amount !== e.amount) continue;
-        if (c.date === null || e.date === null) continue;
-        const lag = c.date - e.date; // positive: the recipient booked it after the payer
-        if (lag > recipientLag || -lag > payerLag) continue;
-        const diff = Math.abs(lag);
-        if (diff < bestDiff) {
-          bestDiff = diff;
-          best = i;
-        }
-      }
-      if (best >= 0) {
-        g.contribs[best].used = true;
-        toDelete.push(e.id);
-        dollars += e.amount;
-        hit = true;
-      }
+    if (g.contribs.length === 0 || g.expends.length === 0) continue;
+    const pairs = pairMirrors(g.expends, g.contribs, window, prior);
+    if (pairs.length > 0) pairsHit++;
+    for (const p of pairs) {
+      toDelete.push(p.expenditure.id);
+      pairedWith.push(p.contribution.hash);
+      dollars += p.expenditure.amount;
     }
-    if (hit) pairsHit++;
   }
 
   if (toDelete.length > 0 && !opts.dryRun) {
-    // Say why, for the tombstone the delete trigger is about to write. `true`
-    // scopes the setting to this transaction.
-    await db.execute(sql`SELECT set_config('pactracker.delete_reason', 'mirror collapse', true)`);
-    await db.execute(
-      sql`DELETE FROM transactions WHERE id = ANY(${sql.param(toDelete)}::uuid[])`,
-    );
+    await db.transaction(async (tx) => {
+      // The tombstone goes in first, carrying the pair, so the delete trigger's
+      // own insert finds it there and leaves it alone. A row restored under the
+      // id it had keeps its old tombstone, which this brings up to date.
+      await tx.execute(sql`
+        INSERT INTO transaction_tombstones (id, source_row_hash, source_id, reason, paired_hash)
+        SELECT t.id, t.source_row_hash, t.source_id, 'mirror collapse', p.paired_hash
+          FROM unnest(${sql.param(toDelete)}::uuid[], ${sql.param(pairedWith)}::text[])
+               AS p(id, paired_hash)
+          JOIN transactions t ON t.id = p.id
+        ON CONFLICT (id) DO UPDATE SET
+          source_row_hash = EXCLUDED.source_row_hash,
+          reason = EXCLUDED.reason,
+          paired_hash = EXCLUDED.paired_hash,
+          deleted_at = now()
+      `);
+      await tx.execute(
+        sql`DELETE FROM transactions WHERE id = ANY(${sql.param(toDelete)}::uuid[])`,
+      );
+    });
   }
   return { deleted: toDelete.length, pairs: pairsHit, dollars };
+}
+
+/**
+ * The mirror pairs already on record, read from the tombstones.
+ *
+ * `taken` holds every receipt whose paired expenditure is still gone: those
+ * may not pair again. `prior` maps an expenditure that a later sweep brought
+ * back to the receipt it was paired with, so `pairMirrors` can restore the
+ * pair. Only the latest tombstone of a filing counts; one brought back and
+ * collapsed again has several.
+ */
+async function recordedMirrorPairs(
+  db: Db,
+): Promise<{ taken: Set<string>; prior: Map<string, string> }> {
+  const rows = await db.execute<{ hash: string; paired_hash: string; present: boolean }>(sql`
+    SELECT p.hash, p.paired_hash,
+           EXISTS (SELECT 1 FROM transactions t WHERE t.source_row_hash = p.hash) AS present
+      FROM (
+        SELECT DISTINCT ON (d.source_row_hash) d.source_row_hash AS hash, d.paired_hash
+          FROM transaction_tombstones d
+         WHERE d.paired_hash IS NOT NULL
+         ORDER BY d.source_row_hash, d.deleted_at DESC, d.id
+      ) p
+  `);
+  const taken = new Set<string>();
+  const prior = new Map<string, string>();
+  for (const r of rows) {
+    if (r.present) prior.set(r.hash, r.paired_hash);
+    else taken.add(r.paired_hash);
+  }
+  return { taken, prior };
 }
 
 export async function rebuildEdgeRollups(db: Db, entityIds: string[]): Promise<void> {
@@ -1356,24 +1417,12 @@ export async function rebuildAll(db: Db): Promise<{ edges: number; entities: num
   // are one edge, not two; left in, they double it and both endpoints' totals.
   // Collapse them before the rollups are built off the transaction table.
   //
-  // Repeated to a fixed point, because one pass does not finish the job. The
-  // matching inside is greedy: every expenditure takes the nearest contribution
-  // still unused, and a nearest-first choice can strand a later expenditure
-  // whose only partner has just been taken. Over the reduced set the next pass
-  // finds those. Two passes settled a 143-merge batch; the loop stops as soon
-  // as a pass deletes nothing.
-  //
-  // Left at one pass, the count depended on how many times rebuild happened to
-  // have been run — so a machine that ran it twice and a machine that ran it
-  // once disagreed by real dollars.
-  const mirrors = { deleted: 0, pairs: 0, dollars: 0 };
-  for (let pass = 1; pass <= MIRROR_PASSES; pass++) {
-    const round = await collapseMirrors(db);
-    mirrors.deleted += round.deleted;
-    mirrors.pairs += round.pairs;
-    mirrors.dollars += round.dollars;
-    if (round.deleted === 0) break;
-  }
+  // One sweep settles it. The pairing inside is a maximum matching, so it does
+  // not strand an expenditure the way the old nearest-first pass did, and every
+  // pair it makes is written down, so a second sweep or a second rebuild has
+  // nothing left to pair. The sweep used to be repeated until it deleted
+  // nothing, and each repeat re-used receipts the last one had already paired.
+  const mirrors = await collapseMirrors(db);
   if (mirrors.deleted > 0) {
     console.log(
       `  collapsed ${mirrors.deleted} mirror expenditures across ${mirrors.pairs} committee pairs`,

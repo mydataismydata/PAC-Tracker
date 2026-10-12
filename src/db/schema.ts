@@ -736,6 +736,12 @@ export const entityTombstones = pgTable('entity_tombstones', {
  * Keyed on the transaction's own id rather than the row hash. A deleted filing
  * that a later sweep brings back is a new row with a new id, and a hash key
  * would kill it on arrival.
+ *
+ * A mirror collapse also writes down which receipt the deleted expenditure
+ * duplicated, in `paired_hash`. That receipt is then spoken for: no later
+ * sweep, rebuild or replica may pair it with another expenditure. An
+ * expenditure dropped at ingest as a mirror is never inserted, so it has no id
+ * of its own; it is recorded here under a fresh one for the same reason.
  */
 export const transactionTombstones = pgTable(
   'transaction_tombstones',
@@ -748,9 +754,20 @@ export const transactionTombstones = pgTable(
     sourceId: uuid('source_id').references(() => sources.id),
     /** What deleted it, when the deleter said so. */
     reason: text('reason'),
+    /**
+     * For a mirror collapse, the `source_row_hash` of the contribution this
+     * expenditure duplicated. Null for every other deletion, and for mirrors
+     * collapsed before 2026-10-12, when nothing recorded the pair.
+     */
+    pairedHash: text('paired_hash'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('transaction_tombstones_hash_idx').on(t.sourceRowHash)],
+  (t) => [
+    index('transaction_tombstones_hash_idx').on(t.sourceRowHash),
+    index('transaction_tombstones_paired_idx')
+      .on(t.pairedHash)
+      .where(sql`${t.pairedHash} IS NOT NULL`),
+  ],
 );
 
 export const ingestRuns = pgTable(

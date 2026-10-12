@@ -636,13 +636,14 @@ single $1.25M edge, not five.
 | `pnpm ingest verify` | Confirm no merged-away entity is still present or referenced. |
 | `pnpm ingest warm` | Re-run the reports a rebuild emptied, so no reader pays for them. |
 | `pnpm ingest purge <source-key>` | Drop everything one source contributed, to re-ingest it cleanly. |
-| `pnpm ingest collapse-mirrors` | Drop the payer's copy of a committee-to-committee transfer. |
+| `pnpm ingest collapse-mirrors` | Drop the payer's copy of a committee-to-committee transfer. Each receipt pairs with one payment, ever. |
 | `pnpm ingest merge <keepId> <loserId>…` | Fold confirmed duplicates into one entity. |
 | `pnpm ingest split <entityId> --city=… --name=…` | Pull two people sharing a name apart. |
 | `pnpm ingest set-kind <entityId> <kind>` | Correct a misclassified entity. |
 | `pnpm corrections --apply` | Replay the reviewed data fixes in `corrections/corrections.jsonl`. |
 | `pnpm dupes` | List candidate duplicate entities for review. |
 | `pnpm user add …` | Issue an account. |
+| `pnpm test` | Run the unit tests (`*.test.ts`, Node's test runner). |
 
 `merge`, `split` and `set-kind` all rewrite attribution. Follow each one with
 `pnpm ingest rebuild`.
