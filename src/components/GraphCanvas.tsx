@@ -1299,34 +1299,43 @@ function HoverCard({ hover }: { hover: Hover }) {
 }
 
 /**
- * The searched entity's name, on a card that stays beside its dot.
+ * The searched entity's name and money, on a card that stays beside its dot.
  *
- * A small, fainter cut of the hover card, with only the name: the same
- * corners and border, and padding in the same proportion to the text. The
- * canvas draws no name for the searched entity, so this names it at every
- * zoom, even with the whole graph framed. Where a route picked in the panel
- * ends on it, the money along the route goes under the name, as it does
+ * A small, fainter cut of the hover card, with the name and, in a smaller
+ * row beneath, its money in and out in the hover card's emerald and amber.
+ * It has the same corners and border, and padding in the same proportion to
+ * the text. The canvas draws no name for the searched entity, so this names
+ * it at every zoom, even with the whole graph framed. Where a route picked in
+ * the panel ends on it, the money along that route goes last, as it goes
  * under any other name. The canvas moves the card; see `placeSeedCard`. It
  * has no z-index, so it lies over the graph and under the controls the page
  * lays over the graph.
  */
 function SeedCard({
   cardRef,
-  name,
+  node,
   money,
 }: {
   cardRef: Ref<HTMLDivElement>;
-  name: string;
+  node: GraphNode;
   money: string | null;
 }) {
+  const received = Number(node.totalReceived) || 0;
+  const given = Number(node.totalGiven) || 0;
   return (
     <div
       ref={cardRef}
       className="pointer-events-none absolute left-0 top-0 max-w-[320px] rounded-lg border
-                 border-slate-700/60 bg-slate-900/60 px-3.5 py-2.5 shadow-md shadow-black/30"
+                 border-slate-700/70 bg-slate-900/80 px-3.5 py-2.5 shadow-md shadow-black/30"
       style={{ visibility: 'hidden' }}
     >
-      <div className="text-[15px] font-semibold leading-snug text-slate-100">{name}</div>
+      <div className="text-[15px] leading-snug text-slate-100">{node.name}</div>
+      {node.kind !== 'officer' && (received > 0 || given > 0) && (
+        <div className="mt-1 flex gap-3 text-xs tabular-nums">
+          {received > 0 && <span className="text-emerald-400">in {formatMoney(received)}</span>}
+          {given > 0 && <span className="text-amber-400">out {formatMoney(given)}</span>}
+        </div>
+      )}
       {money && <div className="mt-0.5 text-xs tabular-nums text-slate-300">{money}</div>}
     </div>
   );
@@ -2235,13 +2244,13 @@ export default function GraphCanvas({
   // changes. Its width can change with them, which decides its side.
   useEffect(() => {
     if (showSeedCard) placeCardRef.current?.();
-  }, [showSeedCard, seedId, seedEntity?.name, seedMoney]);
+  }, [showSeedCard, seedEntity, seedMoney]);
 
   return (
     <div className="relative h-full w-full overflow-hidden">
       <div ref={containerRef} className="h-full w-full bg-slate-950" />
       {showSeedCard && seedEntity && (
-        <SeedCard cardRef={seedCardRef} name={seedEntity.name} money={seedMoney} />
+        <SeedCard cardRef={seedCardRef} node={seedEntity} money={seedMoney} />
       )}
       {hover && look === 'network' && <HoverCard hover={hover} />}
     </div>
