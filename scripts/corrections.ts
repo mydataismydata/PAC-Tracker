@@ -57,7 +57,9 @@
  * when the name is a bare local office — and leave the source entity once no
  * row there carries them. `"alias":false` skips that, either when the spelling
  * is too generic to pin anywhere or when it belongs to the entity the rows are
- * leaving rather than the one they join.
+ * leaving rather than the one they join. A later `merge` in this file that
+ * folds the source away, the usual way to give the remainder to the other
+ * run, makes the entry read as done on every replay after the first.
  *
  * `rename` with `"detach":true` also moves the entity's matching identity to
  * the new spelling and drops the old one, so a bare name ("Democratic
