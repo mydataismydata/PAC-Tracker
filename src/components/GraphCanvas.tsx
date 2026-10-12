@@ -52,7 +52,6 @@ import {
   TILE_W,
   dotSize,
   edgeWidth,
-  hairline,
   separateTiles,
   type GraphLook,
 } from '@/lib/graph/layout';
@@ -71,14 +70,43 @@ const GRID_DOT = '#1e293b';
 const GRID_STEP = 24;
 
 /**
- * Lit lines in the network look: money into the entity in focus, and money
- * out of it. The same emerald and amber the panel's figures use.
+ * Line colors in the network look.
+ *
+ * Money between committees, parties, candidates and their donors is white. A
+ * payment to a vendor is pale yellow and drawn fainter, so the political
+ * money reads first.
  */
-const FLOW_IN = '#34d399';
-const FLOW_OUT = '#fbbf24';
+const POLITICAL_LINE = '#f8fafc';
+const VENDOR_LINE = '#f2e3a0';
+
+/**
+ * How far an arc's control point sits off the straight line between its
+ * ends, as a share of the line's length. The arc bows half as far.
+ */
+const ARC = 0.22;
 
 /** Every class a highlight puts on. A new highlight takes all of them off first. */
-const LIT = 'dimmed highlighted flow-in flow-out';
+const LIT = 'dimmed highlighted far-source far-target';
+
+/** Where the canvas keeps the factor that sets line widths against the zoom. */
+const LINE_SCALE = 'pactracker:lineScale';
+
+/** Where the canvas keeps the factor that fades lines as the graph fills up. */
+const LINE_DENSITY = 'pactracker:lineDensity';
+
+/**
+ * A line `px` screen pixels wide at zoom 1, thinning gently as the graph is
+ * zoomed out. See `fitLinesToZoom`.
+ *
+ * Functions rather than numbers, so that a fresh style pass reads the factor
+ * in force at the time.
+ */
+const screenWidth = (px: number) => (e: EdgeSingular) =>
+  px * ((e.cy().scratch(LINE_SCALE) as number | undefined) ?? 1);
+
+/** A line's opacity, lowered on a crowded canvas. See `fitLinesToDensity`. */
+const crowdedOpacity = (opacity: number) => (e: EdgeSingular) =>
+  opacity * ((e.cy().scratch(LINE_DENSITY) as number | undefined) ?? 1);
 
 /**
  * Radius that holds one spaced tile, used to size a ring for a whole batch.
@@ -166,17 +194,91 @@ function dotData(n: GraphNode, isSeed: boolean, maxMoved: number) {
   return { name: fitLabel(n.name, 30), dot, fontSize: isSeed ? 13 : 9 + 4 * share };
 }
 
-/** Line weights for both looks. Registration lines carry no money, so they have a fixed weight. */
-function edgeWeights(e: GraphEdge, maxAmount: number) {
-  if (e.kind === 'registration') return { width: 1, hairline: 1, fade: 0.45, litWidth: 1.5 };
-  const amount = Number(e.amount);
-  const h = hairline(amount, maxAmount);
-  return {
-    width: edgeWidth(amount, maxAmount),
-    hairline: h.width,
-    fade: h.opacity,
-    litWidth: h.litWidth,
-  };
+/**
+ * Whether a payment is political money or a payment to a vendor.
+ *
+ * Money into a committee, party or candidate is political, whoever sent it.
+ * So is money one of them pays to another, or to a person. Money paid to an
+ * organization is a payment to a vendor. Every filed payment has a committee,
+ * party or candidate at one end, so the recipient alone decides.
+ */
+function edgeTone(recipient: GraphNode | undefined): 'political' | 'vendor' {
+  return recipient?.kind === 'organization' ? 'vendor' : 'political';
+}
+
+/** A node's distance in hops from the searched entity. */
+function levelOf(n: NodeSingular): number {
+  return (n.data('entity') as GraphNode | undefined)?.level ?? 0;
+}
+
+/**
+ * Draw one line for each pair of entities, whatever passed between them.
+ *
+ * Money both ways between two entities arrives as two edges, and money over
+ * several cycles as one edge per cycle. The largest stands for the rest. It
+ * carries the total each way and the more prominent tone of the group, and
+ * the others are hidden. They stay on the canvas, so selection and routes
+ * still find them.
+ */
+function mergePairs(cy: Core): void {
+  const groups = new Map<string, EdgeSingular[]>();
+  cy.edges('[kind = "money"]').forEach((e) => {
+    const a = e.source().id();
+    const b = e.target().id();
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    const group = groups.get(key);
+    if (group) group.push(e);
+    else groups.set(key, [e]);
+  });
+
+  cy.batch(() => {
+    for (const group of groups.values()) {
+      group.sort((x, y) => y.data('amount') - x.data('amount') || (x.id() < y.id() ? -1 : 1));
+      const [lead, ...rest] = group;
+      let fwd = 0;
+      let back = 0;
+      let tone = 'vendor';
+      for (const e of group) {
+        if (e.source().same(lead.source())) fwd += e.data('amount');
+        else back += e.data('amount');
+        if (e.data('ownTone') === 'political') tone = 'political';
+      }
+      if (lead.data('fwd') !== fwd || lead.data('back') !== back || lead.data('tone') !== tone) {
+        lead.data({ fwd, back, tone });
+      }
+      lead.removeClass('twin');
+      for (const e of rest) e.addClass('twin');
+    }
+  });
+}
+
+/**
+ * Bow each line into an arc, a fixed share of its length.
+ *
+ * Cytoscape takes the bow as a distance, not a share, so it is worked out
+ * from where the two ends stand and redone whenever they move. `at` gives a
+ * node's position: while a layout animates, the one the node is headed for.
+ * Every line bends the same way as seen from its end nearer the searched
+ * entity, so a hub's lines fan out around it in one direction instead of
+ * crossing each other.
+ */
+function bendArcs(
+  edges: EdgeCollection,
+  at: (n: NodeSingular) => { x: number; y: number } = (n) => n.position(),
+): void {
+  if (edges.empty()) return;
+  edges.first().cy().batch(() => {
+    edges.forEach((e) => {
+      const s = e.source();
+      const t = e.target();
+      const p = at(s);
+      const q = at(t);
+      const length = Math.hypot(q.x - p.x, q.y - p.y);
+      const outward = levelOf(s) < levelOf(t) || (levelOf(s) === levelOf(t) && s.id() < t.id());
+      const arc = Math.round(length * ARC * (outward ? 1 : -1));
+      if (e.data('arc') !== arc) e.data('arc', arc);
+    });
+  });
 }
 
 /** The largest amount of money any entity on the canvas moved. */
@@ -209,6 +311,48 @@ function paintGrid(cy: Core, el: HTMLElement | null, look: GraphLook): void {
   el.style.backgroundImage = `radial-gradient(circle, ${GRID_DOT} 1px, transparent 1.5px)`;
   el.style.backgroundSize = `${step}px ${step}px`;
   el.style.backgroundPosition = `${pan.x}px ${pan.y}px`;
+}
+
+/**
+ * Keep the network look's lines thin, and visible, at every zoom.
+ *
+ * Cytoscape draws a line's width in graph units, so it scales with the zoom.
+ * Framing a large graph whole thins a 1px line to a sixth of a pixel, too
+ * faint to follow, and zooming in thickens it into a bar. Here a line's width
+ * on screen moves with the square root of the zoom instead, held between 0.6
+ * and 1.3 times its width at zoom 1. The factor moves in steps of a quarter,
+ * so a zoom restyles the lines a handful of times rather than on every frame.
+ */
+function fitLinesToZoom(cy: Core, look: GraphLook): void {
+  if (look !== 'network') return;
+  const zoom = cy.zoom();
+  const onScreen = Math.min(1.3, Math.max(0.6, Math.sqrt(zoom)));
+  const step = Math.log(1.25);
+  const scale = Math.exp(Math.round(Math.log(onScreen / zoom) / step) * step);
+  if (cy.scratch(LINE_SCALE) === scale) return;
+  cy.scratch(LINE_SCALE, scale);
+  restyle(cy.edges());
+}
+
+/**
+ * Fade the network look's lines as the graph fills up.
+ *
+ * A hundred and fifty white lines read one by one. A thousand at the same
+ * strength merge into a white mass where nothing can be followed. Past 250
+ * lines, opacity falls with the square root of the count: to half at a
+ * thousand, and never below 40%.
+ */
+function fitLinesToDensity(cy: Core): void {
+  const drawn = cy.edges('[kind = "money"]').filter((e) => !e.hasClass('twin')).length;
+  const density = Math.round(Math.min(1, Math.max(0.4, Math.sqrt(250 / Math.max(drawn, 1)))) * 20) / 20;
+  if (cy.scratch(LINE_DENSITY) === density) return;
+  cy.scratch(LINE_DENSITY, density);
+  restyle(cy.edges());
+}
+
+/** Send elements through a fresh style pass. Cytoscape has this; its typings leave it out. */
+function restyle(edges: EdgeCollection): void {
+  (edges as unknown as { updateStyle(): void }).updateStyle();
 }
 
 
@@ -274,21 +418,29 @@ function highlightNeighborhood(cy: Core, node: NodeSingular, keepLit: string[] =
   }
   const near = node.closedNeighborhood();
   near.removeClass('dimmed').addClass('highlighted');
-  markFlow(near.edges(), (e) => e.target().same(node));
+  near.edges().forEach((e) => labelFarEnd(e, node));
 }
 
 /**
- * Tag lit money lines with the way the money ran: `flow-in` toward the entity
- * in focus, `flow-out` away from it.
+ * Write a lit line's money at its far end from `near`, beside the other party.
  *
- * Only the network look colors them. A registration line moved no money, so
- * it gets neither tag and keeps its own color.
+ * Worded from `near`'s side: what it paid, what it got, or both where the
+ * line stands for money both ways. Written at the middle of their lines, a
+ * hub's two dozen amounts pile up around the hub. At the far ends they spread
+ * out. Only the network look draws these.
  */
-function markFlow(edges: EdgeCollection, inward: (e: EdgeSingular) => boolean): void {
-  edges.forEach((e) => {
-    if (e.data('kind') === 'registration') return;
-    e.addClass(inward(e) ? 'flow-in' : 'flow-out');
-  });
+function labelFarEnd(e: EdgeSingular, near: cytoscape.CollectionArgument): void {
+  if (e.data('kind') !== 'money' || e.hasClass('twin')) return;
+  const fromNear = e.source().same(near);
+  const paid: number = fromNear ? e.data('fwd') : e.data('back');
+  const got: number = fromNear ? e.data('back') : e.data('fwd');
+  e.data(
+    'litLabel',
+    paid > 0 && got > 0
+      ? `${formatMoney(paid)} out · ${formatMoney(got)} in`
+      : formatMoney(paid || got),
+  );
+  e.addClass(fromNear ? 'far-target' : 'far-source');
 }
 
 /**
@@ -302,10 +454,10 @@ function markFlow(edges: EdgeCollection, inward: (e: EdgeSingular) => boolean): 
  * Returns false when no route has two tiles drawn, so the caller can fall back
  * to the neighbourhood rather than dimming the whole map down to a single tile.
  *
- * `focus` is the entity the panel is about. Money on a route counts as coming
- * in when it runs toward that entity. Names clicked down in the panel start
- * their route from it, and a name opened from the panel ends its route on it,
- * so it can sit at either end.
+ * `focus` is the entity the panel is about. Each lit line's money is written
+ * at its end away from the focus, as seen from the hop nearer it. Names
+ * clicked down in the panel start their route from the focus, and a name
+ * opened from the panel ends its route on it, so it can sit at either end.
  */
 function highlightRoutes(
   cy: Core,
@@ -314,8 +466,7 @@ function highlightRoutes(
   focus: NodeSingular,
 ): boolean {
   let route = cy.collection();
-  let inward = cy.collection();
-  let outward = cy.collection();
+  const ends: [EdgeSingular, cytoscape.CollectionArgument][] = [];
   let drawn = 0;
 
   for (const chain of chains) {
@@ -337,9 +488,7 @@ function highlightRoutes(
       route = route.union(between);
       const nearer = Math.abs(i - anchor) < Math.abs(i - 1 - anchor) ? hop : prev;
       between.forEach((e) => {
-        if (e.data('kind') === 'registration') return;
-        if (e.target().same(nearer)) inward = inward.union(e);
-        else outward = outward.union(e);
+        ends.push([e, nearer]);
       });
     }
   }
@@ -368,8 +517,7 @@ function highlightRoutes(
   cy.elements().removeClass(LIT).addClass('dimmed');
   lit.removeClass('dimmed');
   route.removeClass('dimmed').addClass('highlighted');
-  inward.addClass('flow-in');
-  outward.addClass('flow-out');
+  for (const [e, near] of ends) labelFarEnd(e, near);
   return true;
 }
 
@@ -644,13 +792,14 @@ const TILE_STYLE: cytoscape.StylesheetJson = [
 ];
 
 /**
- * The network look: a dot per entity and a hairline per payment.
+ * The network look: a dot per entity and a thin arc per pair of entities.
  *
- * Color is kept for what it means. A dot's color is its kind, as in the
- * panels, and its size is the money it moved. A line at rest is gray, with
- * the size of the payment in its weight. Only the lines of the entity in
- * focus take a color, emerald for money coming in and amber for money going
- * out, and only those carry arrows and amounts.
+ * A dot's color is its kind, as in the panels, and its size is the money it
+ * moved. Lines are all one width. White is political money, and pale yellow
+ * is a payment to a vendor, drawn fainter. A line between two entities at the
+ * same depth is off every path out from the searched entity, so it is fainter
+ * still. Selecting an entity brings its lines up to full strength, with
+ * arrows for the way the money went and amounts at the far ends.
  */
 const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
@@ -718,13 +867,24 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   {
     selector: 'edge',
     style: {
-      width: 'data(hairline)',
-      // A function, not 'data(fade)': the typings accept no mapper string here.
-      opacity: (e: EdgeSingular) => e.data('fade') as number,
-      'line-color': '#64748b',
-      'curve-style': 'bezier',
-      'control-point-step-size': 22,
+      width: screenWidth(1),
+      'line-color': POLITICAL_LINE,
+      opacity: crowdedOpacity(0.55),
+      'curve-style': 'unbundled-bezier',
+      'control-point-distances': 'data(arc)',
+      'control-point-weights': 0.5,
+      'edge-distances': 'node-position',
     },
+  },
+  {
+    selector: 'edge[tone = "vendor"]',
+    style: { 'line-color': VENDOR_LINE, width: screenWidth(0.8), opacity: crowdedOpacity(0.28) },
+  },
+  {
+    // Off every path out from the searched entity: a link between two
+    // entities at the same depth, or a hop borrowed to show a route.
+    selector: 'edge[?side]',
+    style: { opacity: crowdedOpacity(0.1) },
   },
   {
     // Paperwork, not payment: dashed, and never given an arrow.
@@ -733,11 +893,17 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'line-style': 'dashed',
       'line-dash-pattern': [4, 4],
       'line-color': '#8b5cf6',
+      opacity: 0.45,
     },
   },
   {
     selector: 'edge.ghost',
-    style: { 'line-style': 'dotted', 'line-color': '#94a3b8' },
+    style: { 'line-style': 'dotted' },
+  },
+  {
+    // Stood for by the other line of its pair. See `mergePairs`.
+    selector: 'edge.twin',
+    style: { display: 'none' },
   },
   {
     selector: 'node.hovered',
@@ -745,7 +911,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   },
   {
     selector: 'edge.hovered',
-    style: { opacity: 0.9, 'line-color': '#94a3b8' },
+    style: { opacity: 0.9 },
   },
   {
     selector: 'node.dimmed',
@@ -753,7 +919,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
   },
   {
     selector: 'edge.dimmed',
-    style: { opacity: 0.06 },
+    style: { opacity: 0.04 },
   },
   {
     selector: 'node.highlighted',
@@ -769,14 +935,13 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     selector: 'edge.highlighted',
     style: {
       opacity: 1,
-      width: 'data(litWidth)',
-      'line-color': '#cbd5e1',
+      width: screenWidth(1.5),
       'target-arrow-shape': 'triangle',
-      'target-arrow-color': '#cbd5e1',
-      'arrow-scale': 0.8,
+      'target-arrow-color': POLITICAL_LINE,
+      'arrow-scale': 0.6,
       'font-size': 9,
       'font-weight': 600,
-      color: '#e2e8f0',
+      color: '#f1f5f9',
       'text-rotation': 'none',
       'text-background-color': GROUND,
       'text-background-opacity': 0.92,
@@ -785,37 +950,43 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'min-zoomed-font-size': 5,
     },
   },
-  // The amount sits at the far end of a lit line, beside the entity at the
-  // other end of the payment. At the middle of the line, a hub's two dozen
-  // amounts pile up around the hub itself.
   {
-    selector: 'edge.highlighted.flow-in',
+    // The line stands for money both ways, so it points both ways.
+    selector: 'edge.highlighted[back > 0]',
+    style: { 'source-arrow-shape': 'triangle', 'source-arrow-color': POLITICAL_LINE },
+  },
+  {
+    // Still the fainter of the two kinds of line when lit.
+    selector: 'edge.highlighted[tone = "vendor"]',
     style: {
-      'line-color': FLOW_IN,
-      'target-arrow-color': FLOW_IN,
-      color: '#6ee7b7',
-      'source-label': 'data(label)',
-      'source-text-offset': 34,
+      width: screenWidth(1.1),
+      opacity: 0.75,
+      'target-arrow-color': VENDOR_LINE,
+      'source-arrow-color': VENDOR_LINE,
+      color: VENDOR_LINE,
     },
   },
   {
-    selector: 'edge.highlighted.flow-out',
-    style: {
-      'line-color': FLOW_OUT,
-      'target-arrow-color': FLOW_OUT,
-      color: '#fcd34d',
-      'target-label': 'data(label)',
-      'target-text-offset': 34,
-    },
+    selector: 'edge.highlighted.far-target',
+    style: { 'target-label': 'data(litLabel)', 'target-text-offset': 34 },
+  },
+  {
+    selector: 'edge.highlighted.far-source',
+    style: { 'source-label': 'data(litLabel)', 'source-text-offset': 34 },
+  },
+  {
+    selector: 'edge.highlighted.ghost',
+    style: { label: 'data(label)' },
   },
   {
     // A shared officer, named on the line rather than at an end, since
     // neither end is where anything went.
     selector: 'edge.highlighted[kind = "registration"]',
     style: {
-      width: 1.5,
+      width: screenWidth(1.5),
       'line-color': '#a78bfa',
       'target-arrow-shape': 'none',
+      'source-arrow-shape': 'none',
       color: '#c4b5fd',
       label: 'data(label)',
     },
@@ -1011,6 +1182,11 @@ export default function GraphCanvas({
     cy.on('dragfree', 'node', (evt: EventObject) => {
       pinnedRef.current.add((evt.target as NodeSingular).id());
     });
+    // An arc's bow is a share of its length, so the lines of a dot being
+    // dragged are bent again as it moves. See `bendArcs`.
+    cy.on('drag', 'node', (evt: EventObject) => {
+      bendArcs((evt.target as NodeSingular).connectedEdges());
+    });
 
     // Hovering a dot rings it, brightens its lines and opens its card. Tiles
     // already show all of that, so the tiles look skips it.
@@ -1045,10 +1221,12 @@ export default function GraphCanvas({
     cy.on('viewport', () => {
       setHover(null);
       paintGrid(cy, containerRef.current, lookRef.current);
+      fitLinesToZoom(cy, lookRef.current);
     });
 
     appliedLookRef.current = lookRef.current;
     paintGrid(cy, containerRef.current, lookRef.current);
+    fitLinesToZoom(cy, lookRef.current);
 
     cyRef.current = cy;
     setCyEpoch((e) => e + 1);
@@ -1119,6 +1297,10 @@ export default function GraphCanvas({
         }
       });
 
+      // Where each node is headed, as the layout hands it over, so the arcs
+      // can be bent to the finished picture while the nodes move into it.
+      const headed = new Map<string, { x: number; y: number }>();
+
       // Through `unknown`: Cytoscape's typings know only its built-in layouts,
       // and fcose ships no types of its own.
       const layout = cy.layout({
@@ -1128,6 +1310,10 @@ export default function GraphCanvas({
         randomize: fixed.length === 0,
         fit: false,
         fixedNodeConstraint: fixed.length > 0 ? fixed : undefined,
+        transform: (n: NodeSingular, p: { x: number; y: number }) => {
+          headed.set(n.id(), p);
+          return p;
+        },
       } as unknown as cytoscape.LayoutOptions);
 
       /**
@@ -1145,6 +1331,7 @@ export default function GraphCanvas({
         // make a pinned tile the one tile the reader can no longer drag.
         cy.nodes().unlock();
         separateTiles(cy, held, geometry.gap);
+        bendArcs(cy.edges());
         if (!fresh && pinnedRef.current.size > 0) return;
         cy.resize();
         cy.fit(cy.elements(), 60);
@@ -1162,6 +1349,9 @@ export default function GraphCanvas({
 
       layoutRef.current = layout;
       layout.run();
+      // fcose works out every position before it starts animating, so by
+      // now `headed` holds the finished picture. A locked node stays put.
+      bendArcs(cy.edges(), (n) => (n.locked() ? n.position() : (headed.get(n.id()) ?? n.position())));
     }, 180);
   }, []);
 
@@ -1216,15 +1406,6 @@ export default function GraphCanvas({
       }
     }
 
-    // The same for lines, measured against the largest payment drawn. Only the
-    // network weights are redone; tile widths stay as they were drawn.
-    for (const e of edges.values()) {
-      const el = cy.getElementById(e.id);
-      if (el.empty()) continue;
-      const { hairline: width, fade, litWidth } = edgeWeights(e, maxAmount);
-      if (el.data('hairline') !== width) el.data({ hairline: width, fade, litWidth });
-    }
-
     // Cytoscape drops every positionless node at (0,0). A force layout started
     // from identical coordinates has no gradient to push against, so the whole
     // level stays welded into one pile. Seed each newcomer on a ring around the
@@ -1267,14 +1448,29 @@ export default function GraphCanvas({
       });
     }
 
+    // In registration mode a node's depth counts shared officers, not
+    // payments, so no money line there is off a path by depth. Officer hubs
+    // are in the crawl in that mode and in no other.
+    let byOfficers = false;
+    for (const n of nodes.values()) {
+      if (n.kind === 'officer') {
+        byOfficers = true;
+        break;
+      }
+    }
+
     for (const e of edges.values()) {
       if (cy.getElementById(e.id).nonempty()) continue;
       // Both endpoints must exist before Cytoscape will accept the edge.
       if (!nodes.has(e.source) || !nodes.has(e.target)) continue;
 
       const amount = Number(e.amount);
+      const width = edgeWidth(amount, maxAmount);
 
       const isRegistration = e.kind === 'registration';
+      const from = nodes.get(e.source);
+      const to = nodes.get(e.target);
+      const tone = isRegistration ? undefined : edgeTone(to);
 
       edgeDefs.push({
         group: 'edges',
@@ -1282,7 +1478,7 @@ export default function GraphCanvas({
           id: e.id,
           source: e.source,
           target: e.target,
-          ...edgeWeights(e, maxAmount),
+          width: isRegistration ? 1 : width,
           // A registration edge labelled "$0" would read as a payment of
           // nothing rather than as no payment at all, so it names the role.
           label: isRegistration ? (e.basis ?? 'shared officer') : formatMoney(amount),
@@ -1291,6 +1487,16 @@ export default function GraphCanvas({
           amount: isRegistration ? 0 : amount,
           txnCount: e.txnCount,
           edge: e,
+          // How the network look draws the line. See `edgeTone`,
+          // `mergePairs` and `bendArcs`.
+          ownTone: tone,
+          tone,
+          // Two entities at the same depth: the line is off every path out
+          // from the searched entity, so it is drawn faint.
+          side: !isRegistration && !byOfficers && from?.level === to?.level,
+          fwd: isRegistration ? 0 : amount,
+          back: 0,
+          arc: 0,
         },
       });
     }
@@ -1302,10 +1508,14 @@ export default function GraphCanvas({
     const newNodeIds = new Set(nodeDefs.map((d) => String(d.data.id)));
     if (newNodeIds.size === 0 && edgeDefs.length === 0) return;
 
+    let added = cy.collection();
     cy.batch(() => {
       if (nodeDefs.length) cy.add(nodeDefs);
-      if (edgeDefs.length) cy.add(edgeDefs);
+      if (edgeDefs.length) added = cy.add(edgeDefs);
     });
+    mergePairs(cy);
+    fitLinesToDensity(cy);
+    bendArcs(added.edges());
 
     // Adding only edges between existing nodes needs no relayout.
     if (newNodeIds.size === 0) return;
@@ -1329,6 +1539,7 @@ export default function GraphCanvas({
     lookRef.current = look;
     cy.style(STYLES[look]);
     paintGrid(cy, containerRef.current, look);
+    fitLinesToZoom(cy, look);
     pinnedRef.current.clear();
     if (cy.nodes().nonempty()) scheduleLayout(true);
   }, [look, ready, cyEpoch, scheduleLayout]);
@@ -1337,6 +1548,13 @@ export default function GraphCanvas({
   const exportPng = useCallback((filename: string) => {
     const cy = cyRef.current;
     if (!cy) return;
+    // The file is drawn at its own scale, not the screen's zoom, so the lines
+    // go back to graph-unit widths for it and return to the zoom afterwards.
+    const held = cy.scratch(LINE_SCALE) as number | undefined;
+    if (held !== undefined) {
+      cy.scratch(LINE_SCALE, 1);
+      restyle(cy.edges());
+    }
     const png = cy.png({
       output: 'blob',
       bg: lookRef.current === 'network' ? GROUND : '#0f172a',
@@ -1345,6 +1563,10 @@ export default function GraphCanvas({
       maxWidth: 6000,
       maxHeight: 6000,
     });
+    if (held !== undefined) {
+      cy.scratch(LINE_SCALE, held);
+      restyle(cy.edges());
+    }
     const url = URL.createObjectURL(png);
     const a = document.createElement('a');
     a.href = url;
@@ -1608,9 +1830,10 @@ export default function GraphCanvas({
             target: e.target,
             label: e.label,
             width: 2,
-            hairline: 1.5,
-            fade: 0.8,
-            litWidth: 2,
+            // Borrowed, so off the crawl's paths and faint until lit.
+            tone: 'political',
+            side: true,
+            arc: 0,
           },
         });
       }
@@ -1623,6 +1846,7 @@ export default function GraphCanvas({
       (id) => !cy.getElementById(id).hasClass('ghost'),
       GEOMETRY[lookRef.current].gap,
     );
+    bendArcs(cy.edges());
   }, [ghost, cyEpoch, ready]);
 
   /**

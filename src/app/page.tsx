@@ -2005,9 +2005,9 @@ function Legend({ look }: { look: GraphLook }) {
 }
 
 /**
- * The network look's key: what a dot's color and size say, and what the two
- * line colors say once an entity is selected. Two columns, so it covers as
- * little of the canvas as the tiles' key does.
+ * The network look's key: what a dot's color and size say, and what the three
+ * kinds of line say. Two columns, so it covers as little of the canvas as the
+ * tiles' key does.
  */
 function NetworkLegend() {
   const kinds = [
@@ -2017,6 +2017,12 @@ function NetworkLegend() {
     ['individual', 'Individual'],
     ['party', 'Party'],
   ] as const;
+  // Swatches drawn the way the canvas draws each kind of line.
+  const lines = [
+    { label: 'Political money', color: '#f8fafc', opacity: 0.75 },
+    { label: 'Paid to vendors', color: '#f2e3a0', opacity: 0.45 },
+    { label: 'Same-depth links', color: '#f8fafc', opacity: 0.2 },
+  ];
   return (
     <div
       className="pointer-events-none absolute bottom-4 right-4 hidden rounded border
@@ -2038,18 +2044,20 @@ function NetworkLegend() {
           Officer
         </div>
       </div>
-      <div className="mt-2 flex items-center gap-4 border-t border-slate-800 pt-2">
-        <span className="flex items-center gap-2">
-          <span className="h-0.5 w-4 shrink-0 rounded bg-emerald-400" aria-hidden />
-          Money in
-        </span>
-        <span className="flex items-center gap-2">
-          <span className="h-0.5 w-4 shrink-0 rounded bg-amber-400" aria-hidden />
-          Money out
-        </span>
+      <div className="mt-2 space-y-1 border-t border-slate-800 pt-2">
+        {lines.map((l) => (
+          <div key={l.label} className="flex items-center gap-2">
+            <span
+              className="h-px w-4 shrink-0"
+              style={{ backgroundColor: l.color, opacity: l.opacity }}
+              aria-hidden
+            />
+            {l.label}
+          </div>
+        ))}
       </div>
-      <p className="mt-1 text-[10px] text-slate-500">
-        Lines light for the selected entity. Dot size is money moved.
+      <p className="mt-1.5 text-[10px] text-slate-500">
+        Dot size is money moved. Click a dot to light its lines.
       </p>
     </div>
   );

@@ -98,23 +98,6 @@ export function dotSize(volume: number, maxVolume: number): number {
   return DOT_MIN + (DOT_MAX - DOT_MIN) * share * share;
 }
 
-/**
- * A line's weight in the network look: width and opacity at rest, and width
- * when lit.
- *
- * The tile look's widths run to 8px, and at that weight a hub's lines merge
- * into one solid fan. Here the size of a payment shows as width and brightness
- * together, inside a thin range, so the large flows stand out and the small
- * ones read as texture.
- */
-export function hairline(
-  amount: number,
-  maxAmount: number,
-): { width: number; opacity: number; litWidth: number } {
-  const share = logShare(amount, maxAmount);
-  return { width: 0.6 + share * 2.2, opacity: 0.22 + share * 0.43, litWidth: 1.4 + share * 3 };
-}
-
 /** Enough sweeps to open a pile of six hundred tiles stacked on one point. */
 const SEPARATION_PASSES = 400;
 
