@@ -19,7 +19,7 @@
  * says differ between them.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react';
 import cytoscape, {
   type Core,
   type EdgeCollection,
@@ -113,11 +113,8 @@ const SCREEN_SCALE = 'pactracker:screenScale';
 /** Where the canvas keeps the factor that stops names growing past zoom 1. */
 const TEXT_SCALE = 'pactracker:textScale';
 
-/** Where the canvas keeps the factor that holds a size steady at every zoom. */
-const FIXED_SCALE = 'pactracker:fixedScale';
-
 /** Every factor `fitToZoom` keeps, which an export sets back to 1. */
-const ZOOM_FACTORS = [SCREEN_SCALE, TEXT_SCALE, FIXED_SCALE];
+const ZOOM_FACTORS = [SCREEN_SCALE, TEXT_SCALE];
 
 /** Where the canvas keeps the factor that fades lines as the graph fills up. */
 const LINE_DENSITY = 'pactracker:lineDensity';
@@ -141,32 +138,14 @@ const onScreen = (px: number) => (el: NodeSingular | EdgeSingular) =>
 const onText = (px: number) => (el: NodeSingular | EdgeSingular) =>
   px * ((el.cy().scratch(TEXT_SCALE) as number | undefined) ?? 1);
 
-/** A length of `px` screen pixels at every zoom. See `fitToZoom`. */
-const onFixed = (px: number) => (el: NodeSingular | EdgeSingular) =>
-  px * ((el.cy().scratch(FIXED_SCALE) as number | undefined) ?? 1);
-
 /** The size of a dot's name on screen at zoom 1, in pixels. */
 const NAME = 10;
 
 /**
- * The size of the searched entity's name and the selected entity's, in
- * pixels. They stay this size at every zoom, so the two the reader is
- * following are always named, even with the whole graph framed.
+ * How far a dot's name sits from the dot, in graph units. A selected dot
+ * wears a ring about 4 pixels wide, and its name clears it.
  */
-const NAME_LARGE = 14;
-
-/** Whether a dot's name is drawn large. See `NAME_LARGE`. */
-const largeName = (n: NodeSingular) => Boolean(n.data('isSeed')) || n.selected();
-
-/** The size of a dot's name, in graph units. */
-const nameSize = (n: NodeSingular) => (largeName(n) ? onFixed(NAME_LARGE)(n) : onText(NAME)(n));
-
-/**
- * How far a dot's name sits from the dot, in graph units. A large name's dot
- * wears a ring about 4 pixels wide, and the name clears it.
- */
-const nameGap = (n: NodeSingular) =>
-  largeName(n) ? onScreen(4)(n) + onFixed(5)(n) : onText(4)(n);
+const nameGap = (n: NodeSingular) => (n.selected() ? onScreen(4)(n) : 0) + onText(4)(n);
 
 /** A line's opacity, lowered on a crowded canvas. See `fitLinesToDensity`. */
 const crowdedOpacity = (opacity: number) => (e: EdgeSingular) =>
@@ -410,10 +389,9 @@ function bowAround(
  * Names shrink with the view when it is zoomed out, which hides them once
  * they are too small to read. Zoomed in, they stay the size they are at zoom
  * 1, so zooming in spreads crowded names apart instead of enlarging the
- * crowd. The searched entity's name and the selected one's stay one size at
- * every zoom.
+ * crowd.
  *
- * The factors move in steps of 10%, so a zoom restyles the canvas now and
+ * Both factors move in steps of 10%, so a zoom restyles the canvas now and
  * then rather than on every frame.
  */
 function fitToZoom(cy: Core, look: GraphLook): void {
@@ -424,7 +402,6 @@ function fitToZoom(cy: Core, look: GraphLook): void {
   const factors: Record<string, number> = {
     [SCREEN_SCALE]: quantize(Math.min(1.3, Math.max(0.6, Math.sqrt(zoom))) / zoom),
     [TEXT_SCALE]: quantize(Math.min(1, 1 / zoom)),
-    [FIXED_SCALE]: quantize(1 / zoom),
   };
   if (ZOOM_FACTORS.every((key) => cy.scratch(key) === factors[key])) return;
   for (const key of ZOOM_FACTORS) cy.scratch(key, factors[key]);
@@ -540,7 +517,9 @@ function highlightNeighborhood(
  * worded from its side: what it received along the line, what it gave, or
  * both, summed over every lit line that ends there. Under its name, "$12K
  * out" would read as money it paid out when it was money paid to it. Only the
- * network look draws these, and it writes no amount on a line.
+ * network look draws these, and it writes no amount on a line. The searched
+ * entity's name is on its card rather than the canvas, so its money goes on
+ * the card too. See `SeedCard`.
  */
 function labelFarEnds(ends: [EdgeSingular, NodeSingular][]): void {
   const farEnds = new Map<string, { node: NodeSingular; received: number; gave: number; also: string[] }>();
@@ -572,7 +551,7 @@ function labelFarEnds(ends: [EdgeSingular, NodeSingular][]): void {
       .filter(Boolean)
       .join(' · ');
     if (!money) continue;
-    node.data('farLabel', `${node.data('name')}\n${money}`);
+    node.data({ farLabel: `${node.data('name')}\n${money}`, farMoney: money });
     node.addClass('far-end');
     node.toggleClass('label-left', labelGoesLeft(node));
   }
@@ -1009,7 +988,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       label: 'data(name)',
       color: '#cbd5e1',
       'text-opacity': 0.55,
-      'font-size': nameSize,
+      'font-size': onText(NAME),
       'font-weight': 400,
       'text-halign': 'right',
       'text-valign': 'center',
@@ -1025,17 +1004,13 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     },
   },
   {
-    // The anchor of the view stays above the lines, ringed and named large,
-    // so it can always be found.
+    // The anchor of the view stays above the lines, ringed, so it can always
+    // be found. Its name is on a card beside it. See `SeedCard`.
     selector: 'node[?isSeed]',
     style: {
-      color: '#f8fafc',
-      'text-opacity': 1,
-      'font-weight': 600,
       'outline-width': onScreen(1.5),
       'outline-color': '#cbd5e1',
       'outline-offset': onScreen(2),
-      'min-zoomed-font-size': 0,
       'z-index': 3,
     },
   },
@@ -1180,7 +1155,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'text-max-width': '400px',
       'line-height': 1.3,
       // Half a line down, so the name stays level with its dot.
-      'text-margin-y': (n: NodeSingular) => nameSize(n) * 0.65,
+      'text-margin-y': onText(NAME * 0.65),
       color: '#f1f5f9',
       'text-opacity': 0.9,
       'min-zoomed-font-size': 4,
@@ -1209,7 +1184,7 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     },
   },
   {
-    // Ringed in white and named large. See `NAME_LARGE`.
+    // Ringed in white, its name at full strength.
     selector: 'node:selected',
     style: {
       'outline-width': onScreen(2),
@@ -1217,8 +1192,8 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
       'outline-offset': onScreen(2),
       color: '#f8fafc',
       'text-opacity': 1,
-      'font-weight': 600,
-      'min-zoomed-font-size': 0,
+      'font-weight': 500,
+      'min-zoomed-font-size': 4,
       'z-index': 20,
     },
   },
@@ -1245,6 +1220,24 @@ const NETWORK_STYLE: cytoscape.StylesheetJson = [
     // aside rather than peek out from under the card. See `HoverCard`.
     selector: 'node.carded',
     style: { 'text-opacity': 0 },
+  },
+  {
+    // The searched entity is named on its card instead. Last, so that no
+    // highlight writes a name or an amount back beside its dot.
+    selector: 'node[?isSeed]',
+    style: { label: '' },
+  },
+  {
+    // An exported picture has no card, so the name goes back on the canvas
+    // for it. See `exportPng`.
+    selector: 'node[?isSeed].exporting',
+    style: {
+      label: 'data(name)',
+      color: '#f8fafc',
+      'text-opacity': 1,
+      'font-weight': 600,
+      'min-zoomed-font-size': 0,
+    },
   },
 ];
 
@@ -1305,6 +1298,60 @@ function HoverCard({ hover }: { hover: Hover }) {
   );
 }
 
+/**
+ * The searched entity's name, on a card that stays beside its dot.
+ *
+ * A small, fainter cut of the hover card, with only the name: the same
+ * corners and border, and padding in the same proportion to the text. The
+ * canvas draws no name for the searched entity, so this names it at every
+ * zoom, even with the whole graph framed. Where a route picked in the panel
+ * ends on it, the money along the route goes under the name, as it does
+ * under any other name. The canvas moves the card; see `placeSeedCard`. It
+ * has no z-index, so it lies over the graph and under the controls the page
+ * lays over the graph.
+ */
+function SeedCard({
+  cardRef,
+  name,
+  money,
+}: {
+  cardRef: Ref<HTMLDivElement>;
+  name: string;
+  money: string | null;
+}) {
+  return (
+    <div
+      ref={cardRef}
+      className="pointer-events-none absolute left-0 top-0 max-w-[320px] rounded-lg border
+                 border-slate-700/60 bg-slate-900/60 px-3.5 py-2.5 shadow-md shadow-black/30"
+      style={{ visibility: 'hidden' }}
+    >
+      <div className="text-[15px] font-semibold leading-snug text-slate-100">{name}</div>
+      {money && <div className="mt-0.5 text-xs tabular-nums text-slate-300">{money}</div>}
+    </div>
+  );
+}
+
+/**
+ * Stand the searched entity's card beside its dot.
+ *
+ * To the right of the dot, where the hover card opens, or to its left where
+ * the right would run off the canvas. Hidden while the dot is off screen.
+ */
+function placeSeedCard(cy: Core, card: HTMLElement): void {
+  const seed = cy.nodes('[?isSeed]').first();
+  const p = seed.nonempty() ? seed.renderedPosition() : null;
+  if (!p || p.x < 0 || p.y < 0 || p.x > cy.width() || p.y > cy.height()) {
+    card.style.visibility = 'hidden';
+    return;
+  }
+  const r = seed.renderedOuterWidth() / 2;
+  const right = p.x + r + 12;
+  const left = right + card.offsetWidth > cy.width() ? p.x - r - 12 - card.offsetWidth : right;
+  card.style.transform = `translate(${Math.round(left)}px, ${Math.round(p.y)}px) translateY(-50%)`;
+  card.style.visibility = 'visible';
+}
+
 export default function GraphCanvas({
   nodes,
   edges,
@@ -1339,6 +1386,12 @@ export default function GraphCanvas({
    */
   const restoredRef = useRef(initialPositions);
   const [hover, setHover] = useState<Hover | null>(null);
+  /** The searched entity's card, which the canvas moves as the view does. */
+  const seedCardRef = useRef<HTMLDivElement>(null);
+  /** Moves the card on the next frame. Set up with the canvas. */
+  const placeCardRef = useRef<(() => void) | null>(null);
+  /** The money under the searched entity's name, where a lit route ends on it. */
+  const [seedMoney, setSeedMoney] = useState<string | null>(null);
   /** Nodes the user has dragged; never re-laid-out. */
   const pinnedRef = useRef<Set<string>>(new Set());
   /** The in-flight layout, so a new batch can cancel it instead of racing it. */
@@ -1481,6 +1534,27 @@ export default function GraphCanvas({
       fitToZoom(cy, lookRef.current);
     });
 
+    // The searched entity's card follows its dot: when the view moves, when
+    // the dot moves, and when the canvas changes size. At most once a frame,
+    // since a layout moves the dot on every frame it animates.
+    let cardFrame = 0;
+    const placeCard = () => {
+      if (cardFrame) return;
+      cardFrame = requestAnimationFrame(() => {
+        cardFrame = 0;
+        if (seedCardRef.current) placeSeedCard(cy, seedCardRef.current);
+      });
+    };
+    placeCardRef.current = placeCard;
+    cy.on('viewport resize', placeCard);
+    cy.on('position add remove', 'node[?isSeed]', placeCard);
+    // The card carries the money where a lit route ends on the searched
+    // entity. See `labelFarEnds`.
+    cy.on('class', 'node[?isSeed]', (evt: EventObject) => {
+      const n = evt.target as NodeSingular;
+      setSeedMoney(n.hasClass('far-end') ? ((n.data('farMoney') as string) ?? null) : null);
+    });
+
     appliedLookRef.current = lookRef.current;
     fitToZoom(cy, lookRef.current);
 
@@ -1503,6 +1577,8 @@ export default function GraphCanvas({
     return () => {
       ro.disconnect();
       if (relayoutTimer.current) clearTimeout(relayoutTimer.current);
+      cancelAnimationFrame(cardFrame);
+      placeCardRef.current = null;
       layoutRef.current?.stop();
       cy.destroy();
       cyRef.current = null;
@@ -1806,6 +1882,9 @@ export default function GraphCanvas({
       for (const [key] of held) cy.scratch(key, 1);
       restyle(cy.elements());
     }
+    // The searched entity's card is not part of the canvas, so its name is
+    // drawn on the canvas for the file.
+    const seed = cy.nodes('[?isSeed]').addClass('exporting');
     const png = cy.png({
       output: 'blob',
       bg: lookRef.current === 'network' ? GROUND : '#0f172a',
@@ -1814,6 +1893,7 @@ export default function GraphCanvas({
       maxWidth: 6000,
       maxHeight: 6000,
     });
+    seed.removeClass('exporting');
     if (scaled) {
       for (const [key, factor] of held) {
         if (factor === undefined) cy.removeScratch(key);
@@ -2146,9 +2226,23 @@ export default function GraphCanvas({
 
 
 
+  // The hover card stands in for the searched entity's card while the
+  // pointer is on its dot.
+  const seedEntity = seedId ? nodes.get(seedId) : undefined;
+  const showSeedCard = look === 'network' && seedEntity !== undefined && hover?.id !== seedId;
+
+  // Stand the card again whenever what it shows, or which entity it is for,
+  // changes. Its width can change with them, which decides its side.
+  useEffect(() => {
+    if (showSeedCard) placeCardRef.current?.();
+  }, [showSeedCard, seedId, seedEntity?.name, seedMoney]);
+
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full overflow-hidden">
       <div ref={containerRef} className="h-full w-full bg-slate-950" />
+      {showSeedCard && seedEntity && (
+        <SeedCard cardRef={seedCardRef} name={seedEntity.name} money={seedMoney} />
+      )}
       {hover && look === 'network' && <HoverCard hover={hover} />}
     </div>
   );
