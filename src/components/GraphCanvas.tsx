@@ -77,10 +77,27 @@ const POLITICAL_LINE = '#f8fafc';
 const VENDOR_LINE = '#f2e3a0';
 
 /**
- * How far an arc's control point sits off the straight line between its
- * ends, as a share of the line's length. The arc bows half as far.
+ * When a line runs into a dot that is not one of its ends: closer to the
+ * dot's center than this, in graph units, which is over the dot or just
+ * grazing it. A line that passes further off stays straight.
  */
-const ARC = 0.22;
+const COLLISION = DOT * 0.75;
+
+/** How far a line that bows around a dot keeps from its center, in graph units. */
+const CLEARANCE = DOT * 1.25;
+
+/**
+ * The most dots a line will bow to get around. A line that runs into more is
+ * crossing a crowd: no bow clears it, and a bowed line through a crowd only
+ * swaps the dots it crosses, so it stays straight.
+ */
+const MAX_DODGED = 2;
+
+/**
+ * The furthest a line's control point may sit off straight, as a share of
+ * the line's length. The curve itself strays half that far at its middle.
+ */
+const MAX_BOW = 0.6;
 
 /** Every class a highlight puts on. A new highlight takes all of them off first. */
 const LIT = 'dimmed highlighted reach far-source far-target';
@@ -242,55 +259,106 @@ function mergePairs(cy: Core): void {
   });
 }
 
-/**
- * A number from 0 to 1 that belongs to a pair of entities, the same whichever
- * way round they are given and on every visit. FNV-1a over the two ids.
- */
-function pairNoise(a: string, b: string): number {
-  const key = a < b ? `${a}|${b}` : `${b}|${a}`;
-  let h = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0) / 4294967296;
-}
+type Point = { x: number; y: number };
 
 /**
- * Bow each line into an arc, a share of its length.
+ * Draw each line straight, and bow it only to get around a dot in its way.
  *
- * Which side a line bows to, and how deep, varies from pair to pair, so the
- * lines do not all swirl one way. The variation comes from the pair's ids, so
- * a line keeps its bend from one visit to the next. Cytoscape takes the bow
- * as a distance, not a share, so it is worked out from where the two ends
- * stand and redone whenever they move. `at` gives a node's position: while a
- * layout animates, the one the node is headed for.
+ * A straight line that would run into a dot that is not one of its ends (see
+ * COLLISION) bows around it. The bow is the least that keeps CLEARANCE from
+ * every dot near the line, on whichever side needs less. A line stays
+ * straight when it runs into more than MAX_DODGED dots, or when no bow within
+ * MAX_BOW gets it clear, since dots sit beneath the lines anyway. So does a
+ * line whose only obstacle hugs one of its ends, which would take a wide
+ * swing to dodge.
+ *
+ * `at` gives a node's position: while a layout animates, the one the node is
+ * headed for.
  */
-function bendArcs(
+function routeLines(
   edges: EdgeCollection,
-  at: (n: NodeSingular) => { x: number; y: number } = (n) => n.position(),
+  at: (n: NodeSingular) => Point = (n) => n.position(),
 ): void {
   if (edges.empty()) return;
-  edges.first().cy().batch(() => {
+  const cy = edges.first().cy();
+  const dots = cy.nodes().map((n) => ({ id: n.id(), p: at(n) }));
+  cy.batch(() => {
     edges.forEach((e) => {
+      if (e.hasClass('twin')) return;
       const s = e.source();
       const t = e.target();
-      const p = at(s);
-      const q = at(t);
-      const length = Math.hypot(q.x - p.x, q.y - p.y);
-      const noise = pairNoise(s.id(), t.id());
-      // The lower half of the noise bows one way, the upper half the other,
-      // and the position within the half sets the depth: 0.55 to 1.45 of ARC.
-      const side = noise < 0.5 ? 1 : -1;
-      const bow = 0.55 + ((noise * 2) % 1) * 0.9;
-      // Cytoscape measures the bow from source to target. Measuring the side
-      // from the pair's own order keeps a line on its side even when the edge
-      // standing for the pair is replaced by one running the other way.
-      const order = s.id() < t.id() ? 1 : -1;
-      const arc = Math.round(length * ARC * bow * side * order);
+      const arc = bowAround(at(s), at(t), s.id(), t.id(), dots);
       if (e.data('arc') !== arc) e.data('arc', arc);
     });
   });
+}
+
+/**
+ * The control point's offset that takes a line from `a` to `b` around the
+ * dots in its way, or 0 for a straight line.
+ *
+ * Positive bows to the left of travel from `a` to `b`, which is the side
+ * Cytoscape puts a positive `control-point-distances` on. Cytoscape draws the
+ * bow as one control point off the middle of the line, a quadratic curve. At
+ * a share t of the way along, that curve stands 2t(1 - t) times the control
+ * point's offset away from the straight line. So each dot near the line rules
+ * out a range of offsets on each side, the ones that bring the curve within
+ * CLEARANCE of it. The answer is the smallest offset left on either side.
+ */
+function bowAround(
+  a: Point,
+  b: Point,
+  aId: string,
+  bId: string,
+  dots: { id: string; p: Point }[],
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (length < DOT * 2) return 0;
+  const ux = dx / length;
+  const uy = dy / length;
+  const cap = MAX_BOW * length;
+
+  const ruledOut: { side: number; lo: number; hi: number }[] = [];
+  let blocked = 0;
+  for (const dot of dots) {
+    if (dot.id === aId || dot.id === bId) continue;
+    const rx = dot.p.x - a.x;
+    const ry = dot.p.y - a.y;
+    const t = (rx * ux + ry * uy) / length;
+    if (t <= 0 || t >= 1) continue;
+    const off = ry * ux - rx * uy;
+    const k = 2 * t * (1 - t);
+    // Further off the line than any allowed bow could carry it.
+    if (Math.abs(off) - CLEARANCE >= k * cap) continue;
+    // Too costly to get round: the dot stays under the line.
+    if ((CLEARANCE - Math.abs(off)) / k > cap) continue;
+    if (Math.abs(off) < COLLISION) blocked++;
+    for (const side of [1, -1]) {
+      const at = side * off;
+      ruledOut.push({ side, lo: (at - CLEARANCE) / k, hi: (at + CLEARANCE) / k });
+    }
+  }
+  if (blocked === 0 || blocked > MAX_DODGED) return 0;
+
+  let best = Infinity;
+  let bestSide = 1;
+  for (const side of [1, -1]) {
+    const ranges = ruledOut
+      .filter((r) => r.side === side && r.hi > 0)
+      .sort((x, y) => x.lo - y.lo);
+    let bow = 0;
+    for (const r of ranges) {
+      if (r.lo > bow) break;
+      bow = Math.max(bow, r.hi);
+    }
+    if (bow < best) {
+      best = bow;
+      bestSide = side;
+    }
+  }
+  return best > cap ? 0 : Math.round(bestSide * best);
 }
 
 /**
@@ -1274,10 +1342,13 @@ export default function GraphCanvas({
     cy.on('dragfree', 'node', (evt: EventObject) => {
       pinnedRef.current.add((evt.target as NodeSingular).id());
     });
-    // An arc's bow is a share of its length, so the lines of a dot being
-    // dragged are bent again as it moves. See `bendArcs`.
+    // A dragged dot's own lines are routed again as it moves. Once it is let
+    // go, every line is, since others may now run through it. See `routeLines`.
     cy.on('drag', 'node', (evt: EventObject) => {
-      bendArcs((evt.target as NodeSingular).connectedEdges());
+      routeLines((evt.target as NodeSingular).connectedEdges());
+    });
+    cy.on('free', 'node', () => {
+      routeLines(cy.edges());
     });
 
     // Hovering a dot rings it, brightens its lines and opens its card. Tiles
@@ -1423,7 +1494,7 @@ export default function GraphCanvas({
         // make a pinned tile the one tile the reader can no longer drag.
         cy.nodes().unlock();
         separateTiles(cy, held, geometry.gap);
-        bendArcs(cy.edges());
+        routeLines(cy.edges());
         if (!fresh && pinnedRef.current.size > 0) return;
         cy.resize();
         cy.fit(cy.elements(), 60);
@@ -1443,7 +1514,7 @@ export default function GraphCanvas({
       layout.run();
       // fcose works out every position before it starts animating, so by
       // now `headed` holds the finished picture. A locked node stays put.
-      bendArcs(cy.edges(), (n) => (n.locked() ? n.position() : (headed.get(n.id()) ?? n.position())));
+      routeLines(cy.edges(), (n) => (n.locked() ? n.position() : (headed.get(n.id()) ?? n.position())));
     }, 180);
   }, []);
 
@@ -1570,7 +1641,7 @@ export default function GraphCanvas({
           txnCount: e.txnCount,
           edge: e,
           // How the network look draws the line. See `edgeTone`,
-          // `mergePairs` and `bendArcs`.
+          // `mergePairs` and `routeLines`.
           ownTone: tone,
           tone,
           // Both ends at the full depth: no path of `depth` hops from the
@@ -1601,7 +1672,7 @@ export default function GraphCanvas({
     });
     mergePairs(cy);
     fitLinesToDensity(cy);
-    bendArcs(added.edges());
+    routeLines(added.edges());
 
     // Adding only edges between existing nodes needs no relayout.
     if (newNodeIds.size === 0) return;
@@ -1931,7 +2002,7 @@ export default function GraphCanvas({
       (id) => !cy.getElementById(id).hasClass('ghost'),
       GEOMETRY[lookRef.current].gap,
     );
-    bendArcs(cy.edges());
+    routeLines(cy.edges());
   }, [ghost, cyEpoch, ready]);
 
   /**
