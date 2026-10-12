@@ -19,7 +19,8 @@
 import { sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
-import { normalizeName } from '@/lib/normalize';
+import { FIRST_NAMES } from '@/lib/first-names';
+import { classifyName, editDistance, normalizeName } from '@/lib/normalize';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -65,6 +66,15 @@ const SUFFIXES = new Set(['JR', 'SR', 'II', 'III', 'IV']);
 const COUNTY_OFFICE_WORDS = new Set([
   'COUNCIL', 'MAYOR', 'SHERIFF', 'SCHOOL', 'COMMISSION', 'COMMISSIONER', 'CLERK', 'SUPERVISOR',
   'APPRAISER', 'COLLECTOR', 'JUDGE', 'ATTORNEY', 'DEFENDER', 'BOARD', 'COUNTY',
+]);
+/**
+ * Office words a payer's purpose has to carry before it may decide the race.
+ * Narrower than `COUNTY_OFFICE_WORDS`: a purpose that only names the county
+ * ("CONTRIBUTION - HILLSBOROUGH COUNTY") says where, not which office.
+ */
+const PURPOSE_OFFICE_WORDS = new Set([
+  'COUNCIL', 'MAYOR', 'SHERIFF', 'SCHOOL', 'COMMISSION', 'COMMISSIONER', 'CLERK', 'SUPERVISOR',
+  'APPRAISER', 'COLLECTOR', 'JUDGE', 'DEFENDER',
 ]);
 /**
  * Office words that say nothing about which race this is. A year is the
@@ -174,13 +184,47 @@ export function personKeys(name: string): string[] {
   return [...keys].filter((k) => k.length >= 6);
 }
 
+/**
+ * CAMPAIGN as payers type it. On 2026-10-12, 58 entity names carried a
+ * misspelling: CAMPAING, CAMAPIGN, CAMPIAGN, CAPAIGN, or the word split in two
+ * as CAMPAIG N. Each read as no campaign at all.
+ *
+ * Surnames sit just as close. CAMPION, CAMPAGNA and CAMPAGNE are each two
+ * letters from CAMPAIGN and appear in 50 names on file, so a mended word
+ * must keep the G and must not end in a vowel. Anything that starts with the
+ * whole word stays as written: CAMPAIGNS and CAMPAIGNHQ are consulting firms.
+ */
+function mendCampaignWord(s: string): string {
+  const t = s.split(' ').filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < t.length; i++) {
+    if (t[i].startsWith('CAMP') && i + 1 < t.length && t[i] + t[i + 1] === 'CAMPAIGN') {
+      out.push('CAMPAIGN');
+      i++;
+      continue;
+    }
+    const w = t[i];
+    const typo =
+      !w.startsWith('CAMPAIGN') && w.startsWith('CA') && w.length >= 6 && w.length <= 10 &&
+      w.includes('G') && !/[AEO]$/.test(w) && editDistance(w, 'CAMPAIGN') <= 2;
+    out.push(typo ? 'CAMPAIGN' : w);
+  }
+  return out.join(' ');
+}
+
 /** Pull the person out of a payee string and keep whatever office words came with them. */
 export function campaignName(raw: string): CampaignName {
-  let s = normalizeName(raw);
+  let s = mendCampaignWord(normalizeName(raw));
   let named = false;
   let office: string | null = null;
+  // "CAMPAIGN TO ELECT ROBIN BARTLEMAN TO HD 103": the second TO joins the
+  // person to the race, and left in place it would become part of the name.
+  s = s.replace(/ TO (?=(?:HD|SD|HOUSE|SENATE|STATE|CITY|COUNTY|SCHOOL|CIRCUIT|THE)\b)/, ' ');
+  // "THE FRANK CAROLLO CAMPAIGN", and a suffix a payer moved to the front:
+  // "JR. CAMPAIGN PHILIP WAYNE GRIFFITTS".
+  s = s.replace(/^THE (?=.+ CAMPAIGN\b)/, '').replace(/^(?:JR|SR|II|III|IV) (?=CAMPAIGN\b)/, '');
   let m = s.match(
-    /^(?:THE )?(?:CAMPAIGN (?:FUND|ACCOUNT|COMMITTEE|FUNDS)(?: OF| FOR)?|COMMITTEE TO (?:RE ?)?ELECT|(?:RE ?)?ELECT) (.+)$/,
+    /^(?:THE )?(?:CAMPAIGN (?:FUND|ACCOUNT|COMMITTEE|FUNDS)(?: OF| FOR| TO (?:RE ?)?ELECT)?|CAMPAIGN (?:OF|FOR|TO (?:RE ?)?ELECT)|CANDIDACY OF|COMMITTEE TO (?:RE ?)?ELECT|(?:RE ?)?ELECT|CAMPAIGN) (.+)$/,
   );
   if (m) {
     s = m[1];
@@ -207,6 +251,79 @@ export function campaignName(raw: string): CampaignName {
     office = office ? `${rest} ${office}` : rest;
   }
   return { person: s.trim(), named, office };
+}
+
+/** Given names that are also the names committees take: HOPE FOR FLORIDA. */
+const VIRTUES = new Set(['HOPE', 'FAITH', 'GRACE', 'JOY', 'CHARITY', 'TRUTH', 'HONOR', 'UNITY', 'PEACE']);
+
+/** Words that make a payee a business even when it reads like a campaign. */
+const VENDOR_WORDS =
+  /\b(LLC|L L C|INC|CORP|CORPORATION|CO|COMPANY|LTD|LLP|PLLC|PA|GROUP(?! \d)|STRATEGIES|STRATEGY|STRATEGIC|CONSULTING|CONSULTANTS|SOLUTIONS|SERVICES|MANAGEMENT|MGMT|MEDIA|GRAPHICS|PRINTING|SIGNS|MAIL|MAILING|DIGITAL|COMMUNICATIONS|CONNECTIONS|MARKETING|ADVERTISING|PARTNERS|PARTNER|ASSOCIATES|NETWORK|LABS|RESOURCES|COMPLIANCE|ACCOUNTING|CAMPAIGNS|DATA|RESEARCH|POLLING|TECHNOLOGIES|SOFTWARE|STORE|SUPPLY|SUPPLIES|STAFF|WORKERS|VOLUNTEERS|HQ|HEADQUARTERS|VERIFY|PHONE|PHONES|BANKING)\b/;
+
+/**
+ * The kind to give a new payee that is a candidate's campaign account, or
+ * null when the name or the row does not show that it is one.
+ *
+ * Runs only when no candidate node answered to the name. Without it,
+ * "TRISH PETROSKY CAMPAIGN" became an organization, because CAMPAIGN is an
+ * organization word to `classifyName`, and every line into it drew as a
+ * payment to a vendor. The 2026-10-12 review re-kinded 2,375 accounts like it
+ * by hand, most of them county and city races that have no candidate node.
+ *
+ * The part of the name before the campaign words must read as a person, and
+ * no business word may appear anywhere. The row must back it up. Florida's
+ * code CAN says outright that the payment was a contribution to a candidate.
+ * A purpose that merely says CONTRIBUTION is weaker, because a committee
+ * writes the same word when it pays another committee. It counts only when
+ * the name says CAMPAIGN or ELECT, names a federal race, or puts a given name
+ * in front of a named office ("MAURA BULMAN FOR SCHOOL BOARD"). Otherwise
+ * "LIBERTY FOR FLORIDA" would be a candidate.
+ *
+ * Measured on the 2026-10-12 review: of 2,373 campaign accounts, 162 now
+ * reach their candidate node before this runs, this types 2,130, and 81 still
+ * land as organizations. Of the 453 payees that review left alone, it catches
+ * 15, and all 15 are campaign accounts the review missed.
+ *
+ * A federal race is a committee: Florida files no candidate node for one.
+ * When the person already has a candidate node that could not take the row,
+ * the account is also a committee, kept apart, as the 2026-09-02 review kept
+ * such accounts. A second candidate node for one person would only make the
+ * next lookup ambiguous.
+ */
+export function campaignAccountKind(
+  raw: string,
+  evidence: { code: boolean; described: boolean },
+  personHasNode: boolean,
+): 'candidate' | 'committee' | null {
+  if (!evidence.code && !evidence.described) return null;
+  const whole = mendCampaignWord(normalizeName(raw));
+  if (VENDOR_WORDS.test(whole)) return null;
+  const parsed = campaignName(raw);
+  if (!parsed.named) return null;
+  const toks = parsed.person.split(' ').filter(Boolean);
+  if (toks.length === 0 || toks.length > 5 || toks.some((t) => /\d/.test(t))) return null;
+  const shape = classifyName(parsed.person);
+  if (shape === 'organization' || shape === 'committee') return null;
+  const personShaped = shape === 'person' || shape === 'person-comma';
+  const code = parsed.office ? officeCodeFromPhrase(parsed.office) : null;
+  const federal = code === 'FEDERAL';
+  const raceNamed = !!code || (parsed.office ?? '').split(' ').some((w) => COUNTY_OFFICE_WORDS.has(w));
+  // A name followed by its race with no campaign word between them, as in
+  // "BLAKE CASPER TAMPA CITY COUNCIL DIST 4", is a campaign only on a CAN row.
+  if (!parsed.named && !(evidence.code && raceNamed && personShaped && toks.length >= 2)) return null;
+  // A lone word is a person when a race follows it, "VIERA FOR STATE
+  // REPRESENTATIVE", or when it is a given name on a CAN row, "SARAH FOR
+  // FLORIDA". "GRASSROOTS CAMPAIGN" is neither, and it is a vendor.
+  if (toks.length === 1 && !raceNamed && !(evidence.code && FIRST_NAMES.has(toks[0]) && !VIRTUES.has(toks[0]))) {
+    return null;
+  }
+  if (!evidence.code) {
+    // CONTRIBUTION alone: the name has to say campaign, a federal race, or a
+    // person's name running for a named office, "MAURA BULMAN FOR SCHOOL BOARD".
+    const spelled = /\bCAMPAIGN\b|\bELECT\b|^CANDIDACY OF\b/.test(whole);
+    if (!spelled && !federal && !(raceNamed && shape === 'person')) return null;
+  }
+  return federal || personHasNode ? 'committee' : 'candidate';
 }
 
 /** The registry office code an office phrase points at; FEDERAL for races Florida does not file. */
@@ -334,12 +451,32 @@ export class CandidateIndex {
     raw: string,
     date?: string | null,
     span?: { from: string | null; to: string | null } | null,
+    purpose?: string | null,
   ): CandidateMatch {
     const parsed = campaignName(raw);
     const options = this.lookup(parsed.person);
     const none = { node: null, options, narrowed: [] as CandidateNode[], parsed, federal: false };
     if (options.length === 0) return none;
     let pool = options;
+    // The payer's purpose often names the race when the payee string does
+    // not: "MICHAEL GRIECO CAMPAIGN" for MIAMI BEACH MAYOR, a race his state
+    // Senate node never ran. It counts only when it names an office outright.
+    // Most purposes say CONTRIBUTION and nothing else, and that must not stop
+    // a match the way an unreadable phrase in the name does.
+    if (!parsed.office && purpose) {
+      // NON-FEDERAL CONTRIBUTION is a state race, and would read as federal.
+      const p = normalizeName(purpose).replace(/\bNON FEDERAL\b/g, ' ');
+      const code = officeCodeFromPhrase(p);
+      const words = p.split(' ').filter((w) => PURPOSE_OFFICE_WORDS.has(w));
+      if (code === 'FEDERAL') return { ...none, federal: true };
+      if (code) pool = pool.filter((n) => n.officeCode === code);
+      else if (words.length > 0) {
+        pool = pool.filter(
+          (n) => n.office !== null && words.some((w) => normalizeName(n.office as string).includes(w)),
+        );
+      }
+      if (pool.length === 0) return none;
+    }
     if (parsed.office) {
       const code = officeCodeFromPhrase(parsed.office);
       if (code === 'FEDERAL') return { ...none, federal: true };
