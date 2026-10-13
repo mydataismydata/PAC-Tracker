@@ -7,7 +7,7 @@
  * picture shows what the explorer shows and the two cannot drift apart.
  */
 
-import type { Core } from 'cytoscape';
+import type { Core, EdgeSingular, NodeSingular } from 'cytoscape';
 
 /** Uniform tile geometry. */
 export const TILE_W = 168;
@@ -41,6 +41,81 @@ export const FCOSE_LAYOUT = {
   numIter: 3000,
   tile: true,
 } as const;
+
+/**
+ * The two ways the explorer can draw a graph.
+ *
+ * `tiles` gives every entity a labeled box with its money written inside.
+ * `network` draws every entity as a small dot of one size with its name
+ * beside it, so the shape of the connections reads before the words do. The
+ * shareable picture still draws tiles.
+ */
+export const GRAPH_LOOKS = ['network', 'tiles'] as const;
+export type GraphLook = (typeof GRAPH_LOOKS)[number];
+
+/**
+ * The size of every dot in the network look at zoom 1, in graph units.
+ *
+ * One size for all of them. An entity is one point in the picture, and the
+ * picture is the graph. On screen the explorer keeps a dot between 0.6 and
+ * 1.3 times this size at any zoom, so zooming in spreads the dots out rather
+ * than blowing them up.
+ */
+export const DOT = 8;
+
+/** Clear space kept around every dot. */
+export const DOT_GAP = 16;
+
+/**
+ * The force layout for dots.
+ *
+ * Shorter edges and far less repulsion than the tile layout, because a dot
+ * needs a small part of a tile's room. Labels are left out of the node size
+ * so that a long name does not push its neighbors across the canvas. A label
+ * sits beside its dot and may cross a neighbor's line.
+ */
+export const FCOSE_NETWORK_LAYOUT = {
+  ...FCOSE_LAYOUT,
+  padding: 40,
+  nodeDimensionsIncludeLabels: false,
+  nodeSeparation: 70,
+  idealEdgeLength: 120,
+  nodeRepulsion: 18000,
+  gravity: 0.25,
+} as const;
+
+/** fcose's own stiffness for a line, which every line but a short one keeps. */
+const EDGE_ELASTICITY = 0.45;
+
+/**
+ * The dots' force layout for one graph, with entities that have a single
+ * connection kept close to it.
+ *
+ * Most entities at the edge of a crawl connect to one other entity only, and
+ * a hub can have dozens of them. With every line the same length and every
+ * dot pushing the same, a hub's entities were pushed out into a wide ring
+ * around the whole graph, some of them across the middle from the hub they
+ * belong to, at the end of a long line. Here a line to such an entity is
+ * shorter and stiffer, and the entity pushes its neighbors less, so each hub
+ * keeps its own cluster around it. On a 600-entity graph that took the
+ * median such line from 206 units to 126, and the longest from 354 to 217.
+ */
+export function networkLayout(cy: Core) {
+  const single = new Set(
+    cy
+      .nodes()
+      .filter((n) => n.neighborhood('node').length === 1)
+      .map((n) => n.id()),
+  );
+  const toSingle = (e: EdgeSingular) => single.has(e.source().id()) || single.has(e.target().id());
+  return {
+    ...FCOSE_NETWORK_LAYOUT,
+    idealEdgeLength: (e: EdgeSingular) => (toSingle(e) ? 80 : FCOSE_NETWORK_LAYOUT.idealEdgeLength),
+    edgeElasticity: (e: EdgeSingular) => (toSingle(e) ? 0.8 : EDGE_ELASTICITY),
+    nodeRepulsion: (n: NodeSingular) =>
+      single.has(n.id()) ? 8000 : FCOSE_NETWORK_LAYOUT.nodeRepulsion,
+  };
+}
 
 /** Enough sweeps to open a pile of six hundred tiles stacked on one point. */
 const SEPARATION_PASSES = 400;
@@ -80,8 +155,15 @@ export function edgeWidth(amount: number, maxAmount: number): number {
  * a dense pile from exploding on its first sweep.
  *
  * A tile the reader placed is never moved. Its neighbours give way instead.
+ *
+ * `gap` is the clear space kept around each one. The dots of the network look
+ * pass their own, smaller gap.
  */
-export function separateTiles(cy: Core, isFixed: (id: string) => boolean): void {
+export function separateTiles(
+  cy: Core,
+  isFixed: (id: string) => boolean,
+  gap: number = TILE_GAP,
+): void {
   const boxes = cy.nodes().map((n, index) => {
     const p = n.position();
     return {
@@ -89,8 +171,8 @@ export function separateTiles(cy: Core, isFixed: (id: string) => boolean): void 
       index,
       x: p.x,
       y: p.y,
-      halfW: n.outerWidth() / 2 + TILE_GAP / 2,
-      halfH: n.outerHeight() / 2 + TILE_GAP / 2,
+      halfW: n.outerWidth() / 2 + gap / 2,
+      halfH: n.outerHeight() / 2 + gap / 2,
       movable: !isFixed(n.id()),
     };
   });

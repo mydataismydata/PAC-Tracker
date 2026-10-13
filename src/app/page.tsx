@@ -44,6 +44,7 @@ import {
   type GhostGraph,
   type GraphCanvasHandle,
 } from '@/components/GraphCanvas';
+import type { GraphLook } from '@/lib/graph/layout';
 
 // Cytoscape touches `window` at import time, so it must not be server-rendered.
 const GraphCanvas = dynamic(() => import('@/components/GraphCanvas'), {
@@ -127,6 +128,58 @@ function FullScreenButton() {
 
 /** The three panes the phone layout swaps between. */
 type MobilePane = 'graph' | 'detail' | 'filters';
+
+/** Where the chosen look is kept in this browser, and the event that says it changed. */
+const LOOK_KEY = 'pactracker.graphLook';
+const LOOK_EVENT = 'pactracker:graph-look';
+
+/**
+ * The look chosen in this page, for when storage refuses to keep it.
+ *
+ * A private window or blocked site data can make `localStorage` throw. The
+ * switch then still works until the page is closed.
+ */
+let pageLook: GraphLook | null = null;
+
+function readLook(): GraphLook {
+  if (pageLook) return pageLook;
+  try {
+    return window.localStorage.getItem(LOOK_KEY) === 'tiles' ? 'tiles' : 'network';
+  } catch {
+    return 'network';
+  }
+}
+
+/**
+ * How the graph is drawn, as last chosen in this browser.
+ *
+ * Network is the default. Subscribed rather than read once, so a choice made
+ * in another tab carries over.
+ */
+function useGraphLook(): [GraphLook, (look: GraphLook) => void] {
+  const look = useSyncExternalStore(
+    (cb) => {
+      window.addEventListener('storage', cb);
+      window.addEventListener(LOOK_EVENT, cb);
+      return () => {
+        window.removeEventListener('storage', cb);
+        window.removeEventListener(LOOK_EVENT, cb);
+      };
+    },
+    readLook,
+    () => 'network' as GraphLook,
+  );
+  const setLook = useCallback((next: GraphLook) => {
+    pageLook = next;
+    try {
+      window.localStorage.setItem(LOOK_KEY, next);
+    } catch {
+      // Kept for this page only. See `pageLook`.
+    }
+    window.dispatchEvent(new Event(LOOK_EVENT));
+  }, []);
+  return [look, setLook];
+}
 
 /**
  * One entity's connection back to whatever the panel is currently about.
@@ -249,6 +302,7 @@ export default function Home() {
 
   const crawl = useCrawl();
   const canvasRef = useRef<GraphCanvasHandle | null>(null);
+  const [look, setLook] = useGraphLook();
   /**
    * How the escape binding reaches the current reset.
    *
@@ -1221,6 +1275,8 @@ export default function Home() {
                 highlightChains={highlightChains}
                 keepLit={keepLit}
                 ghost={canvasGhost}
+                look={look}
+                depth={settings.depth}
                 onReady={(h) => {
                   canvasRef.current = h;
                 }}
@@ -1237,7 +1293,8 @@ export default function Home() {
             )}
 
             {seed && <ViewControls canvasRef={canvasRef} />}
-            {seed && <Legend />}
+            {seed && <LookSwitch look={look} onChange={setLook} />}
+            {seed && <Legend look={look} />}
             {exploring && <ResetPill seedName={seed.name} onReset={handleResetSelection} />}
 
           </div>
@@ -1885,7 +1942,45 @@ function MobileTabs({
   );
 }
 
-function Legend() {
+/**
+ * Switch between the two looks.
+ *
+ * Top right of the canvas, the one corner nothing else uses. The same crawl
+ * is redrawn either way, so the two can be compared on the same graph.
+ */
+function LookSwitch({ look, onChange }: { look: GraphLook; onChange: (l: GraphLook) => void }) {
+  const looks: { value: GraphLook; label: string }[] = [
+    { value: 'network', label: 'Network' },
+    { value: 'tiles', label: 'Tiles' },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="How the graph is drawn"
+      className="absolute right-3 top-3 flex overflow-hidden rounded border border-slate-700
+                 bg-slate-900/90 text-[11px] backdrop-blur"
+    >
+      {looks.map((l) => (
+        <button
+          key={l.value}
+          type="button"
+          onClick={() => onChange(l.value)}
+          aria-pressed={look === l.value}
+          className={`px-2.5 py-1 transition ${
+            look === l.value
+              ? 'bg-slate-700 text-slate-100'
+              : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+          }`}
+        >
+          {l.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Legend({ look }: { look: GraphLook }) {
+  if (look === 'network') return <NetworkLegend />;
   const items = [
     ['#6366f1', 'Committee / PAC'],
     ['#10b981', 'Candidate'],
@@ -1906,6 +2001,66 @@ function Legend() {
           {label}
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The network look's key: what a dot's color says, and what the two kinds of
+ * line say. Two columns, so it covers as little of the canvas as the tiles'
+ * key does.
+ */
+function NetworkLegend() {
+  const kinds = [
+    ['committee', 'Committee / PAC'],
+    ['candidate', 'Candidate'],
+    ['organization', 'Organization'],
+    ['individual', 'Individual'],
+    ['party', 'Party'],
+  ] as const;
+  // Swatches drawn the way the canvas draws each kind of line.
+  const lines = [
+    { label: 'Political money', color: '#f8fafc', opacity: 0.75 },
+    { label: 'Paid to vendors', color: '#f2e3a0', opacity: 0.45 },
+  ];
+  return (
+    <div
+      className="pointer-events-none absolute bottom-4 right-4 hidden rounded border
+                 border-slate-800 bg-slate-900/85 px-3 py-2 text-[11px] text-slate-400
+                 backdrop-blur lg:block"
+    >
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+        {kinds.map(([kind, label]) => (
+          <div key={kind} className="flex items-center gap-2">
+            {/* The canvas fills an organization's dot at 55%, so its amber
+                does not outshine the rest. */}
+            <span className={kind === 'organization' ? 'flex opacity-55' : 'flex'}>
+              <KindDot kind={kind} />
+            </span>
+            {label}
+          </div>
+        ))}
+        <div className="flex items-center gap-2">
+          <span
+            className="h-2 w-2 shrink-0 rounded-full border border-dashed border-violet-400"
+            aria-hidden
+          />
+          Officer
+        </div>
+      </div>
+      <div className="mt-2 space-y-1 border-t border-slate-800 pt-2">
+        {lines.map((l) => (
+          <div key={l.label} className="flex items-center gap-2">
+            <span
+              className="h-px w-4 shrink-0"
+              style={{ backgroundColor: l.color, opacity: l.opacity }}
+              aria-hidden
+            />
+            {l.label}
+          </div>
+        ))}
+      </div>
+      <p className="mt-1.5 text-[10px] text-slate-500">Click a dot to light its own lines.</p>
     </div>
   );
 }
