@@ -279,6 +279,40 @@ export function kindColor(kind: string): string {
   return KIND_COLORS[kind] ?? KIND_COLORS.unknown;
 }
 
+/** The ground behind the network look. Dots are ringed in it. */
+export const NETWORK_GROUND = '#020617';
+
+/**
+ * How strongly an organization's dot is filled in the network look.
+ *
+ * Amber is far brighter than the other kinds' colors on the dark ground, so
+ * at full strength the vendors outshine the committees they were paid by.
+ * The legend's swatch uses the same value.
+ */
+export const ORGANIZATION_FILL = 0.55;
+
+/**
+ * Line colors in the network look.
+ *
+ * Money between committees, parties, candidates and their donors is white. A
+ * payment to a vendor is pale yellow and drawn fainter, so the political
+ * money reads first.
+ */
+export const POLITICAL_LINE = '#f8fafc';
+export const VENDOR_LINE = '#f2e3a0';
+
+/**
+ * Whether a payment is political money or a payment to a vendor.
+ *
+ * Money into a committee, party or candidate is political, whoever sent it.
+ * So is money one of them pays to another, or to a person. Money paid to an
+ * organization is a payment to a vendor. Every filed payment has a committee,
+ * party or candidate at one end, so the recipient alone decides.
+ */
+export function edgeTone(recipient: Pick<GraphNode, 'kind'> | undefined): 'political' | 'vendor' {
+  return recipient?.kind === 'organization' ? 'vendor' : 'political';
+}
+
 /** "1 committee", "12 committees". */
 
 export function committeeCount(n: number): string {

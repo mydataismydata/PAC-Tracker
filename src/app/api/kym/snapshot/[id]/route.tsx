@@ -4,12 +4,14 @@
  * `GET /api/kym/snapshot/:id?cycle=` draws what the explorer opens on for
  * this committee: two hops, money in and out, every entity the crawl reaches.
  * The scene comes from `src/lib/kym/snapshot.ts`; this file only paints it,
- * in the explorer's colors, so a saved picture and the live graph read as the
- * same thing.
+ * in the explorer's network look, so a saved picture and the live graph read
+ * as the same thing.
  *
- * Painted with `next/og`, which lays the tiles out from a handful of flex
- * boxes and rasterizes them with a bundled font, so nothing has to be added
- * to the serving image. The lines are one SVG underneath the tiles.
+ * Painted with `next/og`, which rasterizes a handful of flex boxes with a
+ * bundled font, so nothing has to be added to the serving image. Dots and
+ * lines are SVG, and the names are text laid between them: over the dots and
+ * under the lines, as the explorer stacks them. The searched entity is drawn
+ * over the lines, with its card beside it.
  *
  * Public, like the rest of `/kym`. Every picture is cached on disk under a
  * name that changes when the data does, so a shared link stays cheap however
@@ -20,15 +22,24 @@ import { ImageResponse } from 'next/og';
 import { NextRequest } from 'next/server';
 import { db } from '@/db';
 import { committeeById, committeeSlug } from '@/lib/graph/committee';
-import { formatMoney, kindColor } from '@/lib/graph/types';
+import { controlPoint, type Point } from '@/lib/graph/layout';
 import {
+  NETWORK_GROUND as GROUND,
+  ORGANIZATION_FILL,
+  POLITICAL_LINE,
+  VENDOR_LINE,
+  formatMoney,
+  kindColor,
+} from '@/lib/graph/types';
+import {
+  CARD,
   buildScene,
   cachedSnapshot,
-  fitLabel,
+  cardMoney,
   snapshotKey,
+  type Dot,
   type Line,
   type Scene,
-  type Tile,
 } from '@/lib/kym/snapshot';
 
 export const dynamic = 'force-dynamic';
@@ -37,17 +48,23 @@ export const runtime = 'nodejs';
 const UUID = /^[0-9a-f-]{36}$/i;
 const CYCLE = /^[0-9A-Za-z-]{1,32}$/;
 
-/* The explorer's palette. See the Cytoscape style in `GraphCanvas.tsx`. */
-const GROUND = '#0f172a';
-const INK = '#e2e8f0';
+/* The explorer's palette. See the network look's style in `GraphCanvas.tsx`. */
 const MUTED = '#94a3b8';
 const FAINT = '#64748b';
-const SEED_BORDER = '#f8fafc';
-/** A direct link: both ends move money. */
-const LINK = '#818cf8';
-/** Any other line, and its arrowhead. */
-const LINE = '#475569';
-const ARROW = '#64748b';
+/** A name beside a dot: slate-300, faint, as the lit network draws it. */
+const NAME_INK = 'rgba(203, 213, 225, 0.55)';
+/** The ring on the selected entity. */
+const RING = '#f8fafc';
+
+/**
+ * How the explorer draws each kind of line with the searched entity's
+ * network lit: width in pixels at zoom 1, and opacity before a crowded graph
+ * thins it.
+ */
+const STROKE = {
+  political: { color: POLITICAL_LINE, width: 1.1, opacity: 0.8 },
+  vendor: { color: VENDOR_LINE, width: 0.9, opacity: 0.45 },
+} as const;
 
 /** `#6366f1` at some opacity, in the form the rasterizer is sure to read. */
 function rgba(hex: string, alpha: number): string {
@@ -55,273 +72,187 @@ function rgba(hex: string, alpha: number): string {
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-/**
- * Where a line leaves a tile, heading toward a point.
- *
- * The explorer ends every line on the tile's border, with the arrowhead
- * touching it. A curved line leaves toward its control point, so that is the
- * point it heads for.
- */
-function borderPoint(tile: Tile, toward: Point): Point {
-  const dx = toward.x - tile.x;
-  const dy = toward.y - tile.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
-  const t = Math.min(
-    Math.abs(ux) > 1e-6 ? tile.w / 2 / Math.abs(ux) : Infinity,
-    Math.abs(uy) > 1e-6 ? tile.h / 2 / Math.abs(uy) : Infinity,
-  );
-  return { x: tile.x + ux * t, y: tile.y + uy * t };
-}
-
-/**
- * A line's path: both ends on a border, and the point it bows toward.
- *
- * The bow is measured to the left of travel from the lower id to the higher,
- * whichever way the money ran. That is what puts A-to-B and B-to-A on
- * opposite sides of the pair instead of on top of each other.
- */
-function geometry(l: Line): { a: Point; b: Point; c: Point } {
-  const [lo, hi] = l.edge.source < l.edge.target ? [l.from, l.to] : [l.to, l.from];
-  const dx = hi.x - lo.x;
-  const dy = hi.y - lo.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const c = {
-    x: (l.from.x + l.to.x) / 2 + (-dy / len) * l.bend,
-    y: (l.from.y + l.to.y) / 2 + (dx / len) * l.bend,
-  };
-  return { a: borderPoint(l.from, c), b: borderPoint(l.to, c), c };
-}
-
-/**
- * Arrowhead length, as Cytoscape sizes a triangle at the explorer's 0.9 scale.
- *
- * Cytoscape draws a head `max((width x 13.37)^0.9, 29)` across its unit
- * square, and the triangle is 0.3 of that long and wide.
- */
-function headLength(width: number, scale: number): number {
-  return 0.3 * 0.9 * Math.max(Math.pow((width / scale) * 13.37, 0.9), 29) * scale;
-}
-
 const f1 = (n: number) => n.toFixed(1);
 
-/** Every line and arrowhead, as one SVG the tiles are laid over. */
+/** `from` moved `by` toward `to`. */
+function toward(from: Point, to: Point, by: number): Point {
+  const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+  return { x: from.x + ((to.x - from.x) / len) * by, y: from.y + ((to.y - from.y) / len) * by };
+}
+
+/**
+ * A line's path, from the edge of one dot to the edge of the other.
+ *
+ * The explorer ends a line at the dot's border. A bowed line sets off toward
+ * its control point, so that is the way it leaves each dot.
+ */
+function linePath(l: Line, r: number): string | null {
+  const a = { x: l.from.x, y: l.from.y };
+  const b = { x: l.to.x, y: l.to.y };
+  if (Math.hypot(b.x - a.x, b.y - a.y) < 2 * r + 1) return null;
+  if (l.arc === 0) {
+    const s = toward(a, b, r);
+    const e = toward(b, a, r);
+    return `M${f1(s.x)},${f1(s.y)} L${f1(e.x)},${f1(e.y)}`;
+  }
+  const c = controlPoint(a, b, l.arc);
+  const s = toward(a, c, r);
+  const e = toward(b, c, r);
+  return `M${f1(s.x)},${f1(s.y)} Q${f1(c.x)},${f1(c.y)} ${f1(e.x)},${f1(e.y)}`;
+}
+
+function svg(scene: Scene, body: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${scene.width}" height="${scene.height}" viewBox="0 0 ${scene.width} ${scene.height}">${body}</svg>`;
+}
+
+/** A dot in its kind's color, ringed in the ground so that touching dots read as two. */
+function dotSvg(d: Dot, scene: Scene): string {
+  const fill = kindColor(d.node.kind);
+  const opacity = d.node.kind === 'organization' ? ORGANIZATION_FILL : 1;
+  return `<circle cx="${f1(d.x)}" cy="${f1(d.y)}" r="${f1(scene.dot / 2)}" fill="${fill}" fill-opacity="${opacity}" stroke="${GROUND}" stroke-width="${f1(scene.stroke)}"/>`;
+}
+
+/** Every dot but the searched entity's, which goes over the lines. */
+function dotsSvg(scene: Scene): string {
+  return svg(scene, scene.dots.filter((d) => !d.seed).map((d) => dotSvg(d, scene)).join(''));
+}
+
+/** Every line, then the searched entity's dot and its ring over them. */
 function linesSvg(scene: Scene): string {
+  const r = (scene.dot + scene.stroke) / 2;
   const parts: string[] = [];
   for (const l of scene.lines) {
-    const { a, b, c } = geometry(l);
-    // The head points along the curve where it arrives, which is from the
-    // control point to the end.
-    const tx = b.x - c.x;
-    const ty = b.y - c.y;
-    const tlen = Math.hypot(tx, ty);
-    if (tlen < 1 || Math.hypot(b.x - a.x, b.y - a.y) < 4) continue;
-    const ux = tx / tlen;
-    const uy = ty / tlen;
-    const head = headLength(l.width, scene.scale);
-    const half = head / 2;
-    // Stop the shaft at the base of the head, so the head is not painted over.
-    const sx = b.x - ux * head;
-    const sy = b.y - uy * head;
-    const stroke = l.direct ? LINK : LINE;
-    const fill = l.direct ? LINK : ARROW;
-    const opacity = l.direct ? 0.75 : 0.55;
-    const d =
-      l.bend === 0
-        ? `M${f1(a.x)},${f1(a.y)} L${f1(sx)},${f1(sy)}`
-        : `M${f1(a.x)},${f1(a.y)} Q${f1(c.x)},${f1(c.y)} ${f1(sx)},${f1(sy)}`;
+    const d = linePath(l, r);
+    if (!d) continue;
+    const s = STROKE[l.tone];
     parts.push(
-      `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="${l.width.toFixed(2)}" stroke-opacity="${opacity}"/>`,
-      `<polygon points="${f1(b.x)},${f1(b.y)} ${f1(sx - uy * half)},${f1(sy + ux * half)} ${f1(sx + uy * half)},${f1(sy - ux * half)}" fill="${fill}" fill-opacity="${opacity}"/>`,
+      `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${(s.width * scene.stroke).toFixed(2)}" stroke-opacity="${(s.opacity * scene.density).toFixed(2)}"/>`,
     );
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${scene.width}" height="${scene.height}" viewBox="0 0 ${scene.width} ${scene.height}">${parts.join('')}</svg>`;
-}
-
-/**
- * Rough width of a string in Geist, in multiples of the font size.
- *
- * Capitals and digits run wider than lower case. Counting characters alone
- * let an all-capitals vendor name run past the edge of its tile.
- */
-function textWidth(text: string): number {
-  let w = 0;
-  for (const ch of text) {
-    w += ch === ' ' ? 0.28 : /[A-Z0-9$@&%#MW]/.test(ch) ? 0.66 : /[il.,:;'!|]/.test(ch) ? 0.3 : 0.54;
+  const seed = scene.dots.find((d) => d.seed);
+  if (seed) {
+    const ring = 2 * scene.stroke;
+    parts.push(
+      dotSvg(seed, scene),
+      `<circle cx="${f1(seed.x)}" cy="${f1(seed.y)}" r="${f1(r + 2 * scene.stroke + ring / 2)}" fill="none" stroke="${RING}" stroke-width="${f1(ring)}"/>`,
+    );
   }
-  return w;
+  return svg(scene, parts.join(''));
 }
 
-/** Cut a line to a width, with a mark where it was cut. */
-function fitWidth(line: string, room: number): string {
-  if (textWidth(line) <= room) return line;
-  let cut = line;
-  while (cut.length > 1 && textWidth(`${cut}…`) > room) cut = cut.slice(0, -1);
-  return `${cut.trimEnd()}…`;
+/** An SVG laid over the whole picture. */
+function Layer({ scene, markup }: { scene: Scene; markup: string }) {
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- painted into a PNG, not served to a browser
+    <img
+      src={`data:image/svg+xml;base64,${Buffer.from(markup).toString('base64')}`}
+      width={scene.width}
+      height={scene.height}
+      style={{ position: 'absolute', left: 0, top: 0 }}
+      alt=""
+    />
+  );
 }
 
-/**
- * A name on at most two lines, broken by hand.
- *
- * The rasterizer wraps text, and it also clips a third line without a mark.
- * "Florida House Republican Campaign" came out as "Florida House Republican"
- * and read as a complete name. Breaking the lines here means the cut always
- * shows, and the width estimate only has to be conservative, since a line
- * that comes up short leaves a little slack rather than spilling.
- */
-function wrapName(name: string, width: number, fontSize: number): string[] {
-  const room = width / fontSize;
-  const words = name.trim().split(/\s+/);
-  const lines: string[] = [];
-  let i = 0;
-  while (i < words.length && lines.length < 2) {
-    let line = words[i++];
-    while (i < words.length && textWidth(`${line} ${words[i]}`) <= room) line += ` ${words[i++]}`;
-    lines.push(line);
-  }
-  // Words left over mean the name was cut, and the cut has to show.
-  if (i < words.length) lines[lines.length - 1] += '…';
-  return lines.map((l) => fitWidth(l, room));
-}
-
-/** "in $1.2M · out $450K", or whichever half there is. */
-function moneyLine(node: Tile['node']): string {
-  const received = Number(node.totalReceived);
-  const given = Number(node.totalGiven);
-  return received > 0 && given > 0
-    ? `in ${formatMoney(received)} · out ${formatMoney(given)}`
-    : received > 0
-      ? `in ${formatMoney(received)}`
-      : given > 0
-        ? `out ${formatMoney(given)}`
-        : '';
-}
-
-/** One tile, styled as the explorer styles it. */
-function TileBox({ tile, scale }: { tile: Tile; scale: number }) {
-  const { node, seed } = tile;
-  const color = kindColor(node.kind);
-  const fontSize = (seed ? 11 : 10) * scale;
-  const money = moneyLine(node);
-
+/** A dot's name, beside it on the right, level with it. */
+function Name({ dot, scene }: { dot: Dot; scene: Scene }) {
+  const h = scene.font * 1.2;
   return (
     <div
       style={{
         position: 'absolute',
-        left: tile.x - tile.w / 2,
-        top: tile.y - tile.h / 2,
-        width: tile.w,
-        height: tile.h,
+        left: dot.x + scene.dot / 2 + 4 * Math.min(1, scene.scale),
+        top: dot.y - h / 2,
+        height: h,
         display: 'flex',
-        flexDirection: 'column',
         alignItems: 'center',
-        justifyContent: 'center',
-        // No overflow clip. On a rounded box the rasterizer masks each tile
-        // separately, and two hundred masks took half a minute to draw. The
-        // name is broken to fit by hand, so there is nothing to clip.
-        padding: `${2 * scale}px ${8 * scale}px`,
-        borderRadius: 8 * scale,
-        // The shorthand. The rasterizer draws a dash only when it is given here.
-        border: `${(seed ? 3 : 1.5) * scale}px ${tile.hasMore && !seed ? 'dashed' : 'solid'} ${seed ? SEED_BORDER : color}`,
-        // Opaque, the ground mixed with the kind's color, so a line passing
-        // under a tile does not show through it.
-        backgroundColor: mix(color, seed ? 0.32 : 0.16),
-        color: INK,
-        fontSize,
-        lineHeight: 1.3,
-        textAlign: 'center',
+        fontSize: scene.font,
+        lineHeight: 1.2,
+        color: NAME_INK,
+        whiteSpace: 'nowrap',
       }}
     >
-      {wrapName(fitLabel(node.name, 38), tile.w - 16 * scale, fontSize).map((text, i) => (
-        <div key={i} style={{ display: 'flex', whiteSpace: 'nowrap' }}>
-          {text}
-        </div>
-      ))}
-      {money && (
-        <div style={{ display: 'flex', whiteSpace: 'nowrap' }}>
-          {fitWidth(money, (tile.w - 16 * scale) / fontSize)}
-        </div>
-      )}
+      {dot.label}
     </div>
   );
 }
 
-/** A kind's color laid over the ground at some strength, as one opaque color. */
-function mix(hex: string, alpha: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const g = parseInt(GROUND.slice(1), 16);
-  const ch = (shift: number) =>
-    Math.round(((n >> shift) & 255) * alpha + ((g >> shift) & 255) * (1 - alpha));
-  return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
-}
-
 /**
- * The amount, at the middle of its line, turned to run along it.
+ * The searched entity's name and money, on a card beside its dot, as the
+ * explorer draws it.
  *
- * The explorer labels every line and keeps the text upright, so a line
- * running right to left still reads left to right.
+ * The card is set in a tall band centered on the dot, so it is centered on
+ * the dot without knowing its own height.
  */
-function LineLabel({ line, scale }: { line: Line; scale: number }) {
-  const text = formatMoney(Number(line.edge.amount));
-  const fontSize = 9 * scale;
-  const pad = 2 * scale;
-  const w = text.length * fontSize * 0.6 + 2 * pad;
-  const h = fontSize * 1.25 + 2 * pad;
-  const { a, b, c } = geometry(line);
-  // The middle of a quadratic curve, and the direction it runs there.
-  const x = 0.25 * a.x + 0.5 * c.x + 0.25 * b.x;
-  const y = 0.25 * a.y + 0.5 * c.y + 0.25 * b.y;
-  let angle = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
-  if (angle > 90) angle -= 180;
-  else if (angle < -90) angle += 180;
+function SeedCard({ scene }: { scene: Scene }) {
+  const seed = scene.dots.find((d) => d.seed);
+  if (!seed) return null;
+  const { received, given } = cardMoney(seed.node);
+  const reach = (scene.dot + scene.stroke) / 2 + CARD.gap;
+  const band = 400;
   return (
     <div
       style={{
         position: 'absolute',
-        left: x - w / 2,
-        top: y - h / 2,
-        width: w,
-        height: h,
+        top: seed.y - band / 2,
+        height: band,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        transform: `rotate(${angle.toFixed(1)}deg)`,
-        backgroundColor: rgba(GROUND, 0.85),
-        color: MUTED,
-        fontSize,
-        whiteSpace: 'nowrap',
+        left: seed.x + reach,
       }}
     >
-      {text}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          maxWidth: CARD.maxWidth,
+          padding: `${CARD.padY}px ${CARD.padX}px`,
+          borderRadius: 8,
+          border: '1px solid rgba(51, 65, 85, 0.7)',
+          backgroundColor: 'rgba(15, 23, 42, 0.8)',
+          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.3)',
+        }}
+      >
+        <div style={{ display: 'flex', fontSize: CARD.name, lineHeight: 1.375, color: '#f1f5f9' }}>
+          {seed.node.name}
+        </div>
+        {(received > 0 || given > 0) && (
+          <div style={{ display: 'flex', marginTop: 4, gap: 12, fontSize: CARD.money }}>
+            {received > 0 && <div style={{ display: 'flex', color: '#34d399' }}>{`in ${formatMoney(received)}`}</div>}
+            {given > 0 && <div style={{ display: 'flex', color: '#fbbf24' }}>{`out ${formatMoney(given)}`}</div>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 const KIND_NAMES: Record<string, string> = {
-  committee: 'Committee',
+  committee: 'Committee / PAC',
   candidate: 'Candidate',
   party: 'Party',
   organization: 'Organization',
   individual: 'Individual',
 };
 
+/** The two kinds of line, as the explorer's legend draws them. */
+const LINE_KEY = [
+  { label: 'Political money', color: POLITICAL_LINE, opacity: 0.75, tone: 'political' },
+  { label: 'Paid to vendors', color: VENDOR_LINE, opacity: 0.45, tone: 'vendor' },
+] as const;
+
 function Picture({ scene, scope, site }: { scene: Scene; scope: string; site: string }) {
   const u = scene.unit;
-  const kinds = [...new Set(scene.tiles.map((t) => t.node.kind))].filter((k) => KIND_NAMES[k]);
-  const count = scene.tiles.length - 1;
+  const kinds = [...new Set(scene.dots.map((d) => d.node.kind))].filter((k) => KIND_NAMES[k]);
+  const tones = new Set(scene.lines.map((l) => l.tone));
+  const count = scene.dots.length - 1;
+  const seed = scene.dots.find((d) => d.seed);
   const coverage =
     count === 0
       ? 'no direct links on file'
       : scene.truncated
         ? `${count} entities, stopped at the explorer's ceiling`
         : `${count} ${count === 1 ? 'entity' : 'entities'}`;
-  const svg = Buffer.from(linesSvg(scene)).toString('base64');
 
   return (
     <div
@@ -383,29 +314,19 @@ function Picture({ scene, scope, site }: { scene: Scene; scope: string; site: st
         </div>
       </div>
 
-      {/* eslint-disable-next-line @next/next/no-img-element -- painted into a PNG, not served to a browser */}
-      <img
-        src={`data:image/svg+xml;base64,${svg}`}
-        width={scene.width}
-        height={scene.height}
-        style={{ position: 'absolute', left: 0, top: 0 }}
-        alt=""
-      />
+      <Layer scene={scene} markup={dotsSvg(scene)} />
+      {scene.font >= 6 &&
+        scene.dots.filter((d) => d.label).map((d) => <Name key={d.node.id} dot={d} scene={scene} />)}
+      <Layer scene={scene} markup={linesSvg(scene)} />
+      <SeedCard scene={scene} />
 
-      {scene.lines.map((l) => (
-        <LineLabel key={l.edge.id} line={l} scale={scene.scale} />
-      ))}
-      {scene.tiles.map((t) => (
-        <TileBox key={t.node.id} tile={t} scale={scene.scale} />
-      ))}
-
-      {count === 0 && (
+      {count === 0 && seed && (
         <div
           style={{
             position: 'absolute',
             left: 40 * u,
             right: 40 * u,
-            top: scene.tiles[0].y + scene.tiles[0].h / 2 + 22 * u,
+            top: seed.y + 60,
             display: 'flex',
             justifyContent: 'center',
             fontSize: 14 * u,
@@ -435,31 +356,27 @@ function Picture({ scene, scope, site }: { scene: Scene; scope: string; site: st
             <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 6 * u }}>
               <div
                 style={{
-                  width: 12 * u,
-                  height: 12 * u,
-                  borderRadius: 3 * u,
-                  border: `${1.5 * u}px solid ${kindColor(k)}`,
-                  backgroundColor: rgba(kindColor(k), 0.3),
+                  width: 9 * u,
+                  height: 9 * u,
+                  borderRadius: 5 * u,
+                  backgroundColor: rgba(kindColor(k), k === 'organization' ? ORGANIZATION_FILL : 1),
                 }}
               />
               <div style={{ display: 'flex' }}>{KIND_NAMES[k]}</div>
             </div>
           ))}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 * u }}>
-            <div style={{ width: 22 * u, height: 3 * u, borderRadius: 2 * u, backgroundColor: LINK }} />
-            <div style={{ display: 'flex' }}>Arrows point the way the money went</div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 * u }}>
-            <div
-              style={{
-                width: 16 * u,
-                height: 12 * u,
-                borderRadius: 3 * u,
-                border: `${1.5 * u}px dashed ${MUTED}`,
-              }}
-            />
-            <div style={{ display: 'flex' }}>Dashed: can be followed further in the explorer</div>
-          </div>
+          {LINE_KEY.filter((l) => tones.has(l.tone)).map((l) => (
+            <div key={l.label} style={{ display: 'flex', alignItems: 'center', gap: 6 * u }}>
+              <div
+                style={{
+                  width: 20 * u,
+                  height: Math.max(1, 1.5 * u),
+                  backgroundColor: rgba(l.color, l.opacity),
+                }}
+              />
+              <div style={{ display: 'flex' }}>{l.label}</div>
+            </div>
+          ))}
         </div>
         <div style={{ display: 'flex' }}>{site}</div>
       </div>

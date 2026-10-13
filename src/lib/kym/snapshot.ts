@@ -2,16 +2,20 @@
  * The picture of who a committee moves money with, two hops out, and the
  * file that holds it once drawn.
  *
- * It is the explorer's own view, drawn on the server. The crawl is the
- * explorer's default: two hops, money in and out, direct links, and the same
- * per-entity and total caps. The layout is the explorer's force layout and
- * overlap pass, run headless from `src/lib/graph/layout.ts`. Every entity the
- * explorer would draw is drawn here, whatever its kind.
+ * It is the explorer's own view, drawn on the server in the explorer's
+ * network look: a small dot per entity with its name beside it, and one
+ * plain line per pair of entities. The crawl is the explorer's default: two
+ * hops, money in and out, direct links, and the same per-entity and total
+ * caps. The layout is the explorer's force layout and overlap pass for dots,
+ * run headless from `src/lib/graph/layout.ts`, and lines bow around dots by
+ * the same rule. Every entity the explorer would draw is drawn here, whatever
+ * its kind. It shows the graph as the explorer opens it, with the searched
+ * entity selected and its whole network lit.
  *
  * The one difference is the frame. The explorer fits the graph to a window a
  * reader can zoom. A picture has one size, so a large graph is drawn smaller
- * rather than cropped, down to the point where a tile's name is still legible
- * when the file is opened full size.
+ * rather than cropped, sized the way the explorer sizes dots, lines and names
+ * at that zoom.
  *
  * ## Caching
  *
@@ -31,16 +35,16 @@ import type { db as Database } from '@/db';
 import * as disk from '@/lib/cache/disk';
 import { crawlAll, type GraphEdge, type GraphNode } from '@/lib/graph/crawl';
 import {
-  FCOSE_LAYOUT,
-  SEED_H,
-  SEED_W,
-  TILE_H,
-  TILE_W,
-  edgeWidth,
+  DOT,
+  DOT_GAP,
+  bowAround,
+  lineDensity,
+  networkLayout,
   separateTiles,
+  type Point,
 } from '@/lib/graph/layout';
 import { dataStamp } from '@/lib/graph/traceCache';
-import { DEFAULT_SETTINGS } from '@/lib/graph/types';
+import { DEFAULT_SETTINGS, edgeTone, formatMoney } from '@/lib/graph/types';
 
 cytoscape.use(fcose);
 
@@ -60,74 +64,124 @@ export const CRAWL = {
   maxNodes: DEFAULT_SETTINGS.maxNodes,
 };
 
-/** Space kept around the graph, in graph units. The explorer's fit uses the same. */
-const PAD = 60;
+/** Clear space kept around the graph, in pixels. */
+const PAD = 48;
 
-/**
- * The longest side the graph may take, in pixels.
- *
- * Six hundred tiles lay out to about five thousand graph units a side. Drawn
- * at full size that is a 25-megapixel file. This bound keeps the largest
- * graphs near 0.8 of full size, where a tile's 10px name is still 8px.
- */
+/** The longest side the graph may take, in pixels. */
 const MAX_SIDE = 4200;
 
-/** Narrowest picture, so the masthead has room over a graph of one or two tiles. */
+/** The closest the explorer zooms when it frames a whole graph of dots. */
+const FIT_ZOOM = 1.4;
+
+/**
+ * Room each entity gets on the picture, in square pixels.
+ *
+ * At the explorer's framing zoom a crowded graph packs hundreds of names on
+ * top of each other. Zooming in spreads the dots apart while names keep their
+ * size, so a crowded graph is drawn closer, up to MAX_ZOOM, until each entity
+ * has about this much room.
+ */
+const ROOM = 10000;
+
+/** The closest a crowded graph is drawn. */
+const MAX_ZOOM = 3;
+
+/** Narrowest picture, so the masthead has room over a graph of one or two dots. */
 const MIN_WIDTH = 1200;
 
 /** The width the masthead and foot are designed at. Wider pictures scale them up. */
 const DESIGN_WIDTH = 1600;
 
-/** Distance between two edges joining the same pair, as the explorer bends them. */
-const BUNDLE_STEP = 40;
+/** The size of a name on the explorer's canvas at zoom 1, in pixels. */
+export const NAME = 10;
 
-export interface Tile {
+/** The longest name written beside a dot, as in the explorer. */
+const NAME_MAX = 30;
+
+/**
+ * The searched entity's card, as the explorer draws it beside the dot, in
+ * pixels. Its name wraps inside the width.
+ */
+export const CARD = {
+  maxWidth: 320,
+  /** Between the dot and the card. */
+  gap: 12,
+  padX: 14,
+  padY: 10,
+  name: 15,
+  money: 12,
+} as const;
+
+export interface Dot {
   node: GraphNode;
   /** Center, in pixels. */
   x: number;
   y: number;
-  w: number;
-  h: number;
   seed: boolean;
-  /** More lies past this tile than the crawl drew. Dashed, as in the explorer. */
-  hasMore: boolean;
+  /** The name written beside it. Empty for the searched entity, which has its card. */
+  label: string;
 }
 
 export interface Line {
-  edge: GraphEdge;
-  from: Tile;
-  to: Tile;
-  /** Stroke width in pixels, on the explorer's log scale. */
-  width: number;
-  /** Both ends are committees or others that move money. Drawn in the explorer's link color. */
-  direct: boolean;
+  /** The ends of the largest payment between the pair. */
+  from: Dot;
+  to: Dot;
+  /** Political money or a payment to a vendor. See `edgeTone`. */
+  tone: 'political' | 'vendor';
   /**
-   * How far the line bows off the straight path, in pixels, to the left of
-   * travel from the lower id to the higher. Zero for a pair joined once.
+   * How far the line's control point sits off the straight path, in pixels,
+   * to the left of travel from `from` to `to`. Zero for a straight line.
    */
-  bend: number;
+  arc: number;
 }
 
 export interface Scene {
   seed: GraphNode;
   width: number;
   height: number;
-  /** Pixels per graph unit. Fonts and strokes inside the graph scale by it. */
+  /** Pixels per graph unit: the zoom the graph is drawn at. */
   scale: number;
+  /**
+   * What a pixel of line or dot at zoom 1 comes to at this zoom. Lines and
+   * dots grow and shrink only with the square root of the zoom, as in the
+   * explorer.
+   */
+  stroke: number;
+  /** The size of a name, in pixels. Never larger than at zoom 1. */
+  font: number;
+  /** A dot's width, in pixels. */
+  dot: number;
   /** Size of the masthead and foot relative to their design width. */
   unit: number;
   /** Height of the masthead band. */
   header: number;
-  tiles: Tile[];
+  dots: Dot[];
   lines: Line[];
+  /** How strongly lines are drawn on a graph this crowded. See `lineDensity`. */
+  density: number;
   /** The crawl stopped at the explorer's node ceiling. */
   truncated: boolean;
 }
 
-/** Trim a name to what two lines of a tile will hold. */
+/** Trim a name to a length, with a mark where it was cut. */
 export function fitLabel(name: string, max: number): string {
   const clean = name.trim();
   return clean.length <= max ? clean : `${clean.slice(0, max - 1).trimEnd()}…`;
+}
+
+/**
+ * Rough width of a string in Geist, in multiples of the font size.
+ *
+ * Capitals and digits run wider than lower case. Counting characters alone
+ * underestimates an all-capitals vendor name. Errs wide, so the frame leaves
+ * room for every name.
+ */
+export function textWidth(text: string): number {
+  let w = 0;
+  for (const ch of text) {
+    w += ch === ' ' ? 0.28 : /[A-Z0-9$@&%#MW]/.test(ch) ? 0.66 : /[il.,:;'!|]/.test(ch) ? 0.3 : 0.54;
+  }
+  return w;
 }
 
 /**
@@ -145,29 +199,22 @@ export async function buildScene(db: Db, seedId: string, cycle?: string): Promis
   // itself has no line to draw.
   const ids = new Set(graph.nodes.map((n) => n.id));
   const edges = graph.edges.filter(
-    (e) => ids.has(e.source) && ids.has(e.target) && e.source !== e.target,
+    (e) => e.kind === 'money' && ids.has(e.source) && ids.has(e.target) && e.source !== e.target,
   );
 
-  const positions = layOut(graph.nodes, edges, seedId);
+  const positions = layOut(graph.nodes, edges);
   return place(seed, graph.nodes, edges, positions, graph.truncated);
 }
 
-/** The explorer's layout, headless. Positions are in graph units. */
-function layOut(
-  nodes: GraphNode[],
-  edges: GraphEdge[],
-  seedId: string,
-): Map<string, { x: number; y: number }> {
+/** The explorer's layout for dots, headless. Positions are in graph units. */
+function layOut(nodes: GraphNode[], edges: GraphEdge[]): Map<string, Point> {
   const cy = cytoscape({
     headless: true,
-    // On, so the layout reads each tile's size from the style below.
+    // On, so the layout and the overlap pass read each dot's size.
     styleEnabled: true,
-    style: [
-      { selector: 'node', style: { shape: 'round-rectangle', width: TILE_W, height: TILE_H } },
-      { selector: 'node[?isSeed]', style: { width: SEED_W, height: SEED_H } },
-    ],
+    style: [{ selector: 'node', style: { shape: 'ellipse', width: DOT, height: DOT } }],
     elements: [
-      ...nodes.map((n) => ({ group: 'nodes' as const, data: { id: n.id, isSeed: n.id === seedId } })),
+      ...nodes.map((n) => ({ group: 'nodes' as const, data: { id: n.id } })),
       ...edges.map((e) => ({
         group: 'edges' as const,
         data: { id: e.id, source: e.source, target: e.target },
@@ -176,102 +223,191 @@ function layOut(
   });
   try {
     cy.layout({
-      ...FCOSE_LAYOUT,
+      ...networkLayout(cy),
       animate: false,
       randomize: true,
       fit: false,
-    } as cytoscape.LayoutOptions).run();
-    separateTiles(cy, () => false);
+    } as unknown as cytoscape.LayoutOptions).run();
+    separateTiles(cy, () => false, DOT_GAP);
     return new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
   } finally {
     cy.destroy();
   }
 }
 
+/**
+ * One line per pair of entities, whatever passed between them, as the
+ * explorer merges them.
+ *
+ * Money both ways arrives as two edges, and money over several cycles as one
+ * edge per cycle. The largest stands for the rest, and the line is political
+ * if any of them is.
+ */
+function pairUp(edges: GraphEdge[], kinds: Map<string, GraphNode>) {
+  const groups = new Map<string, GraphEdge[]>();
+  for (const e of edges) {
+    const key = e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
+    const group = groups.get(key);
+    if (group) group.push(e);
+    else groups.set(key, [e]);
+  }
+  return [...groups.values()].map((group) => {
+    group.sort(
+      (x, y) => (Number(y.amount) || 0) - (Number(x.amount) || 0) || (x.id < y.id ? -1 : 1),
+    );
+    const political = group.some((e) => edgeTone(kinds.get(e.target)) === 'political');
+    return { lead: group[0], tone: political ? ('political' as const) : ('vendor' as const) };
+  });
+}
+
 function place(
   seed: GraphNode,
   nodes: GraphNode[],
   edges: GraphEdge[],
-  positions: Map<string, { x: number; y: number }>,
+  positions: Map<string, Point>,
   truncated: boolean,
 ): Scene {
-  const sized = nodes.map((node) => {
-    const isSeed = node.id === seed.id;
-    const p = positions.get(node.id) ?? { x: 0, y: 0 };
-    return { node, isSeed, x: p.x, y: p.y, w: isSeed ? SEED_W : TILE_W, h: isSeed ? SEED_H : TILE_H };
-  });
+  const at = (id: string) => positions.get(id) ?? { x: 0, y: 0 };
 
+  // The zoom: the explorer's framing zoom, or closer for a crowded graph,
+  // within MAX_SIDE. Names stop growing at zoom 1, so in graph units a name is
+  // at most NAME long per unit of its width. Counting it so leaves room for it.
+  let gx1 = Infinity;
+  let gy1 = Infinity;
+  let gx2 = -Infinity;
+  let gy2 = -Infinity;
+  let area = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const n of nodes) {
+    const p = at(n.id);
+    const name = n.id === seed.id ? 0 : DOT + textWidth(fitLabel(n.name, NAME_MAX)) * NAME;
+    gx1 = Math.min(gx1, p.x - DOT);
+    gy1 = Math.min(gy1, p.y - NAME);
+    gx2 = Math.max(gx2, p.x + DOT + name);
+    gy2 = Math.max(gy2, p.y + NAME);
+    area = {
+      x1: Math.min(area.x1, p.x),
+      y1: Math.min(area.y1, p.y),
+      x2: Math.max(area.x2, p.x),
+      y2: Math.max(area.y2, p.y),
+    };
+  }
+  const spread = Math.max((area.x2 - area.x1) * (area.y2 - area.y1), 1);
+  const roomy = Math.min(MAX_ZOOM, Math.sqrt((ROOM * nodes.length) / spread));
+  const scale = Math.min(Math.max(FIT_ZOOM, roomy), MAX_SIDE / Math.max(gx2 - gx1, gy2 - gy1, 1));
+
+  // Sizes on the picture, by the explorer's rules for its zoom. See
+  // `fitToZoom` in `GraphCanvas.tsx`.
+  const stroke = Math.min(1.3, Math.max(0.6, Math.sqrt(scale)));
+  const font = NAME * Math.min(1, scale);
+  const dot = DOT * stroke;
+  const gap = 4 * Math.min(1, scale);
+
+  const dots: Dot[] = nodes.map((node) => {
+    const p = at(node.id);
+    const isSeed = node.id === seed.id;
+    return {
+      node,
+      x: p.x * scale,
+      y: p.y * scale,
+      seed: isSeed,
+      label: isSeed ? '' : fitLabel(node.name, NAME_MAX),
+    };
+  });
+  const seedDot = dots.find((d) => d.seed)!;
+
+  // The card stands to the right of the searched entity, as in the explorer.
+  // The explorer moves it left only where it would run off the canvas, and
+  // the picture grows to hold it instead.
+  const cardW = cardWidth(seed);
+  const cardH = cardHeight(seed);
+  const reach = dot / 2 + CARD.gap;
+
+  // The frame: every dot, every name and the card.
   let x1 = Infinity;
   let y1 = Infinity;
   let x2 = -Infinity;
   let y2 = -Infinity;
-  for (const t of sized) {
-    x1 = Math.min(x1, t.x - t.w / 2);
-    y1 = Math.min(y1, t.y - t.h / 2);
-    x2 = Math.max(x2, t.x + t.w / 2);
-    y2 = Math.max(y2, t.y + t.h / 2);
+  for (const d of dots) {
+    const right = d.label ? dot / 2 + gap + textWidth(d.label) * font : dot / 2;
+    x1 = Math.min(x1, d.x - dot);
+    y1 = Math.min(y1, d.y - Math.max(dot, font));
+    x2 = Math.max(x2, d.x + right + dot);
+    y2 = Math.max(y2, d.y + Math.max(dot, font));
   }
-  const graphW = x2 - x1 + 2 * PAD;
-  const graphH = y2 - y1 + 2 * PAD;
+  x2 = Math.max(x2, seedDot.x + reach + cardW);
+  y1 = Math.min(y1, seedDot.y - cardH / 2);
+  y2 = Math.max(y2, seedDot.y + cardH / 2);
 
-  const scale = Math.min(1, MAX_SIDE / Math.max(graphW, graphH));
-  const width = Math.max(MIN_WIDTH, Math.ceil(graphW * scale));
+  const width = Math.max(MIN_WIDTH, Math.ceil(x2 - x1 + 2 * PAD));
   const unit = Math.min(3, Math.max(1, width / DESIGN_WIDTH));
   const header = Math.round(110 * unit);
   const footer = Math.round(64 * unit);
-  const height = Math.ceil(header + graphH * scale + footer);
-  const left = (width - graphW * scale) / 2;
-
-  const tiles: Tile[] = [];
-  const at = new Map<string, Tile>();
-  for (const t of sized) {
-    const tile: Tile = {
-      node: t.node,
-      x: left + (t.x - x1 + PAD) * scale,
-      y: header + (t.y - y1 + PAD) * scale,
-      w: t.w * scale,
-      h: t.h * scale,
-      seed: t.isSeed,
-      hasMore: t.node.isTraversable && t.node.inDegree + t.node.outDegree > 0,
-    };
-    tiles.push(tile);
-    at.set(t.node.id, tile);
+  const height = Math.ceil(header + (y2 - y1) + 2 * PAD + footer);
+  const dx = (width - (x2 - x1)) / 2 - x1;
+  const dy = header + PAD - y1;
+  for (const d of dots) {
+    d.x += dx;
+    d.y += dy;
   }
 
-  // Edges joining the same pair, either way round, fan out around the
-  // straight path the way the explorer bundles them.
-  const bundles = new Map<string, GraphEdge[]>();
-  for (const e of edges) {
-    const key = e.source < e.target ? `${e.source}|${e.target}` : `${e.target}|${e.source}`;
-    const held = bundles.get(key);
-    if (held) held.push(e);
-    else bundles.set(key, [e]);
-  }
-
-  const maxAmount = edges.reduce((m, e) => Math.max(m, Number(e.amount) || 0), 0);
+  // Lines bow around dots in graph units, as the explorer works them out.
+  const byId = new Map(dots.map((d) => [d.node.id, d]));
+  const kinds = new Map(nodes.map((n) => [n.id, n]));
+  const obstacles = nodes.map((n) => ({ id: n.id, p: at(n.id) }));
   const lines: Line[] = [];
-  for (const bundle of bundles.values()) {
-    bundle.forEach((e, i) => {
-      const from = at.get(e.source);
-      const to = at.get(e.target);
-      if (!from || !to) return;
-      lines.push({
-        edge: e,
-        from,
-        to,
-        width: edgeWidth(Number(e.amount) || 0, maxAmount) * scale,
-        direct: e.isDirectLink,
-        bend: (i - (bundle.length - 1) / 2) * BUNDLE_STEP * scale,
-      });
-    });
+  for (const { lead, tone } of pairUp(edges, kinds)) {
+    const from = byId.get(lead.source);
+    const to = byId.get(lead.target);
+    if (!from || !to) continue;
+    const arc = bowAround(at(lead.source), at(lead.target), lead.source, lead.target, obstacles);
+    lines.push({ from, to, tone, arc: arc * scale });
   }
-  // Heavier lines last, so the money that matters is drawn over the rest.
-  lines.sort((a, b) => a.width - b.width);
+  // Payments to vendors first, so political money is drawn over them.
+  lines.sort((a, b) => Number(a.tone === 'political') - Number(b.tone === 'political'));
 
-  // The seed last, so nothing is drawn over it.
-  tiles.sort((a, b) => Number(a.seed) - Number(b.seed));
+  return {
+    seed,
+    width,
+    height,
+    scale,
+    stroke,
+    font,
+    dot,
+    unit,
+    header,
+    dots,
+    lines,
+    density: lineDensity(lines.length),
+    truncated,
+  };
+}
 
-  return { seed, width, height, scale, unit, header, tiles, lines, truncated };
+/** The searched entity's money in and out, as its card writes them. */
+export function cardMoney(node: GraphNode): { received: number; given: number } {
+  return { received: Number(node.totalReceived) || 0, given: Number(node.totalGiven) || 0 };
+}
+
+/** How many lines the card's name wraps to, at most three. */
+function cardNameLines(node: GraphNode): number {
+  const room = (CARD.maxWidth - 2 * CARD.padX) / CARD.name;
+  return Math.min(3, Math.max(1, Math.ceil(textWidth(node.name) / room)));
+}
+
+function cardWidth(node: GraphNode): number {
+  const { received, given } = cardMoney(node);
+  const name = Math.min(textWidth(node.name) * CARD.name, CARD.maxWidth - 2 * CARD.padX);
+  const parts = [
+    received > 0 ? `in ${formatMoney(received)}` : '',
+    given > 0 ? `out ${formatMoney(given)}` : '',
+  ];
+  const money = textWidth(parts.join(' ')) * CARD.money + 12;
+  return Math.max(name, money) + 2 * CARD.padX;
+}
+
+function cardHeight(node: GraphNode): number {
+  const { received, given } = cardMoney(node);
+  const money = received > 0 || given > 0 ? 4 + CARD.money * 1.4 : 0;
+  return cardNameLines(node) * CARD.name * 1.375 + money + 2 * CARD.padY;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -279,7 +415,7 @@ function place(
 /* ------------------------------------------------------------------------ */
 
 /** Bump when the drawing changes, so pictures drawn the old way are not served. */
-export const RENDER_VERSION = 6;
+export const RENDER_VERSION = 7;
 
 /** How long a picture stands once the filings behind it stop moving. */
 export const TTL_MS = 7 * 24 * 60 * 60 * 1000;

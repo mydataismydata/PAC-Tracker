@@ -31,6 +31,11 @@ import cytoscape, {
 import fcose from 'cytoscape-fcose';
 import {
   KIND_COLORS,
+  NETWORK_GROUND as GROUND,
+  ORGANIZATION_FILL,
+  POLITICAL_LINE,
+  VENDOR_LINE,
+  edgeTone,
   formatMoney,
   kindLabel,
 
@@ -47,10 +52,14 @@ import {
   TILE_GAP,
   TILE_H,
   TILE_W,
+  bowAround,
+  controlPoint,
   edgeWidth,
+  lineDensity,
   networkLayout,
   separateTiles,
   type GraphLook,
+  type Point,
 } from '@/lib/graph/layout';
 
 cytoscape.use(fcose);
@@ -58,51 +67,6 @@ cytoscape.use(fcose);
 /** How far each ghost tile is stepped off the one before it. */
 const GHOST_DX = TILE_W + 150;
 const GHOST_DY = TILE_H + 70;
-
-/** The canvas behind the network look. Dots are ringed in it. */
-const GROUND = '#020617';
-
-/**
- * How strongly an organization's dot is filled.
- *
- * Amber is far brighter than the other kinds' colors on the dark ground, so
- * at full strength the vendors outshine the committees they were paid by.
- * The legend's swatch uses the same value.
- */
-const ORGANIZATION_FILL = 0.55;
-
-/**
- * Line colors in the network look.
- *
- * Money between committees, parties, candidates and their donors is white. A
- * payment to a vendor is pale yellow and drawn fainter, so the political
- * money reads first.
- */
-const POLITICAL_LINE = '#f8fafc';
-const VENDOR_LINE = '#f2e3a0';
-
-/**
- * When a line runs into a dot that is not one of its ends: closer to the
- * dot's center than this, in graph units, which is over the dot or just
- * grazing it. A line that passes further off stays straight.
- */
-const COLLISION = DOT * 0.75;
-
-/** How far a line that bows around a dot keeps from its center, in graph units. */
-const CLEARANCE = DOT * 1.25;
-
-/**
- * The most dots a line will bow to get around. A line that runs into more is
- * crossing a crowd: no bow clears it, and a bowed line through a crowd only
- * swaps the dots it crosses, so it stays straight.
- */
-const MAX_DODGED = 2;
-
-/**
- * The furthest a line's control point may sit off straight, as a share of
- * the line's length. The curve itself strays half that far at its middle.
- */
-const MAX_BOW = 0.6;
 
 /** Every class a highlight puts on. A new highlight takes all of them off first. */
 const LIT = 'dimmed highlighted reach far-end label-left';
@@ -216,18 +180,6 @@ function dotName(n: GraphNode): string {
 }
 
 /**
- * Whether a payment is political money or a payment to a vendor.
- *
- * Money into a committee, party or candidate is political, whoever sent it.
- * So is money one of them pays to another, or to a person. Money paid to an
- * organization is a payment to a vendor. Every filed payment has a committee,
- * party or candidate at one end, so the recipient alone decides.
- */
-function edgeTone(recipient: GraphNode | undefined): 'political' | 'vendor' {
-  return recipient?.kind === 'organization' ? 'vendor' : 'political';
-}
-
-/**
  * Draw one line for each pair of entities, whatever passed between them.
  *
  * Money both ways between two entities arrives as two edges, and money over
@@ -268,18 +220,9 @@ function mergePairs(cy: Core): void {
   });
 }
 
-type Point = { x: number; y: number };
-
 /**
  * Draw each line straight, and bow it only to get around a dot in its way.
- *
- * A straight line that would run into a dot that is not one of its ends (see
- * COLLISION) bows around it. The bow is the least that keeps CLEARANCE from
- * every dot near the line, on whichever side needs less. A line stays
- * straight when it runs into more than MAX_DODGED dots, or when no bow within
- * MAX_BOW gets it clear, since dots sit beneath the lines anyway. So does a
- * line whose only obstacle hugs one of its ends, which would take a wide
- * swing to dodge.
+ * See `bowAround`.
  *
  * `at` gives a node's position: while a layout animates, the one the node is
  * headed for.
@@ -306,74 +249,6 @@ function routeLines(
       n.toggleClass('label-left', labelGoesLeft(n));
     });
   });
-}
-
-/**
- * The control point's offset that takes a line from `a` to `b` around the
- * dots in its way, or 0 for a straight line.
- *
- * Positive bows to the left of travel from `a` to `b`, which is the side
- * Cytoscape puts a positive `control-point-distances` on. Cytoscape draws the
- * bow as one control point off the middle of the line, a quadratic curve. At
- * a share t of the way along, that curve stands 2t(1 - t) times the control
- * point's offset away from the straight line. So each dot near the line rules
- * out a range of offsets on each side, the ones that bring the curve within
- * CLEARANCE of it. The answer is the smallest offset left on either side.
- */
-function bowAround(
-  a: Point,
-  b: Point,
-  aId: string,
-  bId: string,
-  dots: { id: string; p: Point }[],
-): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const length = Math.hypot(dx, dy);
-  if (length < DOT * 2) return 0;
-  const ux = dx / length;
-  const uy = dy / length;
-  const cap = MAX_BOW * length;
-
-  const ruledOut: { side: number; lo: number; hi: number }[] = [];
-  let blocked = 0;
-  for (const dot of dots) {
-    if (dot.id === aId || dot.id === bId) continue;
-    const rx = dot.p.x - a.x;
-    const ry = dot.p.y - a.y;
-    const t = (rx * ux + ry * uy) / length;
-    if (t <= 0 || t >= 1) continue;
-    const off = ry * ux - rx * uy;
-    const k = 2 * t * (1 - t);
-    // Further off the line than any allowed bow could carry it.
-    if (Math.abs(off) - CLEARANCE >= k * cap) continue;
-    // Too costly to get round: the dot stays under the line.
-    if ((CLEARANCE - Math.abs(off)) / k > cap) continue;
-    if (Math.abs(off) < COLLISION) blocked++;
-    for (const side of [1, -1]) {
-      const at = side * off;
-      ruledOut.push({ side, lo: (at - CLEARANCE) / k, hi: (at + CLEARANCE) / k });
-    }
-  }
-  if (blocked === 0 || blocked > MAX_DODGED) return 0;
-
-  let best = Infinity;
-  let bestSide = 1;
-  for (const side of [1, -1]) {
-    const ranges = ruledOut
-      .filter((r) => r.side === side && r.hi > 0)
-      .sort((x, y) => x.lo - y.lo);
-    let bow = 0;
-    for (const r of ranges) {
-      if (r.lo > bow) break;
-      bow = Math.max(bow, r.hi);
-    }
-    if (bow < best) {
-      best = bow;
-      bestSide = side;
-    }
-  }
-  return best > cap ? 0 : Math.round(bestSide * best);
 }
 
 /**
@@ -409,17 +284,10 @@ function fitToZoom(cy: Core, look: GraphLook): void {
   restyle(cy.elements());
 }
 
-/**
- * Fade the network look's lines as the graph fills up.
- *
- * A hundred and fifty white lines read one by one. A thousand at the same
- * strength merge into a white mass where nothing can be followed. Past 250
- * lines, opacity falls with the square root of the count: to half at a
- * thousand, and never below 40%.
- */
+/** Fade the network look's lines as the graph fills up. See `lineDensity`. */
 function fitLinesToDensity(cy: Core): void {
   const drawn = cy.edges('[kind = "money"]').filter((e) => !e.hasClass('twin')).length;
-  const density = Math.round(Math.min(1, Math.max(0.4, Math.sqrt(250 / Math.max(drawn, 1)))) * 20) / 20;
+  const density = lineDensity(drawn);
   if (cy.scratch(LINE_DENSITY) === density) return;
   cy.scratch(LINE_DENSITY, density);
   restyle(cy.edges());
@@ -597,11 +465,7 @@ function leavesToward(e: EdgeSingular, end: NodeSingular): Point {
   const b = e.target().position();
   const arc: number = e.data('arc') ?? 0;
   if (arc === 0) return e.source().same(end) ? b : a;
-  const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-  return {
-    x: (a.x + b.x) / 2 - (arc * (b.y - a.y)) / length,
-    y: (a.y + b.y) / 2 + (arc * (b.x - a.x)) / length,
-  };
+  return controlPoint(a, b, arc);
 }
 
 /**
