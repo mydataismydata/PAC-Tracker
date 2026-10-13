@@ -57,7 +57,9 @@
  * when the name is a bare local office — and leave the source entity once no
  * row there carries them. `"alias":false` skips that, either when the spelling
  * is too generic to pin anywhere or when it belongs to the entity the rows are
- * leaving rather than the one they join.
+ * leaving rather than the one they join. A later `merge` in this file that
+ * folds the source away, the usual way to give the remainder to the other
+ * run, makes the entry read as done on every replay after the first.
  *
  * `rename` with `"detach":true` also moves the entity's matching identity to
  * the new spelling and drops the old one, so a bare name ("Democratic
@@ -273,8 +275,20 @@ async function runSplit(e: Extract<Entry, { op: 'split' }>): Promise<Outcome> {
   };
 }
 
-async function runSplitRows(e: Extract<Entry, { op: 'split-rows' }>): Promise<Outcome> {
+async function runSplitRows(
+  e: Extract<Entry, { op: 'split-rows' }>,
+  foldedBy?: number,
+): Promise<Outcome> {
   const from = await resolve(e.from);
+  if (from === 'tombstoned' && foldedBy !== undefined) {
+    // The usual shape: split one cycle's rows off, then a later entry folds
+    // what is left into the other run. On a replay the source is already
+    // gone, and that is this file's own doing, so there is nothing to split.
+    return {
+      status: 'applied',
+      detail: `${show(e.from)} was folded by line ${foldedBy} after its rows moved; nothing left to split`,
+    };
+  }
   if (from === 'tombstoned') {
     return {
       status: 'error',
@@ -653,6 +667,25 @@ async function main() {
     }
   }
 
+  // Which `split-rows` sources a later `merge` in this file folds away. A
+  // split followed by a merge of the remainder is the normal way to divide one
+  // payee spelling between two runs, and the merge is what leaves the split's
+  // source tombstoned on every replay after the first. A source tombstoned by
+  // anything else still errors: its rows may never have been split.
+  const foldedLater = new Map<number, number>();
+  {
+    const merges: { line: number; ids: Set<string> }[] = [];
+    for (const { line, entry } of entries) {
+      if (entry.op !== 'merge') continue;
+      merges.push({ line, ids: new Set(entry.lose.map((l) => l.id).filter((id): id is string => !!id)) });
+    }
+    for (const { line, entry } of entries) {
+      if (entry.op !== 'split-rows' || !entry.from.id) continue;
+      const by = merges.find((m) => m.line > line && m.ids.has(entry.from.id as string));
+      if (by) foldedLater.set(line, by.line);
+    }
+  }
+
   let changed = 0;
   let errors = 0;
   for (const { line, entry } of entries) {
@@ -673,7 +706,7 @@ async function main() {
       out =
         entry.op === 'merge' ? await runMerge(entry)
         : entry.op === 'split' ? await runSplit(entry)
-        : entry.op === 'split-rows' ? await runSplitRows(entry)
+        : entry.op === 'split-rows' ? await runSplitRows(entry, foldedLater.get(line))
         : entry.op === 'set-kind' ? await runSetKind(entry)
         : entry.op === 'rename' ? await runRename(entry)
         : entry.op === 'alias' ? await runAlias(entry)
