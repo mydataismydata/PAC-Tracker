@@ -470,6 +470,8 @@ export async function ingestTransactionRows(
         payee: row.direction === 'expenditure',
         payerIsCommittee: !!row.filerIsCommittee || !!row.filerTypeTag,
         candidateContribution: isCandidateContribution(row.typeCode, row.description),
+        candidateCode: row.typeCode?.toUpperCase() === 'CAN',
+        purpose: row.description,
         txnDate: row.date,
         city: row.city,
         state: row.state,
@@ -1813,7 +1815,7 @@ function csvCell(v: unknown): string {
  * settled by occupation or by default rather than by the name itself are
  * written to the review file when enough money rides on them, with the rule
  * that settled each, so a person can see what they are overriding. Every
- * flip into committee is written regardless of money, as is every
+ * flip into committee or party is written regardless of money, as is every
  * individual → organization flip that rests on weak evidence: both sets are
  * small, and both change more than a label. A law firm going the same way on
  * the strength of its "PA" is written at the ordinary floor rather than the
@@ -1904,10 +1906,11 @@ export async function backfillContributorKind(
         const tier = STRONG_KIND_RULES.has(rule) ? 'strong' : coded ? 'county' : 'weak';
         report.flips[key] = (report.flips[key] ?? 0) + 1;
         report.bySource[src] = (report.bySource[src] ?? 0) + 1;
-        if (kind === 'committee') committees++;
+        if (kind === 'committee' || kind === 'party') committees++;
         if (tier === 'county') report.county[key] = (report.county[key] ?? 0) + 1;
         const reverse = row.kind === 'individual' && kind === 'organization';
-        const always = tier === 'county' || kind === 'committee' || (reverse && tier === 'weak');
+        const always =
+          tier === 'county' || kind === 'committee' || kind === 'party' || (reverse && tier === 'weak');
         const floor = tier === 'strong' && !reverse ? STRONG_REVIEW_FLOOR : opts.reviewFloor;
         if (always || money >= floor) {
           review.push({
@@ -1956,8 +1959,8 @@ export async function backfillContributorKind(
     onBatch?.(report.scanned);
   }
 
-  // A row that became a committee and also receives money should be
-  // crawlable, the same as after `backfillCommitteeKind`.
+  // A row that became a committee or a party and also receives money should
+  // be crawlable, the same as after `backfillCommitteeKind`.
   if (opts.apply && committees > 0) await refreshTraversability(db);
 
   if (!opts.apply && opts.reviewPath) {

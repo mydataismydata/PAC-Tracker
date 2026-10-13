@@ -30,6 +30,7 @@ import {
   scoreMatch,
   looksTruncated,
   classifyName,
+  looksLikeParty,
   personDisplayName,
   plainNameTokens,
   AUTO_LINK_THRESHOLD,
@@ -38,7 +39,7 @@ import {
   REVIEW_FLOOR,
 } from '@/lib/normalize';
 import { classifyIndustry } from './industry';
-import { CandidateIndex, officeCodeFromName } from './candidates';
+import { CandidateIndex, campaignAccountKind, officeCodeFromName } from './candidates';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -73,6 +74,14 @@ export interface ResolveInput {
    * on a mileage or reimbursement line is a staffer who shares it.
    */
   candidateContribution?: boolean;
+  /**
+   * The row carries Florida's type code `CAN`, a contribution to a candidate.
+   * Stronger than `candidateContribution`, which also accepts a purpose that
+   * says CONTRIBUTION, and a committee writes that when it pays a committee.
+   */
+  candidateCode?: boolean;
+  /** The payer's purpose for the row, which can name the race a payee ran. */
+  purpose?: string | null;
   /** Date of the row, for telling one person's campaigns apart. */
   txnDate?: string | null;
   /** Office sought, when the source reports it. */
@@ -144,6 +153,7 @@ function kindFromHint(
 /** Which check settled a contributor's kind. */
 export type KindRule =
   | 'committee-name'
+  | 'party-name'
   | 'committee-occupation'
   | 'org-word'
   | 'person-name'
@@ -157,6 +167,7 @@ export type KindRule =
 /** Rules that rest on the name itself. The others lean on weaker evidence. */
 export const STRONG_KIND_RULES: ReadonlySet<KindRule> = new Set<KindRule>([
   'committee-name',
+  'party-name',
   'org-word',
   'person-name',
 ]);
@@ -223,9 +234,10 @@ export function classifyContributorDetailed(
   rawName: string,
   occupation?: string | null,
   opts: { payee?: boolean } = {},
-): { kind: 'individual' | 'organization' | 'committee'; rule: KindRule } {
+): { kind: 'individual' | 'organization' | 'committee' | 'party'; rule: KindRule } {
   const shape = classifyName(rawName);
   if (shape === 'committee') return { kind: 'committee', rule: 'committee-name' };
+  if (looksLikeParty(rawName)) return { kind: 'party', rule: 'party-name' };
   const occ = classifyOccupation(occupation);
   if (occ === 'committee' && shape !== 'person' && shape !== 'person-comma') {
     return { kind: 'committee', rule: 'committee-occupation' };
@@ -248,7 +260,7 @@ export function classifyContributor(
   rawName: string,
   occupation?: string | null,
   opts: { payee?: boolean } = {},
-): 'individual' | 'organization' | 'committee' {
+): 'individual' | 'organization' | 'committee' | 'party' {
   return classifyContributorDetailed(rawName, occupation, opts).kind;
 }
 
@@ -345,14 +357,18 @@ export class EntityResolver {
     //    runs before the cache because the cache is keyed on the name alone,
     //    and the same name on the contributor side is the person, not the
     //    campaign: those rows keep resolving as they always did.
+    // Candidate nodes sharing the payee's person name, for the campaign
+    // reading in step 6. Null when this is not a committee's payee at all.
+    let personNodes: number | null = null;
     if (input.payee && input.payerIsCommittee) {
-      const hit = (await this.candidateIndex()).match(input.rawName, input.txnDate ?? null);
+      const hit = (await this.candidateIndex()).match(input.rawName, input.txnDate ?? null, null, input.purpose);
       // A name written as a campaign is the campaign on any line; a bare
       // person name is only when the row itself says it is a contribution.
       if (hit.node && (hit.parsed.named || input.candidateContribution)) {
         this.stats.candidate++;
         return { entityId: hit.node.id, confidence: 1, created: false, method: 'candidate' };
       }
+      personNodes = hit.options.length;
     }
 
     // A name held by more than one entity has no single answer, so the cache
@@ -482,7 +498,17 @@ export class EntityResolver {
     // 6. Nothing convincing — this is a new node. Near-misses above the review
     //    floor are still recorded as low-confidence aliases so a human (or a
     //    later pass with more evidence) can merge them.
-    const created = await this.create(input, normalized);
+    // A committee's payee that no candidate node took may still be a
+    // campaign account, and must not be created as an organization.
+    const campaignKind =
+      personNodes === null
+        ? null
+        : campaignAccountKind(
+            input.rawName,
+            { code: !!input.candidateCode, described: !!input.candidateContribution },
+            personNodes > 0,
+          );
+    const created = await this.create(input, normalized, campaignKind);
     if (best && best.score >= REVIEW_FLOOR) {
       await this.recordAlias(best.candidate.id, input.rawName, normalized, best.score, false);
     }
@@ -557,13 +583,20 @@ export class EntityResolver {
     await this.db.update(entities).set(patch).where(eq(entities.id, entityId));
   }
 
-  private async create(input: ResolveInput, normalized: string): Promise<string> {
+  private async create(
+    input: ResolveInput,
+    normalized: string,
+    campaignKind: 'candidate' | 'committee' | null = null,
+  ): Promise<string> {
     const isRecipient = input.role === 'recipient';
+    // A source's own type code outranks the campaign reading; the campaign
+    // reading outranks a guess from the name alone.
     const kind = isRecipient
       ? input.committeeType || input.isCommittee
         ? ('committee' as const)
         : ('candidate' as const)
       : (kindFromHint(input.kindHint) ??
+        campaignKind ??
         classifyContributor(input.rawName, input.occupation, { payee: input.payee }));
 
     const displayName =

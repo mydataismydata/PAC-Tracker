@@ -232,6 +232,71 @@ export function looksLikeCommittee(raw: string): boolean {
   return /\bPAC\b|\bCOMMITTEE\b/i.test(raw.trim());
 }
 
+/** Florida's 67 counties, as `normalizeName` writes them. */
+const FL_COUNTIES = new Set([
+  'ALACHUA', 'BAKER', 'BAY', 'BRADFORD', 'BREVARD', 'BROWARD', 'CALHOUN', 'CHARLOTTE', 'CITRUS', 'CLAY',
+  'COLLIER', 'COLUMBIA', 'DESOTO', 'DE SOTO', 'DIXIE', 'DUVAL', 'ESCAMBIA', 'FLAGLER', 'FRANKLIN', 'GADSDEN',
+  'GILCHRIST', 'GLADES', 'GULF', 'HAMILTON', 'HARDEE', 'HENDRY', 'HERNANDO', 'HIGHLANDS', 'HILLSBOROUGH',
+  'HOLMES', 'INDIAN RIVER', 'JACKSON', 'JEFFERSON', 'LAFAYETTE', 'LAKE', 'LEE', 'LEON', 'LEVY', 'LIBERTY',
+  'MADISON', 'MANATEE', 'MARION', 'MARTIN', 'MIAMI DADE', 'MIAMIDADE', 'DADE', 'MONROE', 'NASSAU', 'OKALOOSA',
+  'OKEECHOBEE', 'ORANGE', 'OSCEOLA', 'PALM BEACH', 'PASCO', 'PINELLAS', 'POLK', 'PUTNAM', 'ST JOHNS',
+  'SAINT JOHNS', 'ST LUCIE', 'SAINT LUCIE', 'SANTA ROSA', 'SARASOTA', 'SEMINOLE', 'SUMTER', 'SUWANNEE',
+  'TAYLOR', 'UNION', 'VOLUSIA', 'WAKULLA', 'WALTON', 'WASHINGTON',
+]);
+
+/** Words that name a party when PARTY follows them. */
+const PARTY_WORDS = new Set([
+  'REPUBLICAN', 'REPUB', 'DEMOCRATIC', 'DEMOCRAT', 'DEM', 'LIBERTARIAN', 'GREEN', 'CONSTITUTION', 'REFORM',
+]);
+
+/** Levenshtein distance between two strings. */
+export function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return d[b.length];
+}
+
+/** Clubs, caucuses and businesses that carry a party's name without being the party. */
+const NOT_THE_PARTY =
+  /\b(CLUBS?|WOMEN|WOMENS|WOMANS|FEDERATED|FEDERATION|YOUNG|COLLEGE|COLLEGIATE|STUDENTS?|TEENAGE|CAUCUS|ASSEMBLY|ALLIANCE|COALITION|LEAGUE|COUNCIL|NETWORK|CHAPTER|ASSOCIATION|ASSOC|PARKS?|RECREATION|CENTER)\b|\bPARTY (RENTALS?|STORE|SHOP|SUPPLY|SUPPLIES|BUS|PALACE|BARN|CITY|PLANNERS?|DECOR)\b/;
+
+/**
+ * Heuristic: does this string name a political party's own organization?
+ *
+ * A county party's payees write it a dozen ways — LEE COUNTY REC, DEC OF
+ * MANATEE COUNTY, PINELLAS GOP, REPUBLICAN PARTY OF PASCO — and none of them
+ * says COMMITTEE, so each fell through to `organization`. Money into it then
+ * drew as a payment to a vendor. The 2026-10-12 review fixed 218 of them by hand.
+ *
+ * REC and DEC count only after a Florida county: LEON COUNTY PARKS AND REC is
+ * a recreation department. Clubs, caucuses and women's federations stay
+ * organizations; they are not the party.
+ */
+export function looksLikeParty(raw: string): boolean {
+  const n = normalizeName(raw);
+  if (!n || NOT_THE_PARTY.test(n)) return false;
+  // The word in front of PARTY, as typed: REPUB, DEM, REPUBLICN, REPULBICAN.
+  const m0 = n.match(/\b([A-Z]+)(?: EXECUTIVE)? PARTY\b/);
+  if (m0 && PARTY_WORDS.has(m0[1])) return true;
+  if (m0 && m0[1].length >= 8 && ['REPUBLICAN', 'DEMOCRATIC'].some((w) => editDistance(m0[1], w) <= 2)) return true;
+  if (/^(?:FLORIDA |FL )?(?:STATE )?GOP(?: PARTY)?$/.test(n)) return true;
+  const county = (s: string) => FL_COUNTIES.has(s);
+  const g = n.match(/^GOP (.+?)(?: COUNTY)?$/);
+  if (g && county(g[1])) return true;
+  let m = n.match(/^(.+?)(?: COUNTY| CO)? (REC|DEC|GOP|DEMOCRATS|REPUBLICANS)$/);
+  if (m && county(m[1])) return true;
+  m = n.match(/^(?:REC|DEC|GOP) OF (.+?)(?: COUNTY)?$/);
+  return !!m && county(m[1]);
+}
+
 /** What a contributor string looks like on its own, before occupation is consulted. */
 export type NameShape = 'committee' | 'organization' | 'person' | 'person-comma' | 'unknown';
 
