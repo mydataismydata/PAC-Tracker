@@ -429,6 +429,10 @@ async function inboundByRecipient(
  *
  * Shown as context — "this came from RSLC, which is funded by…" — not folded
  * into the seed's attribution.
+ *
+ * The rollups hold one row per pair per election cycle, so a funder who gave
+ * to the pool in two cycles has two rows. They are summed into one here: the
+ * list names each funder once, with everything they gave the pool.
  */
 async function topFunders(db: Db, ids: string[]): Promise<Map<string, Funder[]>> {
   if (ids.length === 0) return new Map();
@@ -444,12 +448,13 @@ async function topFunders(db: Db, ids: string[]): Promise<Map<string, Funder[]>>
            e.from_entity_id AS id,
            d.name,
            d.industry,
-           e.total_amount::text AS amount,
-           SUM(e.total_amount) OVER (PARTITION BY e.to_entity_id)::text AS pool_total
+           SUM(e.total_amount)::text AS amount,
+           SUM(SUM(e.total_amount)) OVER (PARTITION BY e.to_entity_id)::text AS pool_total
       FROM edge_rollups e
       JOIN entities d ON d.id = e.from_entity_id
      WHERE e.to_entity_id = ANY(${sql.param(ids)}::uuid[])
-     ORDER BY e.total_amount DESC
+     GROUP BY e.to_entity_id, e.from_entity_id, d.name, d.industry
+     ORDER BY SUM(e.total_amount) DESC
   `);
   const out = new Map<string, Funder[]>();
   for (const r of rows) {

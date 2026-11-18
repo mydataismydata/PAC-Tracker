@@ -121,9 +121,16 @@ export async function dataStamp(db: Db): Promise<string> {
   return value;
 }
 
+/**
+ * Bump when the trace changes what it returns for the same data, so digests
+ * worked out the old way are not served. The stamp below cannot see a change
+ * of code, only a change of data.
+ */
+const DIGEST_VERSION = 2;
+
 /** Same ids in a different order are the same question, so the key sorts them. */
 function keyFor(ids: string[], opts: TraceOptions, keep: Keep, at: string): string {
-  return JSON.stringify([[...ids].sort(), opts, keep, at]);
+  return JSON.stringify([DIGEST_VERSION, [...ids].sort(), opts, keep, at]);
 }
 
 function evict(): void {
