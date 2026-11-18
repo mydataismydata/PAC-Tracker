@@ -26,13 +26,48 @@ const CEILING = 100;
  * Every cycle on file by default. A sponsor arriving from a bill page is being
  * looked up as a person, not as a campaign, so their whole record is the honest
  * answer; `?cycle=20261103-GEN` narrows it.
+ *
+ * `?from=2025-11-01&to=2026-01-01` narrows it to the money dated inside those
+ * days, both ends included. A bill page uses it to show who gave in the weeks
+ * around the day a bill was filed. Either end works alone.
  */
 const ALL_CYCLES = { label: 'all cycles on file', param: '' };
 
 type Params = {
   params: Promise<{ last: string; first: string }>;
-  searchParams: Promise<{ cycle?: string }>;
+  searchParams: Promise<{ cycle?: string; from?: string; to?: string }>;
 };
+
+/**
+ * A query-string date, or undefined when it is not a real day.
+ *
+ * Checked here rather than left to Postgres: a cast of 2026-02-30 fails the
+ * query, and the reader gets an error page instead of the unfiltered one.
+ */
+function day(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+    ? value
+    : undefined;
+}
+
+/** `2025-11-09` → `Nov 9, 2025`. In UTC, so the server's zone cannot shift the day. */
+const DAY = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+const showDay = (value: string) => DAY.format(new Date(`${value}T00:00:00Z`));
+
+/** The date window as a reader would say it, or '' when there is none. */
+function span(from?: string, to?: string): string {
+  if (from && to) return `${showDay(from)} – ${showDay(to)}`;
+  if (from) return `from ${showDay(from)}`;
+  if (to) return `up to ${showDay(to)}`;
+  return '';
+}
 
 async function load(p: Params['params']) {
   const { last, first } = await p;
@@ -60,7 +95,7 @@ function Money({ value, tone }: { value: string; tone: 'in' | 'out' }) {
 
 function Rows({ rows, tone }: { rows: LedgerSourceRow[]; tone: 'in' | 'out' }) {
   if (rows.length === 0) {
-    return <p className="px-4 py-6 text-sm text-slate-500">Nothing filed for this cycle.</p>;
+    return <p className="px-4 py-6 text-sm text-slate-500">Nothing filed in this period.</p>;
   }
   return (
     <ul className="divide-y divide-slate-900">
@@ -136,8 +171,16 @@ export default async function PersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   if (!person) notFound();
 
-  const cycle = (await searchParams).cycle || undefined;
-  const scope = cycle ? `${cycle.slice(0, 4)} cycle` : ALL_CYCLES.label;
+  const query = await searchParams;
+  const cycle = query.cycle || undefined;
+  const dateFrom = day(query.from);
+  const dateTo = day(query.to);
+  const dates = span(dateFrom, dateTo);
+  const year = cycle?.slice(0, 4);
+  const scope =
+    [year ? `${year} cycle` : '', dates].filter(Boolean).join(', ') || ALL_CYCLES.label;
+  // The same narrowing, worded for the sentence at the foot of the page.
+  const reach = [year ? `the ${year} cycle` : '', dates].filter(Boolean).join(', ');
   const cycleParam = cycle ?? ALL_CYCLES.param;
 
   const base = {
@@ -147,6 +190,8 @@ export default async function PersonPage({ params, searchParams }: Params) {
     limit: CEILING,
     offset: 0,
     cycle,
+    dateFrom,
+    dateTo,
   };
   const [received, given] = await Promise.all([
     ledger(db, person.entityIds, { ...base, direction: 'in' }),
@@ -272,8 +317,8 @@ export default async function PersonPage({ params, searchParams }: Params) {
         )}
 
         <p className="mt-6 text-xs leading-relaxed text-slate-600">
-          {cycle
-            ? `Headline totals cover every cycle on file; the donor and payment lists are the ${scope}.`
+          {reach
+            ? `Headline totals cover every cycle on file; the donor and payment lists cover ${reach} only.`
             : 'Every cycle on file.'}{' '}
           Figures are as filed with the Florida Division of Elections and may be amended.
         </p>
