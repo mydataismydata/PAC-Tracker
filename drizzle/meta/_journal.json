@@ -99,6 +99,13 @@
       "when": 1791828568574,
       "tag": "0013_mirror_pairs",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1795011859204,
+      "tag": "0014_solicitations",
+      "breakpoints": true
     }
   ]
 }

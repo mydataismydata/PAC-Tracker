@@ -17,11 +17,12 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import type { Metadata } from 'next';
 import { db } from '@/db';
-import { committeeSlug } from '@/lib/graph/committee';
+import { committeeSlug, reportHref } from '@/lib/graph/committee';
+import { committeesTiedTo, type TiedCommittee } from '@/lib/graph/solicitations';
 import { resolvePerson } from '@/lib/graph/person';
 import { cyclesOnFile, entityTotals, ledger } from '@/lib/graph/ledger';
 import { formatMoneyFull } from '@/lib/graph/types';
-import { isNarrowed, periodLabel, readPeriod, withPeriod } from '@/lib/kym/period';
+import { isNarrowed, periodLabel, readPeriod, showDay, withPeriod, type Period } from '@/lib/kym/period';
 import HostedBy from '@/components/HostedBy';
 import PeriodFilter from '@/components/kym/PeriodFilter';
 import { Money, MoneyColumns, Tile } from '@/components/kym/report';
@@ -54,6 +55,110 @@ export async function generateMetadata({ params }: Pick<Params, 'params'>): Prom
   };
 }
 
+/** Why a committee is on the list, in the words of the record that says so. */
+function tiedBecause(t: TiedCommittee): string {
+  const parts: string[] = [];
+  if (t.since) {
+    parts.push(
+      t.withdrawn
+        ? `Statement of solicitation ${showDay(t.since)}, withdrawn ${showDay(t.withdrawn)}`
+        : `Statement of solicitation ${showDay(t.since)}`,
+    );
+  }
+  if (t.chair) parts.push('chair on the registration');
+  if (t.filedAs.length) parts.push(`filed as ${t.filedAs.map((f) => `\u201c${f}\u201d`).join(', ')}`);
+  return parts.join(' · ');
+}
+
+/**
+ * The committees this person raises money for, past their own accounts.
+ *
+ * Kept out of the headline figures and out of the donor column, on purpose.
+ * The accounts above are the person's by law; these are committees they have
+ * said they solicit for, or chair, which is a tie and not ownership. Each one
+ * opens its own report, where its donors are traced the same way.
+ */
+function TiedCommittees({
+  name,
+  tied,
+  money,
+  period,
+}: {
+  name: string;
+  tied: TiedCommittee[];
+  money: Map<string, { received: string; given: string }>;
+  period: Period;
+}) {
+  if (tied.length === 0) return null;
+  const raised = (t: TiedCommittee) => Number((t.entityId && money.get(t.entityId)?.received) || 0);
+  const paid = (t: TiedCommittee) => Number((t.entityId && money.get(t.entityId)?.given) || 0);
+  const linked = tied.filter((t) => t.entityId).sort((a, b) => raised(b) - raised(a));
+  const elsewhere = tied.filter((t) => !t.entityId);
+  const totalIn = linked.reduce((a, t) => a + raised(t), 0);
+  const totalOut = linked.reduce((a, t) => a + paid(t), 0);
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
+        Committees {name} raises money for · {periodLabel(period)}
+      </h2>
+      <p className="mt-1 text-xs leading-relaxed text-slate-500">
+        Florida officeholders file a Statement of Solicitation for every committee they raise money
+        for. These are the ones filed under this name, and any whose registration names them as
+        chair. Their money is not in the totals above.
+      </p>
+
+      {linked.length > 0 && (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1">
+            <Tile label="Raised" value={totalIn.toFixed(2)} tone="in">
+              across {linked.length} committee{linked.length === 1 ? '' : 's'}
+            </Tile>
+            <Tile label="Paid out" value={totalOut.toFixed(2)} tone="out">
+              by the same committees
+            </Tile>
+          </div>
+          <ul className="mt-3 divide-y divide-slate-900 rounded border border-slate-800">
+            {linked.map((t) => (
+              <li key={t.entityId} className="px-4 py-3 sm:flex sm:items-baseline sm:gap-3">
+                <span className="block min-w-0 sm:flex-1">
+                  <Link
+                    href={reportHref(t.entityId!, t.name, period)}
+                    className="block truncate text-sm text-slate-200 underline-offset-2 hover:text-indigo-300 hover:underline"
+                  >
+                    {t.name}
+                  </Link>
+                  <span className="block text-xs text-slate-500">{tiedBecause(t)}</span>
+                </span>
+                <span className="mt-1 flex shrink-0 items-baseline gap-4 text-sm sm:mt-0">
+                  <Money value={raised(t)} tone="in" />
+                  <Money value={paid(t)} tone="out" />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {elsewhere.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs text-slate-500">
+            Also filed for, but no Florida committee report carries the name. A 501(c)(4) or a 527
+            reports elsewhere, and an old committee may be gone from the state&rsquo;s lists:
+          </p>
+          <ul className="mt-1 space-y-0.5 text-xs text-slate-400">
+            {elsewhere.map((t) => (
+              <li key={t.name}>
+                {t.name} <span className="text-slate-600">· {tiedBecause(t)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default async function PersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   if (!person) notFound();
@@ -73,12 +178,15 @@ export default async function PersonPage({ params, searchParams }: Params) {
       offset: 0,
       ...period,
     });
-  const [received, given, cycles, amounts] = await Promise.all([
+  const [received, given, cycles, amounts, tied] = await Promise.all([
     totalsOf('in'),
     totalsOf('out'),
     cyclesOnFile(db, person.entityIds),
     isNarrowed(period) ? entityTotals(db, person.entityIds, period) : null,
+    committeesTiedTo(db, person),
   ]);
+  const tiedIds = tied.flatMap((t) => (t.entityId ? [t.entityId] : []));
+  const tiedMoney = tiedIds.length ? await entityTotals(db, tiedIds, period) : new Map();
 
   // Seed the graph on whichever filing holds the most; it is the one whose
   // neighbourhood is worth drawing.
@@ -162,6 +270,8 @@ export default async function PersonPage({ params, searchParams }: Params) {
             ))}
           </ul>
         </section>
+
+        <TiedCommittees name={person.name} tied={tied} money={tiedMoney} period={period} />
 
         <MoneyColumns
           ids={person.entityIds}

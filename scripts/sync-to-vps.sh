@@ -162,10 +162,11 @@ SOURCE_SET=$(setclause sources)
   echo "  ON CONFLICT (id) DO UPDATE SET $TXN_SET;"
   echo "DROP TABLE _sync_transactions;"
 
-  # Registrations, officers, and org profiles mutate in place (is_current flips,
-  # a 990 figure is revised), so replace them wholesale rather than trying to
-  # diff. All are small. Their rows reference entities, which are already loaded.
-  for t in committee_registrations committee_officers officer_aliases org_profiles; do
+  # Registrations, officers, org profiles and solicitation statements mutate in
+  # place (is_current flips, a 990 figure is revised, a statement is linked to
+  # its committee), so replace them wholesale rather than trying to diff. All
+  # are small. Their rows reference entities, which are already loaded.
+  for t in committee_registrations committee_officers officer_aliases org_profiles solicitations; do
     echo "TRUNCATE $t CASCADE;"
     echo "COPY $t FROM stdin;"
     copy "SELECT * FROM $t"

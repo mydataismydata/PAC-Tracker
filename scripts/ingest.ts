@@ -13,6 +13,7 @@
  *     --from / --to / --scope=committee|candidate  (resume an interrupted sweep)
  *   pnpm ingest registry                         # sweep the state committee registry
  *   pnpm ingest committees                       # registrations + chairs/treasurers (active only)
+ *   pnpm ingest solicitations                    # officeholders' Statements of Solicitation, and the committees they name
  *   pnpm ingest committee-details                # chair/treasurer/agent for CLOSED committees
  *     --status=closed|active|all --refresh --max=N --accounts=70275,83962
  *   pnpm ingest county stjohns                   # sweep a county (current cycle)
@@ -36,9 +37,9 @@
  *   pnpm ingest backfill-quotes --apply           # strip it from entity names, aliases, and raw transaction names
  *   pnpm ingest backfill-candidate-accounts       # dry run: committee money paid to a candidate's look-alike node, onto the candidate
  *     --apply --review=.working/candidate-accounts-review.csv --moves=.working/candidate-accounts-moves.csv
- *   pnpm ingest collapse-mirrors                  # dry run of the mirror rule: committee-to-committee transfers filed by both sides
  *   pnpm ingest backfill-registered-names         # dry run: rows a fuzzy guess placed before the committee named in them was registered
  *     --apply --review=.working/registered-names-review.csv --moves=.working/registered-names-moves.csv
+ *   pnpm ingest collapse-mirrors                  # dry run of the mirror rule: committee-to-committee transfers filed by both sides
  *     --recipient-lag=60 --payer-lag=14 --scope=keepers --apply
  *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
  *   pnpm ingest verify                            # confirm no merged-away entity is still present or referenced
@@ -84,8 +85,8 @@ import {
   backfillContributorKind,
   backfillQuotes,
   backfillCandidateAccounts,
-  collapseMirrors,
   backfillRegisteredNames,
+  collapseMirrors,
   MIRROR_WINDOW,
   mergeEntities,
   splitEntity,
@@ -107,6 +108,7 @@ import { cycleForYear } from '@/lib/cycles';
 import { APP_URL, warmReports } from '@/lib/kym/warm';
 import { isOfficerPlaceholder, normalizeName } from '@/lib/normalize';
 import { EntityResolver } from '@/lib/ingest/resolve';
+import { fetchSolicitations, linkSolicitations, storeSolicitations } from '@/lib/ingest/solicitations';
 import { readCorrections } from '@/lib/corrections';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, basename, join } from 'node:path';
@@ -171,11 +173,24 @@ async function main() {
       for (const c of r.collisions) {
         console.log(`  ${c.acctNum}  ${c.name}  (would have joined acct ${c.mergedInto})`);
       }
-    }
-    process.exit(0);
       console.log(
         '\nMove those rows with `pnpm ingest backfill-registered-names --apply`, then `pnpm ingest rebuild`.',
       );
+    }
+    process.exit(0);
+  }
+
+  if (mode === 'solicitations') {
+    // Two requests: the published list fits on one page. Not graph edges, so
+    // nothing to rebuild; the table ships wholesale in the next sync.
+    console.log('Fetching Statements of Solicitation…');
+    const rows = await fetchSolicitations();
+    const written = await storeSolicitations(db, rows, sourceId);
+    const { linked, unlinked } = await linkSolicitations(db);
+    const people = new Set(rows.map((r) => `${r.solicitorLast}|${r.solicitorFirst}`)).size;
+    console.log(`  ${written} filings by ${people} officeholders (${rows.length - written} listed twice by the state)`);
+    console.log(`  ${linked} are tied to a committee in the filings; ${unlinked} name an organization they do not hold`);
+    process.exit(0);
   }
 
   if (mode === 'committee-details') {
@@ -408,21 +423,6 @@ async function main() {
     process.exit(0);
   }
 
-  if (mode === 'collapse-mirrors') {
-    const apply = flags.apply === 'true';
-    const window = {
-      recipientLag: Number(flags['recipient-lag'] ?? MIRROR_WINDOW.recipientLag),
-      payerLag: Number(flags['payer-lag'] ?? MIRROR_WINDOW.payerLag),
-    };
-    let scope: string[] | undefined;
-    if (flags.scope === 'keepers') {
-      const rows = await db.execute<{ id: string }>(
-        sql`SELECT DISTINCT merged_into AS id FROM entity_tombstones WHERE merged_into IS NOT NULL`,
-      );
-      scope = rows.map((r) => r.id);
-    }
-    console.log(
-      `${apply ? 'Collapsing' : 'Dry run:'} mirrors, recipient up to ${window.recipientLag} days after the payer, ` +
   if (mode === 'backfill-registered-names') {
     const apply = flags.apply === 'true';
     const reviewPath = flags.review ?? '.working/registered-names-review.csv';
@@ -441,6 +441,21 @@ async function main() {
     process.exit(0);
   }
 
+  if (mode === 'collapse-mirrors') {
+    const apply = flags.apply === 'true';
+    const window = {
+      recipientLag: Number(flags['recipient-lag'] ?? MIRROR_WINDOW.recipientLag),
+      payerLag: Number(flags['payer-lag'] ?? MIRROR_WINDOW.payerLag),
+    };
+    let scope: string[] | undefined;
+    if (flags.scope === 'keepers') {
+      const rows = await db.execute<{ id: string }>(
+        sql`SELECT DISTINCT merged_into AS id FROM entity_tombstones WHERE merged_into IS NOT NULL`,
+      );
+      scope = rows.map((r) => r.id);
+    }
+    console.log(
+      `${apply ? 'Collapsing' : 'Dry run:'} mirrors, recipient up to ${window.recipientLag} days after the payer, ` +
         `payer up to ${window.payerLag} days after the recipient` +
         (scope ? `, ${scope.length} merge survivors only` : ', whole graph'),
     );

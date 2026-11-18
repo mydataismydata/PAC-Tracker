@@ -571,6 +571,58 @@ export const committeeOfficers = pgTable(
 );
 
 /**
+ * Officeholders' own statements that they raise money for an organization.
+ *
+ * A legislator's campaign account carries their name. The committee that
+ * raises the unlimited money usually does not: Stan McClain's is "Liberty for
+ * Florida", Blaise Ingoglia's "Government Gone Wild PAC". Its registration
+ * names a chair and a treasurer, often neither of them the officeholder, so
+ * nothing in the committee filings ties the two together.
+ *
+ * Florida law does (s. 106.0701). An officeholder who solicits for a political
+ * committee, a 527 or a 501(c)(4) files a Statement of Solicitation within
+ * five days, and a withdrawal when they stop. The Division of Elections
+ * publishes every one. This is that list, one row per filing as published.
+ *
+ * `entityId` is the committee the organization files as, where the state's
+ * committee filings hold one under the same name. A 501(c)(4) or a 527 files
+ * elsewhere and stays unlinked.
+ */
+export const solicitations = pgTable(
+  'solicitations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sourceId: uuid('source_id').references(() => sources.id),
+
+    /** As published: "McClain Jr., Stanley E.". */
+    solicitorName: text('solicitor_name').notNull(),
+    /** Surname, upper case, punctuation and suffixes dropped: "MCCLAIN". */
+    solicitorLast: text('solicitor_last').notNull(),
+    /** Given names, upper case: "STANLEY E". */
+    solicitorFirst: text('solicitor_first').notNull(),
+    /** Legislative, Governor, Cabinet Officer, Lt. Governor or Other. */
+    office: text('office'),
+    /** Statement of Solicitation, Solicitation Update or Solicitation Withdrawal. */
+    formType: text('form_type').notNull(),
+    received: date('received'),
+
+    orgName: text('org_name').notNull(),
+    orgNormalized: text('org_normalized').notNull(),
+    entityId: uuid('entity_id').references(() => entities.id, { onDelete: 'set null' }),
+
+    observedAt: timestamp('observed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One filing as published. The state lists none twice, and a second sweep
+    // must update in place rather than double the list.
+    uniqueIndex('solicitations_filing_key').on(t.solicitorName, t.orgName, t.formType, t.received),
+    // The lookup from a person's page: everyone filed under one surname.
+    index('solicitations_last_idx').on(t.solicitorLast),
+    index('solicitations_entity_idx').on(t.entityId),
+  ],
+);
+
+/**
  * What an entity is when it is a corporation rather than a campaign committee.
  *
  * A nonprofit that moves political money — a 501(c)(4), say — files with the
