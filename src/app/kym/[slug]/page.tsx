@@ -21,15 +21,18 @@ import {
 } from '@/lib/graph/committee';
 import { officersForEntity, rolePhrase, type EntityOfficer } from '@/lib/graph/officers';
 import { OFFICE_LABELS } from '@/lib/graph/person';
+import { cyclesOnFile, ledger } from '@/lib/graph/ledger';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
+import { periodLabel, periodParams, readPeriod, withPeriod, type Period } from '@/lib/kym/period';
 import { CRAWL } from '@/lib/kym/snapshot';
+import PeriodFilter from '@/components/kym/PeriodFilter';
 import { Money, MoneyColumns, SectionHeading, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
 
 type Params = {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ id?: string; cycle?: string }>;
+  searchParams: Promise<{ id?: string; cycle?: string; from?: string; to?: string }>;
 };
 
 const UUID = /^[0-9a-f-]{36}$/i;
@@ -44,20 +47,24 @@ const UUID = /^[0-9a-f-]{36}$/i;
  */
 async function resolve(p: Params): Promise<{
   slug: string;
-  cycle?: string;
+  /** The pinned id, when the URL carried one, so a change of period keeps it. */
+  pinned?: string;
+  period: Period;
   subject: CommitteeSubject | null;
   matches: CommitteeSubject[];
 }> {
   const { slug } = await p.params;
-  const { id, cycle } = await p.searchParams;
+  const query = await p.searchParams;
+  const { id } = query;
+  const period = readPeriod(query);
 
   if (id && UUID.test(id)) {
     const subject = await committeeById(db, id);
-    if (subject) return { slug, cycle, subject, matches: [subject] };
+    if (subject) return { slug, pinned: id, period, subject, matches: [subject] };
   }
 
   const matches = await committeesBySlug(db, slug);
-  return { slug, cycle, subject: matches.length === 1 ? matches[0] : null, matches };
+  return { slug, period, subject: matches.length === 1 ? matches[0] : null, matches };
 }
 
 /**
@@ -196,7 +203,15 @@ async function NotFound({ slug }: { slug: string }) {
  * account number is what actually separates these: it is the filing office's
  * own identifier, and it is the only field guaranteed to differ.
  */
-function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] }) {
+function Chooser({
+  slug,
+  matches,
+  period,
+}: {
+  slug: string;
+  matches: CommitteeSubject[];
+  period: Period;
+}) {
   return (
     <main className="mt-8 max-w-3xl">
       <h2 className="text-xl font-semibold text-slate-100">
@@ -210,7 +225,7 @@ function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] 
         {matches.map((c) => (
           <li key={c.id}>
             <Link
-              href={`/kym/${slug}?id=${c.id}`}
+              href={withPeriod(`/kym/${slug}?id=${c.id}`, period)}
               className="block px-4 py-3 hover:bg-slate-900/60 sm:flex sm:items-baseline sm:gap-3"
             >
               <span className="sm:min-w-0 sm:flex-1">
@@ -240,16 +255,10 @@ function Chooser({ slug, matches }: { slug: string; matches: CommitteeSubject[] 
  * not wait on it. Sized at three by two here, which is near what the layout
  * gives, and the browser corrects the height once it has the file.
  */
-function Snapshot({
-  subject,
-  cycle,
-  scope,
-}: {
-  subject: CommitteeSubject;
-  cycle?: string;
-  scope: string;
-}) {
-  const src = `/api/kym/snapshot/${subject.id}${cycle ? `?cycle=${encodeURIComponent(cycle)}` : ''}`;
+function Snapshot({ subject, period }: { subject: CommitteeSubject; period: Period }) {
+  const query = new URLSearchParams(periodParams(period)).toString();
+  const src = `/api/kym/snapshot/${subject.id}${query ? `?${query}` : ''}`;
+  const scope = periodLabel(period);
   const what = subject.kind === 'candidate' ? 'campaign' : 'committee';
   return (
     <section className="mt-10">
@@ -281,18 +290,35 @@ function Snapshot({
 }
 
 export default async function KymCommitteePage({ params, searchParams }: Params) {
-  const { slug, cycle, subject, matches } = await resolve({ params, searchParams });
+  const { slug, pinned, period, subject, matches } = await resolve({ params, searchParams });
 
   if (!subject) {
     return matches.length === 0 ? (
       <NotFound slug={slug} />
     ) : (
-      <Chooser slug={slug} matches={matches} />
+      <Chooser slug={slug} matches={matches} period={period} />
     );
   }
 
-  const officers = await officersForEntity(db, subject.id);
-  const scope = cycle ? `${cycle.slice(0, 4)} cycle` : 'all cycles on file';
+  // The headline figures come from the same ledger as the lists, over the
+  // same period, so a narrowed page never shows a lifetime total above a
+  // month of rows. Rows are not wanted here, only the totals.
+  const totalsOf = (direction: 'in' | 'out') =>
+    ledger(db, [subject.id], {
+      view: 'sources',
+      direction,
+      sort: 'amount',
+      order: 'desc',
+      limit: 0,
+      offset: 0,
+      ...period,
+    });
+  const [officers, cycles, received, given] = await Promise.all([
+    officersForEntity(db, subject.id),
+    cyclesOnFile(db, [subject.id]),
+    totalsOf('in'),
+    totalsOf('out'),
+  ]);
   const campaign = candidacy(subject);
   const identity = [
     campaign?.line ?? kindLabel({ kind: subject.kind, committeeType: subject.committeeType }),
@@ -321,7 +347,10 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
         <p className="mt-2 text-sm text-slate-400">
           One of this candidate&rsquo;s accounts.{' '}
           <Link
-            href={`/person/${encodeURIComponent(campaign.person.last)}/${encodeURIComponent(campaign.person.first)}`}
+            href={withPeriod(
+              `/person/${encodeURIComponent(campaign.person.last)}/${encodeURIComponent(campaign.person.first)}`,
+              period,
+            )}
             className="text-indigo-300 underline-offset-2 hover:underline"
           >
             See every filing in their name
@@ -332,13 +361,14 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
 
       {/* Stacks on a narrow phone. Two columns cannot hold a nine-figure sum
           beside another one, and a statewide committee produces those. */}
-      <div className="mt-6 grid max-w-2xl grid-cols-2 gap-3 max-[400px]:grid-cols-1">
-        <Tile label="Raised" value={subject.totalReceived} tone="in">
-          from {subject.inDegree.toLocaleString()} contributor
-          {subject.inDegree === 1 ? '' : 's'}
+      <PeriodFilter period={period} cycles={cycles} keep={pinned ? { id: pinned } : {}} />
+      <div className="mt-2 grid max-w-2xl grid-cols-2 gap-3 max-[400px]:grid-cols-1">
+        <Tile label="Raised" value={received.totalAmount} tone="in">
+          from {received.total.toLocaleString()} contributor
+          {received.total === 1 ? '' : 's'}
         </Tile>
-        <Tile label="Paid out" value={subject.totalGiven} tone="out">
-          to {subject.outDegree.toLocaleString()} recipient{subject.outDegree === 1 ? '' : 's'}
+        <Tile label="Paid out" value={given.totalAmount} tone="out">
+          to {given.total.toLocaleString()} recipient{given.total === 1 ? '' : 's'}
         </Tile>
       </div>
 
@@ -349,8 +379,7 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
       <MoneyColumns
         ids={[subject.id]}
         subject={subject.name}
-        scope={scope}
-        cycle={cycle}
+        period={period}
         paymentsHint={
           campaign
             ? 'Everyone this campaign paid, largest first. Mail vendors, consultants and refunds all appear here.'
@@ -358,7 +387,7 @@ export default async function KymCommitteePage({ params, searchParams }: Params)
         }
       />
 
-      <Snapshot subject={subject} cycle={cycle} scope={scope} />
+      <Snapshot subject={subject} period={period} />
 
       <p className="mt-8 text-xs leading-relaxed text-slate-600">
         Figures are as filed with the Florida Division of Elections and the county supervisors of

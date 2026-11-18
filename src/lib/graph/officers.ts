@@ -23,6 +23,7 @@ import { sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
 import { committeeSlug } from '@/lib/graph/committee';
+import { derivedCycleSql } from '@/lib/cycles';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -513,10 +514,25 @@ export interface InternalFlow {
  *
  * Following it back to whoever paid in from outside is what `trace` does. The
  * transfers below are the thing it has to see through.
+ *
+ * Narrowed to the page's period, by the same cycle rule and date bounds as
+ * the ledger, so it stays a share of the money raised beside it.
  */
-export async function internalFlow(db: Db, entityIds: string[]): Promise<InternalFlow> {
+export async function internalFlow(
+  db: Db,
+  entityIds: string[],
+  period: { cycle?: string; dateFrom?: string; dateTo?: string } = {},
+): Promise<InternalFlow> {
   const empty = { amount: '0', transfers: 0, payers: 0, payees: 0 };
   if (entityIds.length < 2) return empty;
+  const narrow = sql.join(
+    [
+      period.cycle ? sql`AND ${derivedCycleSql('t')} = ${period.cycle}` : sql``,
+      period.dateFrom ? sql`AND t.txn_date >= ${period.dateFrom}` : sql``,
+      period.dateTo ? sql`AND t.txn_date <= ${period.dateTo}` : sql``,
+    ],
+    sql` `,
+  );
 
   const rows = await db.execute<{
     amount: string;
@@ -531,6 +547,7 @@ export async function internalFlow(db: Db, entityIds: string[]): Promise<Interna
       FROM transactions t
      WHERE t.from_entity_id = ANY(${sql.param(entityIds)}::uuid[])
        AND t.to_entity_id   = ANY(${sql.param(entityIds)}::uuid[])
+       ${narrow}
   `);
   return rows[0] ?? empty;
 }

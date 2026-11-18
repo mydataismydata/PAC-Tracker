@@ -5,6 +5,12 @@
  * sponsor, say. It answers "who funds this person" without the reader having
  * to know that Florida splits them across a campaign account per office sought
  * plus an affiliated committee, and without making them drive a graph.
+ *
+ * "Who funds" means who the money started with. A legislator's filed donor
+ * list is mostly political committees, which only name the next committee to
+ * go and read. So the donor column is the traced one the committee reports
+ * use: it follows those transfers back to the people and companies that put
+ * the money in. See `src/components/kym/report.tsx`.
  */
 
 import Link from 'next/link';
@@ -13,61 +19,26 @@ import type { Metadata } from 'next';
 import { db } from '@/db';
 import { committeeSlug } from '@/lib/graph/committee';
 import { resolvePerson } from '@/lib/graph/person';
-import { ledger, type LedgerResult, type LedgerSourceRow } from '@/lib/graph/ledger';
+import { cyclesOnFile, entityTotals, ledger } from '@/lib/graph/ledger';
 import { formatMoneyFull } from '@/lib/graph/types';
+import { isNarrowed, periodLabel, readPeriod, withPeriod } from '@/lib/kym/period';
 import HostedBy from '@/components/HostedBy';
+import PeriodFilter from '@/components/kym/PeriodFilter';
+import { Money, MoneyColumns, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
 
-/** Rows per list. Enough to read; not so many the page stops being a summary. */
-const CEILING = 100;
-
 /**
- * Every cycle on file by default. A sponsor arriving from a bill page is being
+ * Every date on file by default. A sponsor arriving from a bill page is being
  * looked up as a person, not as a campaign, so their whole record is the honest
- * answer; `?cycle=20261103-GEN` narrows it.
- *
- * `?from=2025-11-01&to=2026-01-01` narrows it to the money dated inside those
- * days, both ends included. A bill page uses it to show who gave in the weeks
- * around the day a bill was filed. Either end works alone.
+ * answer. `?cycle=20261103-GEN` narrows it to a session, and
+ * `?from=2025-11-01&to=2026-01-01` to a range of days; a bill page links in
+ * with both. See `src/lib/kym/period.ts`.
  */
-const ALL_CYCLES = { label: 'all cycles on file', param: '' };
-
 type Params = {
   params: Promise<{ last: string; first: string }>;
   searchParams: Promise<{ cycle?: string; from?: string; to?: string }>;
 };
-
-/**
- * A query-string date, or undefined when it is not a real day.
- *
- * Checked here rather than left to Postgres: a cast of 2026-02-30 fails the
- * query, and the reader gets an error page instead of the unfiltered one.
- */
-function day(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
-  const parsed = new Date(`${value}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
-    ? value
-    : undefined;
-}
-
-/** `2025-11-09` → `Nov 9, 2025`. In UTC, so the server's zone cannot shift the day. */
-const DAY = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  timeZone: 'UTC',
-});
-const showDay = (value: string) => DAY.format(new Date(`${value}T00:00:00Z`));
-
-/** The date window as a reader would say it, or '' when there is none. */
-function span(from?: string, to?: string): string {
-  if (from && to) return `${showDay(from)} – ${showDay(to)}`;
-  if (from) return `from ${showDay(from)}`;
-  if (to) return `up to ${showDay(to)}`;
-  return '';
-}
 
 async function load(p: Params['params']) {
   const { last, first } = await p;
@@ -83,124 +54,44 @@ export async function generateMetadata({ params }: Pick<Params, 'params'>): Prom
   };
 }
 
-function Money({ value, tone }: { value: string; tone: 'in' | 'out' }) {
-  return (
-    <span
-      className={`font-mono tabular-nums ${tone === 'in' ? 'text-emerald-400' : 'text-amber-400'}`}
-    >
-      {formatMoneyFull(value)}
-    </span>
-  );
-}
-
-function Rows({ rows, tone }: { rows: LedgerSourceRow[]; tone: 'in' | 'out' }) {
-  if (rows.length === 0) {
-    return <p className="px-4 py-6 text-sm text-slate-500">Nothing filed in this period.</p>;
-  }
-  return (
-    <ul className="divide-y divide-slate-900">
-      {rows.map((r) => (
-        <li key={`${r.entity_id}-${r.flow}`} className="flex items-baseline gap-3 px-4 py-2.5">
-          <span className="min-w-0 flex-1 truncate text-sm text-slate-200">{r.name}</span>
-          <span className="shrink-0 font-mono text-xs tabular-nums text-slate-600">
-            ×{r.txn_count}
-          </span>
-          <span className="shrink-0 text-sm">
-            <Money value={r.amount} tone={tone} />
-          </span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-/**
- * A headline figure.
- *
- * The type size comes off the length of the number rather than the viewport:
- * $196,500 and $125,502,148 need different treatment in the same box, and only
- * one of them is knowable from a breakpoint.
- */
-function Tile({
-  label,
-  value,
-  tone,
-  children,
-}: {
-  label: string;
-  value: string;
-  tone: 'in' | 'out';
-  children: React.ReactNode;
-}) {
-  const text = formatMoneyFull(value);
-  const size =
-    text.length > 11 ? 'text-lg sm:text-2xl' : text.length > 8 ? 'text-xl sm:text-2xl' : 'text-2xl';
-
-  return (
-    <div
-      className={`min-w-0 rounded border p-4 ${
-        tone === 'in' ? 'border-emerald-900 bg-emerald-950/30' : 'border-slate-800 bg-slate-900/40'
-      }`}
-    >
-      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div
-        className={`mt-1 font-mono font-semibold tabular-nums ${size} ${
-          tone === 'in' ? 'text-emerald-400' : 'text-amber-400'
-        }`}
-      >
-        {text}
-      </div>
-      <div className="mt-1 text-xs text-slate-500">{children}</div>
-    </div>
-  );
-}
-
-function Caption({ result }: { result: LedgerResult }) {
-  const shown = result.rows.length;
-  return (
-    <p className="mt-1 text-xs text-slate-600">
-      {shown < result.total
-        ? `showing the largest ${shown.toLocaleString()} of ${result.total.toLocaleString()}`
-        : `${result.total.toLocaleString()} in total`}
-      , {formatMoneyFull(result.totalAmount)}
-    </p>
-  );
-}
-
 export default async function PersonPage({ params, searchParams }: Params) {
   const person = await load(params);
   if (!person) notFound();
 
-  const query = await searchParams;
-  const cycle = query.cycle || undefined;
-  const dateFrom = day(query.from);
-  const dateTo = day(query.to);
-  const dates = span(dateFrom, dateTo);
-  const year = cycle?.slice(0, 4);
-  const scope =
-    [year ? `${year} cycle` : '', dates].filter(Boolean).join(', ') || ALL_CYCLES.label;
-  // The same narrowing, worded for the sentence at the foot of the page.
-  const reach = [year ? `the ${year} cycle` : '', dates].filter(Boolean).join(', ');
-  const cycleParam = cycle ?? ALL_CYCLES.param;
+  const period = readPeriod(await searchParams);
+  const scope = periodLabel(period);
 
-  const base = {
-    view: 'sources' as const,
-    sort: 'amount' as const,
-    order: 'desc' as const,
-    limit: CEILING,
-    offset: 0,
-    cycle,
-    dateFrom,
-    dateTo,
-  };
-  const [received, given] = await Promise.all([
-    ledger(db, person.entityIds, { ...base, direction: 'in' }),
-    ledger(db, person.entityIds, { ...base, direction: 'out' }),
+  // Only the totals are wanted from the ledger. The lists below draw their
+  // own rows, and over the same period these totals are what they add up to.
+  const totalsOf = (direction: 'in' | 'out') =>
+    ledger(db, person.entityIds, {
+      view: 'sources',
+      direction,
+      sort: 'amount',
+      order: 'desc',
+      limit: 0,
+      offset: 0,
+      ...period,
+    });
+  const [received, given, cycles, amounts] = await Promise.all([
+    totalsOf('in'),
+    totalsOf('out'),
+    cyclesOnFile(db, person.entityIds),
+    isNarrowed(period) ? entityTotals(db, person.entityIds, period) : null,
   ]);
 
   // Seed the graph on whichever filing holds the most; it is the one whose
   // neighbourhood is worth drawing.
   const biggest = person.parts[0];
+
+  // Each filing's own figure covers the same period as the totals above it,
+  // and the filings re-sort on it, so the account that raised the most in the
+  // period comes first.
+  const parts = amounts
+    ? person.parts
+        .map((p) => ({ ...p, totalReceived: amounts.get(p.id)?.received ?? '0' }))
+        .sort((a, b) => Number(b.totalReceived) - Number(a.totalReceived))
+    : person.parts;
 
   return (
     // The root layout locks the body to the viewport with overflow-hidden,
@@ -224,14 +115,18 @@ export default async function PersonPage({ params, searchParams }: Params) {
           </p>
         )}
 
+        <PeriodFilter period={period} cycles={cycles} />
+
         {/* Stacks on a narrow phone. Two columns cannot hold a nine-figure sum
-            beside another one, and a governor's race produces those. */}
-        <div className="mt-6 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1">
-          <Tile label="Raised" value={person.totalReceived} tone="in">
+            beside another one, and a governor's race produces those. The
+            figures are the totals of the two lists below, over the same
+            period. */}
+        <div className="mt-2 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1">
+          <Tile label="Raised" value={received.totalAmount} tone="in">
             across {person.parts.length} filing{person.parts.length === 1 ? '' : 's'}
           </Tile>
-          <Tile label="Spent" value={person.totalGiven} tone="out">
-            {ALL_CYCLES.label}
+          <Tile label="Spent" value={given.totalAmount} tone="out">
+            to {given.total.toLocaleString()} recipient{given.total === 1 ? '' : 's'}
           </Tile>
         </div>
 
@@ -239,13 +134,13 @@ export default async function PersonPage({ params, searchParams }: Params) {
             money, usually by a lot. */}
         <section className="mt-8">
           <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-            The filings
+            The filings · {scope}
           </h2>
           {/* Rows wrap on a phone. Kind, name and a nine-figure sum on one line
               leaves the name as "Donalds…", which is the one part of the row a
               reader needs to tell two filings apart. */}
           <ul className="mt-2 divide-y divide-slate-900 rounded border border-slate-800">
-            {person.parts.map((p) => (
+            {parts.map((p) => (
               <li key={p.id} className="px-4 py-3 sm:flex sm:items-baseline sm:gap-3">
                 <span className="font-mono text-[10px] uppercase tracking-wide text-slate-600 sm:w-16 sm:shrink-0">
                   {p.kind}
@@ -255,7 +150,7 @@ export default async function PersonPage({ params, searchParams }: Params) {
                     without a sign-in. The id is pinned because a candidate
                     files under the same name once per office sought. */}
                 <Link
-                  href={`/kym/${committeeSlug(p.name)}?id=${p.id}${cycle ? `&cycle=${cycle}` : ''}`}
+                  href={withPeriod(`/kym/${committeeSlug(p.name)}?id=${p.id}`, period)}
                   className="mt-0.5 block truncate text-sm text-slate-200 underline-offset-2 hover:text-indigo-300 hover:underline sm:mt-0 sm:min-w-0 sm:flex-1"
                 >
                   {p.name}
@@ -268,34 +163,16 @@ export default async function PersonPage({ params, searchParams }: Params) {
           </ul>
         </section>
 
-        {/* min-w-0 on the columns is load-bearing: a grid item's automatic
-            minimum size is its content's min-content width, so without it the
-            column refuses to shrink below the longest donor name and the
-            amounts end up off-screen on a phone. */}
-        <section className="mt-8 grid gap-6 md:grid-cols-2">
-          <div className="min-w-0">
-            <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-              Donors · {scope}
-            </h2>
-            <Caption result={received} />
-            <div className="mt-2 rounded border border-slate-800">
-              <Rows rows={received.rows as LedgerSourceRow[]} tone="in" />
-            </div>
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-xs font-semibold uppercase tracking-[0.1em] text-slate-500">
-              Payments out · {scope}
-            </h2>
-            <Caption result={given} />
-            <div className="mt-2 rounded border border-slate-800">
-              <Rows rows={given.rows as LedgerSourceRow[]} tone="out" />
-            </div>
-          </div>
-        </section>
+        <MoneyColumns
+          ids={person.entityIds}
+          subject={person.name}
+          period={period}
+          paymentsHint="Everyone these accounts paid, pooled and largest first. Mail vendors, consultants and transfers to other committees all appear here."
+        />
 
         <div className="mt-8 flex flex-wrap gap-3">
           <Link
-            href={`/?seed=${biggest.id}&cycle=${cycleParam}&depth=2&direction=both&linkMode=direct`}
+            href={`/?seed=${biggest.id}&cycle=${period.cycle ?? ''}&depth=2&direction=both&linkMode=direct`}
             className="rounded bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-indigo-500"
           >
             Open the money graph
@@ -317,9 +194,6 @@ export default async function PersonPage({ params, searchParams }: Params) {
         )}
 
         <p className="mt-6 text-xs leading-relaxed text-slate-600">
-          {reach
-            ? `Headline totals cover every cycle on file; the donor and payment lists cover ${reach} only.`
-            : 'Every cycle on file.'}{' '}
           Figures are as filed with the Florida Division of Elections and may be amended.
         </p>
       </main>

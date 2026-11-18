@@ -22,6 +22,7 @@ import { sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
 import { normalizeName } from '@/lib/normalize';
+import { withPeriod, type Period } from '@/lib/kym/period';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -256,11 +257,11 @@ export function committeeHref(hit: { id: string; slug: string; sharesName: boole
  * A link to one report from inside another.
  *
  * Pins the id, because a report's lists carry no namesake count and a
- * candidate files under one name per office sought. Keeps the cycle, so a
+ * candidate files under one name per office sought. Keeps the period, so a
  * reader following 2024 money through a chain of committees stays in 2024.
  */
-export function reportHref(id: string, name: string, cycle?: string): string {
-  return `/kym/${committeeSlug(name)}?id=${id}${cycle ? `&cycle=${encodeURIComponent(cycle)}` : ''}`;
+export function reportHref(id: string, name: string, period?: Period): string {
+  return withPeriod(`/kym/${committeeSlug(name)}?id=${id}`, period);
 }
 
 /**

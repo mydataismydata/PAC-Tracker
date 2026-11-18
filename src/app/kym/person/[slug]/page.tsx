@@ -32,7 +32,10 @@ import {
   type InternalFlow,
   type PersonNetwork,
 } from '@/lib/graph/officers';
+import { cyclesOnFile, entityTotals, ledger } from '@/lib/graph/ledger';
 import { formatMoney, kindLabel } from '@/lib/graph/types';
+import { isNarrowed, periodLabel, readPeriod, withPeriod, type Period } from '@/lib/kym/period';
+import PeriodFilter from '@/components/kym/PeriodFilter';
 import { Money, MoneyColumns, SectionHeading, Shown, Tile } from '@/components/kym/report';
 
 export const dynamic = 'force-dynamic';
@@ -42,7 +45,7 @@ const SPELLINGS = 4;
 
 type Params = {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ cycle?: string }>;
+  searchParams: Promise<{ cycle?: string; from?: string; to?: string }>;
 };
 
 async function load(p: Params['params']): Promise<PersonNetwork | null> {
@@ -69,10 +72,12 @@ export async function generateMetadata({ params }: Pick<Params, 'params'>): Prom
  * scroll past all of them to reach the findings will not reach the findings.
  * So the answers come first and the working is underneath them.
  */
-function Committees({ person }: { person: PersonNetwork }) {
+function Committees({ person, period }: { person: PersonNetwork; period: Period }) {
   return (
     <section className="mt-8">
-      <SectionHeading>Named on {person.committees.length.toLocaleString()} filings</SectionHeading>
+      <SectionHeading>
+        Named on {person.committees.length.toLocaleString()} filings · {periodLabel(period)}
+      </SectionHeading>
       {/* Every committee, never a slice. The size of the network is the
           finding, and a list that stops at fifty makes the reader take the
           rest on trust. */}
@@ -124,7 +129,7 @@ function Committees({ person }: { person: PersonNetwork }) {
                     name is text rather than a link into a 404. */}
                 {c.kind === 'committee' || c.kind === 'party' ? (
                   <Link
-                    href={committeeHref(c)}
+                    href={withPeriod(committeeHref(c), period)}
                     className="block underline-offset-2 hover:text-indigo-300 hover:underline"
                   >
                     {label}
@@ -178,7 +183,7 @@ function Shuffle({ flow, raised }: { flow: InternalFlow; raised: string }) {
 
 export default async function KymPersonPage({ params, searchParams }: Params) {
   const person = await load(params);
-  const { cycle } = await searchParams;
+  const period = readPeriod(await searchParams);
 
   if (!person) {
     return (
@@ -192,11 +197,45 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
     );
   }
 
-  const scope = cycle ? `${cycle.slice(0, 4)} cycle` : 'all cycles on file';
   const roles = person.roles
     .map((r) => `${roleLabel(r.role)} of ${r.committees.toLocaleString()}`)
     .join(' · ');
-  const inside = await internalFlow(db, person.entityIds);
+  // Every figure on the page over the same period: the headline totals from
+  // the ledger the lists use, and each committee's own row from the same rows.
+  const totalsOf = (direction: 'in' | 'out') =>
+    ledger(db, person.entityIds, {
+      view: 'sources',
+      direction,
+      sort: 'amount',
+      order: 'desc',
+      limit: 0,
+      offset: 0,
+      ...period,
+    });
+  const narrowed = isNarrowed(period);
+  const [inside, cycles, received, given, amounts] = await Promise.all([
+    internalFlow(db, person.entityIds, period),
+    cyclesOnFile(db, person.entityIds),
+    totalsOf('in'),
+    totalsOf('out'),
+    narrowed ? entityTotals(db, person.entityIds, period) : null,
+  ]);
+  // Over a period the rows take that period's figures and re-sort on them, so
+  // the committee that raised the most in it comes first.
+  const shown: PersonNetwork = amounts
+    ? {
+        ...person,
+        totalReceived: received.totalAmount,
+        totalGiven: given.totalAmount,
+        committees: person.committees
+          .map((c) => ({
+            ...c,
+            totalReceived: amounts.get(c.id)?.received ?? '0',
+            totalGiven: amounts.get(c.id)?.given ?? '0',
+          }))
+          .sort((a, b) => Number(b.totalReceived) - Number(a.totalReceived)),
+      }
+    : person;
 
   return (
     <main className="mt-8">
@@ -218,19 +257,20 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
       {/* Three tiles when the group moves money inside itself, two when it
           does not. Stacks below 400px, where two nine-figure sums will not sit
           side by side. */}
+      <PeriodFilter period={period} cycles={cycles} />
       <div
-        className={`mt-6 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1 ${
+        className={`mt-2 grid grid-cols-2 gap-3 max-[400px]:grid-cols-1 ${
           Number(inside.amount) > 0 ? 'max-w-4xl sm:grid-cols-3' : 'max-w-2xl'
         }`}
       >
-        <Tile label="Raised" value={person.totalReceived} tone="in">
+        <Tile label="Raised" value={received.totalAmount} tone="in">
           across {person.committees.length.toLocaleString()} filing
           {person.committees.length === 1 ? '' : 's'}
         </Tile>
-        <Tile label="Paid out" value={person.totalGiven} tone="out">
-          {scope}
+        <Tile label="Paid out" value={given.totalAmount} tone="out">
+          to {given.total.toLocaleString()} recipient{given.total === 1 ? '' : 's'}
         </Tile>
-        {Number(inside.amount) > 0 && <Shuffle flow={inside} raised={person.totalReceived} />}
+        {Number(inside.amount) > 0 && <Shuffle flow={inside} raised={received.totalAmount} />}
       </div>
 
       {Number(inside.amount) > 0 && (
@@ -246,12 +286,11 @@ export default async function KymPersonPage({ params, searchParams }: Params) {
       <MoneyColumns
         ids={person.entityIds}
         subject={person.name}
-        scope={scope}
-        cycle={cycle}
+        period={period}
         paymentsHint="Everyone these committees paid, pooled and largest first. A vendor paid by several of them is one row."
       />
 
-      <Committees person={person} />
+      <Committees person={shown} period={period} />
 
       <p className="mt-8 text-xs leading-relaxed text-slate-600">
         Officers are as currently reported to the Florida Division of Elections and the county

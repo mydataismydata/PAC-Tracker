@@ -43,7 +43,9 @@ import {
   separateTiles,
   type Point,
 } from '@/lib/graph/layout';
+import { entityTotals } from '@/lib/graph/ledger';
 import { dataStamp } from '@/lib/graph/traceCache';
+import type { Period } from '@/lib/kym/period';
 import { DEFAULT_SETTINGS, edgeTone, formatMoney } from '@/lib/graph/types';
 
 cytoscape.use(fcose);
@@ -189,10 +191,21 @@ export function textWidth(text: string): number {
  *
  * Null when the id names nothing.
  */
-export async function buildScene(db: Db, seedId: string, cycle?: string): Promise<Scene | null> {
-  const graph = await crawlAll(db, { seedEntityId: seedId, ...CRAWL, cycle });
+export async function buildScene(db: Db, seedId: string, period: Period = {}): Promise<Scene | null> {
+  const { cycle, dateFrom, dateTo } = period;
+  const graph = await crawlAll(db, { seedEntityId: seedId, ...CRAWL, cycle, dateFrom, dateTo });
   const seed = graph.nodes.find((n) => n.id === seedId);
   if (!seed) return null;
+
+  // Over a range of days the crawl keeps every link that was active in the
+  // range, but hands back the subject's totals for the whole cycle. The card
+  // has to say what the page's headline figures say, so it takes the range's
+  // own totals instead.
+  if (dateFrom || dateTo) {
+    const own = (await entityTotals(db, [seedId], period)).get(seedId);
+    seed.totalReceived = own?.received ?? '0';
+    seed.totalGiven = own?.given ?? '0';
+  }
 
   // The crawl reports an edge even where the node ceiling kept its far end
   // off the canvas. The explorer skips those, and so does this. A payment to
@@ -415,7 +428,7 @@ function cardHeight(node: GraphNode): number {
 /* ------------------------------------------------------------------------ */
 
 /** Bump when the drawing changes, so pictures drawn the old way are not served. */
-export const RENDER_VERSION = 7;
+export const RENDER_VERSION = 8;
 
 /** How long a picture stands once the filings behind it stop moving. */
 export const TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -437,11 +450,13 @@ const inflight = new Map<string, Promise<Uint8Array<ArrayBuffer>>>();
 export async function snapshotKey(
   db: Db,
   id: string,
-  cycle: string | undefined,
+  period: Period | undefined,
 ): Promise<{ key: string; etag: string }> {
   const stamp = await dataStamp(db);
   const key = createHash('sha1')
-    .update([RENDER_VERSION, id, cycle ?? '', stamp].join('|'))
+    .update(
+      [RENDER_VERSION, id, period?.cycle ?? '', period?.dateFrom ?? '', period?.dateTo ?? '', stamp].join('|'),
+    )
     .digest('hex');
   return { key, etag: `"${key}"` };
 }

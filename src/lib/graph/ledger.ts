@@ -25,7 +25,7 @@ import { sql } from 'drizzle-orm';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import * as schema from '@/db/schema';
 import { normalizeName } from '@/lib/normalize';
-import { derivedCycleSql } from '@/lib/cycles';
+import { CYCLES, derivedCycleSql } from '@/lib/cycles';
 
 type Db = PostgresJsDatabase<typeof schema>;
 
@@ -346,4 +346,78 @@ async function transactionsView(
     limit,
     offset,
   };
+}
+
+/**
+ * The election cycles a set has any money in, newest first.
+ *
+ * What a page offers as sessions to narrow to. Read off the rollups, which are
+ * already grouped per cycle, so it costs an index range per direction. Only
+ * the cycles the app knows by name come back: a row whose date fell outside
+ * every one has nothing a reader could pick.
+ */
+export async function cyclesOnFile(db: Db, entityIds: string[]): Promise<string[]> {
+  if (entityIds.length === 0) return [];
+  const ids = sql`${sql.param(entityIds)}::uuid[]`;
+  const rows = await db.execute<{ cycle: string }>(sql`
+    SELECT r.election_cycle AS cycle FROM edge_rollups r WHERE r.to_entity_id = ANY(${ids})
+    UNION
+    SELECT r.election_cycle AS cycle FROM edge_rollups r WHERE r.from_entity_id = ANY(${ids})
+  `);
+  const held = new Set(rows.map((r) => r.cycle));
+  return CYCLES.filter((c) => held.has(c.id)).map((c) => c.id);
+}
+
+/**
+ * What each entity in a set received and paid out over one period.
+ *
+ * The per-filing figures on a page, so they add up to the headline ones. The
+ * rules are the ledger's, row for row: the rollups unless a date bounds the
+ * period, the transactions when one does, and a counterparty that resolved
+ * to nothing left out on both sides, as the ledger's join leaves it out.
+ * An entity with no money in the period is absent from the map.
+ */
+export async function entityTotals(
+  db: Db,
+  entityIds: string[],
+  period: { cycle?: string; dateFrom?: string; dateTo?: string },
+): Promise<Map<string, { received: string; given: string }>> {
+  if (entityIds.length === 0) return new Map();
+  const ids = sql`${sql.param(entityIds)}::uuid[]`;
+  const { cycle, dateFrom, dateTo } = period;
+  const windowed = dateFrom != null || dateTo != null;
+  const dates = dateWindow(dateFrom, dateTo);
+
+  const union = windowed
+    ? (() => {
+        const cyc = cycle ? sql`AND ${derivedCycleSql('t')} = ${cycle}` : sql``;
+        return sql`
+          SELECT t.to_entity_id AS id, t.amount AS received, 0 AS given
+            FROM transactions t
+           WHERE t.to_entity_id = ANY(${ids}) AND t.from_entity_id IS NOT NULL ${cyc} ${dates}
+          UNION ALL
+          SELECT t.from_entity_id, 0, t.amount
+            FROM transactions t
+           WHERE t.from_entity_id = ANY(${ids}) AND t.to_entity_id IS NOT NULL ${cyc} ${dates}
+        `;
+      })()
+    : (() => {
+        const cyc = cycle ? sql`AND r.election_cycle = ${cycle}` : sql``;
+        return sql`
+          SELECT r.to_entity_id AS id, r.total_amount AS received, 0 AS given
+            FROM edge_rollups r
+           WHERE r.to_entity_id = ANY(${ids}) AND r.from_entity_id IS NOT NULL ${cyc}
+          UNION ALL
+          SELECT r.from_entity_id, 0, r.total_amount
+            FROM edge_rollups r
+           WHERE r.from_entity_id = ANY(${ids}) AND r.to_entity_id IS NOT NULL ${cyc}
+        `;
+      })();
+
+  const rows = await db.execute<{ id: string; received: string; given: string }>(sql`
+    SELECT u.id, SUM(u.received)::text AS received, SUM(u.given)::text AS given
+      FROM (${union}) u
+     GROUP BY u.id
+  `);
+  return new Map(rows.map((r) => [r.id, { received: r.received, given: r.given }]));
 }

@@ -18,6 +18,7 @@ import Link from 'next/link';
 import { Suspense } from 'react';
 import { db } from '@/db';
 import { reportHref, reportSubjects } from '@/lib/graph/committee';
+import { periodLabel, type Period } from '@/lib/kym/period';
 import { ledger, type LedgerSourceRow } from '@/lib/graph/ledger';
 import { cachedTrace, type TraceDigest } from '@/lib/graph/traceCache';
 import { formatMoney, formatMoneyFull } from '@/lib/graph/types';
@@ -236,20 +237,21 @@ function Coverage({ result }: { result: TraceDigest }) {
 async function Donors({
   ids,
   subject,
-  cycle,
+  period,
 }: {
   ids: string[];
   subject: string;
-  cycle?: string;
+  period: Period;
 }) {
-  const result = await cachedTrace(db, ids, { ...TRACE, cycle }, KEEP);
+  const { cycle, dateFrom, dateTo } = period;
+  const result = await cachedTrace(db, ids, { ...TRACE, cycle, dateFrom, dateTo }, KEEP);
   const subjects = await reportSubjects(db, [
     ...result.sources.rows.map((s) => s.id),
     ...result.injectionPoints.flatMap((p) => [p.id, ...p.funders.map((f) => f.id)]),
     ...result.unresolved.rows.map((s) => s.id),
   ]);
   const href = (id: string, name: string) =>
-    subjects.has(id) ? reportHref(id, name, cycle) : undefined;
+    subjects.has(id) ? reportHref(id, name, period) : undefined;
 
   if (result.sources.count === 0 && result.injectionPoints.length === 0) {
     return (
@@ -374,7 +376,7 @@ async function Donors({
 
 /* ----------------------------------------------------------- payments out */
 
-async function Payments({ ids, cycle }: { ids: string[]; cycle?: string }) {
+async function Payments({ ids, period }: { ids: string[]; period: Period }) {
   const result = await ledger(db, ids, {
     view: 'sources',
     direction: 'out',
@@ -382,15 +384,15 @@ async function Payments({ ids, cycle }: { ids: string[]; cycle?: string }) {
     order: 'desc',
     limit: LIST_ROWS,
     offset: 0,
-    cycle,
+    ...period,
   });
   const rows = result.rows as LedgerSourceRow[];
 
-  if (rows.length === 0) return <Note>No payments out on file.</Note>;
+  if (rows.length === 0) return <Note>No payments out on file for this period.</Note>;
 
   const subjects = await reportSubjects(db, rows.map((r) => r.entity_id));
   const href = (r: LedgerSourceRow) =>
-    subjects.has(r.entity_id) ? reportHref(r.entity_id, r.name, cycle) : undefined;
+    subjects.has(r.entity_id) ? reportHref(r.entity_id, r.name, period) : undefined;
 
   const internal = Number(result.internalAmount);
 
@@ -447,17 +449,15 @@ async function Payments({ ids, cycle }: { ids: string[]; cycle?: string }) {
 export function MoneyColumns({
   ids,
   subject,
-  scope,
-  cycle,
+  period,
   paymentsHint,
   originsInstead,
 }: {
   ids: string[];
   /** The subject's name, for the sentence about national pools. */
   subject: string;
-  /** What period the lists cover, said in the headings. */
-  scope: string;
-  cycle?: string;
+  /** What the lists cover, said in the headings. */
+  period: Period;
   paymentsHint: string;
   /**
    * Shown in place of the trace, when running one would not answer anything.
@@ -467,6 +467,7 @@ export function MoneyColumns({
    */
   originsInstead?: React.ReactNode;
 }) {
+  const scope = periodLabel(period);
   return (
     <section className="mt-8 grid items-start gap-8 md:grid-cols-2">
       <div className="min-w-0">
@@ -477,7 +478,7 @@ export function MoneyColumns({
         </p>
         {originsInstead ?? (
           <Suspense fallback={<Note>Following the money…</Note>}>
-            <Donors ids={ids} subject={subject} cycle={cycle} />
+            <Donors ids={ids} subject={subject} period={period} />
           </Suspense>
         )}
       </div>
@@ -486,7 +487,7 @@ export function MoneyColumns({
         <SectionHeading>Payments out · {scope}</SectionHeading>
         <p className="mt-1 text-xs text-slate-600">{paymentsHint}</p>
         <Suspense fallback={<Note>Reading the ledger…</Note>}>
-          <Payments ids={ids} cycle={cycle} />
+          <Payments ids={ids} period={period} />
         </Suspense>
       </div>
     </section>

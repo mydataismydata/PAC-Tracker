@@ -1,7 +1,7 @@
 /**
  * A committee's neighborhood as a PNG, for a post or a printout.
  *
- * `GET /api/kym/snapshot/:id?cycle=` draws what the explorer opens on for
+ * `GET /api/kym/snapshot/:id?cycle=&from=&to=` draws what the explorer opens on for
  * this committee: two hops, money in and out, every entity the crawl reaches.
  * The scene comes from `src/lib/kym/snapshot.ts`; this file only paints it,
  * in the explorer's network look, so a saved picture and the live graph read
@@ -22,6 +22,7 @@ import { ImageResponse } from 'next/og';
 import { NextRequest } from 'next/server';
 import { db } from '@/db';
 import { committeeById, committeeSlug } from '@/lib/graph/committee';
+import { periodLabel, readPeriod } from '@/lib/kym/period';
 import { controlPoint, type Point } from '@/lib/graph/layout';
 import {
   NETWORK_GROUND as GROUND,
@@ -46,7 +47,6 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const UUID = /^[0-9a-f-]{36}$/i;
-const CYCLE = /^[0-9A-Za-z-]{1,32}$/;
 
 /* The explorer's palette. See the network look's style in `GraphCanvas.tsx`. */
 const MUTED = '#94a3b8';
@@ -421,23 +421,27 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   const { id } = await ctx.params;
   if (!UUID.test(id)) return Response.json({ error: 'invalid id' }, { status: 400 });
 
-  const rawCycle = req.nextUrl.searchParams.get('cycle') || undefined;
-  const cycle = rawCycle && CYCLE.test(rawCycle) ? rawCycle : undefined;
+  const q = req.nextUrl.searchParams;
+  const period = readPeriod({
+    cycle: q.get('cycle') ?? undefined,
+    from: q.get('from') ?? undefined,
+    to: q.get('to') ?? undefined,
+  });
 
   const subject = await committeeById(db, id);
   if (!subject) return Response.json({ error: 'not found' }, { status: 404 });
 
-  const { key, etag } = await snapshotKey(db, id, cycle);
+  const { key, etag } = await snapshotKey(db, id, period);
   if (req.headers.get('if-none-match') === etag) {
     return new Response(null, { status: 304, headers: { ETag: etag, 'Cache-Control': CACHE } });
   }
 
   const host = publicHost(req);
   const slug = committeeSlug(subject.name);
-  const scope = cycle ? `${cycle.slice(0, 4)} cycle` : 'all cycles on file';
+  const scope = periodLabel(period);
 
   const png = await cachedSnapshot(key, async () => {
-    const scene = await buildScene(db, id, cycle);
+    const scene = await buildScene(db, id, period);
     if (!scene) throw new Error('subject vanished between lookup and draw');
     const image = new ImageResponse(
       <Picture scene={scene} scope={scope} site={`${host}/kym/${slug}`} />,
@@ -450,7 +454,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     headers: {
       'Content-Type': 'image/png',
       'Content-Length': String(png.byteLength),
-      'Content-Disposition': `inline; filename="${slug}${cycle ? `-${cycle.slice(0, 4)}` : ''}.png"`,
+      'Content-Disposition': `inline; filename="${[slug, period.cycle?.slice(0, 4), period.dateFrom, period.dateTo].filter(Boolean).join('-')}.png"`,
       ETag: etag,
       'Cache-Control': CACHE,
     },
