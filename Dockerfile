@@ -4,8 +4,12 @@
 # base — pnpm via corepack, pinned to the version in packageManager
 # ---------------------------------------------------------------------------
 FROM node:22-alpine AS base
-RUN corepack enable
 WORKDIR /app
+# Fetched here, at build time, so pnpm is part of the image. Before this, each
+# stage and each cli container asked npm for pnpm when it started. With no pin
+# it asked for the newest release, and a cli run failed whenever npm did.
+COPY package.json ./
+RUN corepack enable && corepack install
 
 # ---------------------------------------------------------------------------
 # deps — full dependency tree, cached on the lockfile alone
@@ -33,11 +37,11 @@ RUN pnpm build
 FROM base AS tools
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# Every cli invocation is a fresh --rm container, so corepack re-fetches pnpm
-# and stops to ask permission each time. Nobody is there to answer it during
-# `docker compose run`, and the answer is always yes.
+# pnpm is already in the image (see base). Corepack is kept off the network so
+# a cli run never depends on npm being up: if the pinned pnpm went missing, the
+# run fails at once and says so, instead of hanging on a download.
 ENV NEXT_TELEMETRY_DISABLED=1 \
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    COREPACK_ENABLE_NETWORK=0
 ENTRYPOINT ["pnpm"]
 CMD ["db:migrate"]
 
