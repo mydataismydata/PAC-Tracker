@@ -291,7 +291,7 @@ const SHARED_NAME_LIMIT = 8;
  * `created_at`. That is a guess, and it is the same guess every time, which is
  * the property the old `LIMIT 1` lacked.
  */
-function registrationInForce<T extends { id: string; firstSeen: string | null; lastSeen: string | null }>(
+export function registrationInForce<T extends { id: string; firstSeen: string | null; lastSeen: string | null }>(
   rows: T[],
   date: string | null,
 ): T {

@@ -26,6 +26,7 @@ import {
   EntityResolver,
   refreshTraversability,
   classifyContributorDetailed,
+  registrationInForce,
   STRONG_KIND_RULES,
 } from './resolve';
 import type { KindRule } from './resolve';
@@ -41,6 +42,9 @@ import {
   looksLikeCommittee,
   personDisplayName,
   unescapeQuotes,
+  splitTypeTag,
+  looksTruncated,
+  AUTO_LINK_THRESHOLD,
 } from '@/lib/normalize';
 import { manualKindEntityIds } from '@/lib/corrections';
 import { CandidateIndex, personKeys, type CandidateNode } from './candidates';
@@ -2451,6 +2455,290 @@ export async function backfillCandidateAccounts(
     ].join(',');
     mkdirSync(dirname(opts.movesPath), { recursive: true });
     writeFileSync(opts.movesPath, [header, ...moves].join('\n') + '\n');
+  }
+  return report;
+}
+
+export interface RegisteredNameOptions {
+  apply: boolean;
+  /** Every row group that moves, or would. */
+  movesPath?: string;
+  /** Stale guesses that could not be settled from the rows alone. */
+  reviewPath?: string;
+}
+
+export interface RegisteredNameReport {
+  /** Guessed spellings that a registered committee now holds exactly. */
+  aliases: number;
+  /** Entities carrying one or more of them. */
+  holders: number;
+  rowsMoved: number;
+  dollars: number;
+  /** Committees the moved rows went to. */
+  owners: number;
+  aliasesDropped: number;
+  review: number;
+}
+
+/**
+ * Give a registered committee back the rows a guess gave away before it was
+ * registered.
+ *
+ * The resolver tries an exact name before a fuzzy one, so today a filing that
+ * names "Liberty for Florida" goes to the committee registered under that
+ * name. It did not when the rows arrived first. The bulk of the filings were
+ * loaded on 26 July 2026 and most registrations weeks later, and in between
+ * there was no "Liberty for Florida" to find. The trigram match found
+ * "Liberty Florida", a different committee run for a different senator, scored
+ * it 0.89 against a bar of 0.88, and kept the spelling as its alias. Three and
+ * a half years of one committee's reports then sat on the other. The alias
+ * stopped answering once the registration existed, but nothing went back for
+ * the rows it had already placed.
+ *
+ * This goes back for them, and moves only what the rows themselves prove.
+ *
+ * - A guess is stale when a registered committee now holds its spelling
+ *   exactly.
+ * - A spelling that ends in Florida's filer tag — "Liberty for Florida (PAC)"
+ *   — is the committee's own report, written by the state from its
+ *   registration. Those rows move to the committee registered under that name
+ *   with that type. Where several are, the one whose filings were under way on
+ *   the row's date takes it, as the resolver decides a shared name.
+ * - A spelling with no tag was written by the other side of the payment.
+ *   It moves only to a committee whose own tagged reports were found on the
+ *   same entity, so the entity is known to have swallowed that committee.
+ *   Even then it stays when one name is the other cut short: Florida truncates
+ *   at 40 characters, and "...ALLIANCE IN" beside "...ALLIANCE INC" is one
+ *   name written twice, not two committees.
+ *
+ * The exact name alone is not proof. An active committee and a closed one can
+ * share a spelling, and the exact match then favours the closed one; moving
+ * every untagged row there would repeat the mistake in the other direction.
+ * What the rules above cannot settle is written to the review file and left
+ * where it is. The stale aliases are dropped either way, since the resolver
+ * already ignores them.
+ *
+ * Candidate nodes are left alone and listed for review: their payee rows can
+ * come from the candidate index rather than from the alias. Follow an apply
+ * with `pnpm ingest rebuild`, which re-derives the totals and lets the mirror
+ * pass meet the moved rows.
+ */
+export async function backfillRegisteredNames(
+  db: Db,
+  opts: RegisteredNameOptions,
+): Promise<RegisteredNameReport> {
+  const report: RegisteredNameReport = {
+    aliases: 0,
+    holders: 0,
+    rowsMoved: 0,
+    dollars: 0,
+    owners: 0,
+    aliasesDropped: 0,
+    review: 0,
+  };
+  const csv = (v: unknown) => {
+    const t = v == null ? '' : String(v);
+    return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+
+  // Only aliases good enough to have linked rows on their own. The ones under
+  // the bar were stored for review and never placed a row.
+  const stale = await db.execute<{
+    holder: string;
+    holder_name: string;
+    holder_normalized: string;
+    holder_kind: string;
+    alias: string;
+    normalized_alias: string;
+    confidence: number;
+  }>(sql`
+    SELECT a.entity_id AS holder, h.name AS holder_name, h.normalized_name AS holder_normalized,
+           h.kind::text AS holder_kind, a.alias, a.normalized_alias, a.confidence
+      FROM entity_aliases a
+      JOIN entities h ON h.id = a.entity_id
+     WHERE a.origin = 'resolved'
+       AND a.confidence >= ${AUTO_LINK_THRESHOLD}::real
+       AND EXISTS (
+         SELECT 1 FROM entities o
+          WHERE o.normalized_name = a.normalized_alias AND o.id <> a.entity_id
+            AND EXISTS (SELECT 1 FROM committee_registrations r WHERE r.entity_id = o.id))
+  `);
+  report.aliases = stale.length;
+  if (stale.length === 0) return report;
+
+  // Every registered committee holding each spelling exactly, with the types
+  // it has been registered as, ordered as the resolver orders an exact hit.
+  const owners = await db.execute<{
+    id: string;
+    name: string;
+    normalized_name: string;
+    first_seen: string | null;
+    last_seen: string | null;
+    types: string[] | null;
+  }>(sql`
+    SELECT e.id, e.name, e.normalized_name,
+           e.first_seen::text AS first_seen, e.last_seen::text AS last_seen,
+           array_agg(DISTINCT upper(r.committee_type)) FILTER (WHERE r.committee_type IS NOT NULL) AS types
+      FROM entities e
+      JOIN committee_registrations r ON r.entity_id = e.id
+     WHERE e.normalized_name = ANY(${sql.param([...new Set(stale.map((s) => s.normalized_alias))])}::text[])
+     GROUP BY e.id
+     ORDER BY min(e.created_at) ASC, e.id ASC
+  `);
+  type Owner = { id: string; name: string; firstSeen: string | null; lastSeen: string | null; types: string[] };
+  const ownersOf = new Map<string, Owner[]>();
+  for (const o of owners) {
+    const list = ownersOf.get(o.normalized_name) ?? [];
+    list.push({ id: o.id, name: o.name, firstSeen: o.first_seen, lastSeen: o.last_seen, types: o.types ?? [] });
+    ownersOf.set(o.normalized_name, list);
+  }
+
+  const review: string[] = [];
+  const reviewRow = (holder: string, name: string, spelling: string, rows: number | string, why: string) =>
+    review.push([holder, name, spelling, rows, why].map(csv).join(','));
+  const moves: string[] = [];
+  const holders = new Map<string, { name: string; normalized: string; spellings: Set<string> }>();
+  for (const s of stale) {
+    if (s.holder_kind === 'candidate') {
+      reviewRow(s.holder, s.holder_name, s.alias, '', 'candidate node: payee rows may come from the candidate index');
+      continue;
+    }
+    const h = holders.get(s.holder) ?? { name: s.holder_name, normalized: s.holder_normalized, spellings: new Set<string>() };
+    h.spellings.add(s.normalized_alias);
+    holders.set(s.holder, h);
+  }
+  report.holders = holders.size;
+
+  // The raw spellings on each holder, once per side, normalized here because
+  // the normalizer lives in application code, not in SQL.
+  const holderIds = [...holders.keys()];
+  const spellings = holderIds.length
+    ? await db.execute<{ holder: string; side: 'in' | 'out'; raw: string; n: number }>(sql`
+        SELECT t.to_entity_id AS holder, 'in' AS side, t.raw_to_name AS raw, count(*)::int AS n
+          FROM transactions t WHERE t.to_entity_id = ANY(${sql.param(holderIds)}::uuid[])
+         GROUP BY 1, 3
+        UNION ALL
+        SELECT t.from_entity_id, 'out', t.raw_from_name, count(*)::int
+          FROM transactions t WHERE t.from_entity_id = ANY(${sql.param(holderIds)}::uuid[])
+         GROUP BY 1, 3
+      `)
+    : [];
+
+  type Spelling = { holder: string; side: 'in' | 'out'; raw: string; n: number; normalized: string; tag: string | null };
+  const matched: Spelling[] = [];
+  for (const sp of spellings) {
+    if (!sp.raw) continue;
+    const normalized = normalizeName(sp.raw);
+    if (!holders.get(sp.holder)?.spellings.has(normalized)) continue;
+    matched.push({ ...sp, normalized, tag: splitTypeTag(sp.raw).typeTag });
+  }
+
+  const touched = new Set<string>();
+  /** holder|normalized -> the committees its own tagged reports went to. */
+  const proven = new Map<string, Owner[]>();
+
+  const move = async (sp: Spelling, pick: (date: string | null) => Owner) => {
+    const holder = holders.get(sp.holder)!;
+    const column = sp.side === 'in' ? sql`t.to_entity_id` : sql`t.from_entity_id`;
+    const rawColumn = sp.side === 'in' ? sql`t.raw_to_name` : sql`t.raw_from_name`;
+    const rows = await db.execute<{ id: string; amount: string; txn_date: string | null }>(sql`
+      SELECT t.id, t.amount::text AS amount, t.txn_date::text AS txn_date
+        FROM transactions t
+       WHERE ${column} = ${sp.holder} AND ${rawColumn} = ${sp.raw}
+    `);
+    const byOwner = new Map<string, { ids: string[]; dollars: number; owner: Owner }>();
+    for (const r of rows) {
+      const owner = pick(r.txn_date);
+      const group = byOwner.get(owner.id) ?? { ids: [], dollars: 0, owner };
+      group.ids.push(r.id);
+      group.dollars += Number(r.amount);
+      byOwner.set(owner.id, group);
+    }
+    for (const [ownerId, group] of byOwner) {
+      report.rowsMoved += group.ids.length;
+      report.dollars += group.dollars;
+      touched.add(ownerId);
+      moves.push(
+        [sp.holder, holder.name, ownerId, group.owner.name, sp.side, sp.raw, group.ids.length, group.dollars.toFixed(2)]
+          .map(csv)
+          .join(','),
+      );
+      if (opts.apply) {
+        for (let i = 0; i < group.ids.length; i += 5000) {
+          const chunk = group.ids.slice(i, i + 5000);
+          await (sp.side === 'in'
+            ? db.execute(sql`UPDATE transactions SET to_entity_id = ${ownerId} WHERE id = ANY(${sql.param(chunk)}::uuid[])`)
+            : db.execute(sql`UPDATE transactions SET from_entity_id = ${ownerId} WHERE id = ANY(${sql.param(chunk)}::uuid[])`));
+        }
+      }
+    }
+    return [...byOwner.values()].map((g) => g.owner);
+  };
+
+  // Tagged spellings first: they are the committees' own reports, and what
+  // they prove decides the untagged ones.
+  for (const sp of matched.filter((m) => m.tag)) {
+    const holder = holders.get(sp.holder)!;
+    const typed = (ownersOf.get(sp.normalized) ?? []).filter((o) => o.id !== sp.holder && o.types.includes(sp.tag!));
+    if (typed.length === 0) {
+      reviewRow(sp.holder, holder.name, sp.raw, sp.n, `no committee registered as ${sp.tag} under this name`);
+      continue;
+    }
+    const went = await move(sp, (date) => (typed.length === 1 ? typed[0] : registrationInForce(typed, date)));
+    const key = `${sp.holder}|${sp.normalized}`;
+    proven.set(key, [...new Map([...(proven.get(key) ?? []), ...went].map((o) => [o.id, o])).values()]);
+  }
+
+  for (const sp of matched.filter((m) => !m.tag)) {
+    const holder = holders.get(sp.holder)!;
+    const key = `${sp.holder}|${sp.normalized}`;
+    const owners = proven.get(key);
+    if (!owners) {
+      reviewRow(sp.holder, holder.name, sp.raw, sp.n, "untagged, and none of that committee's own reports were on this entity");
+      continue;
+    }
+    // Only a name at Florida's column width can be a cut-short copy of a
+    // longer one. "FLORIDA HOSPITAL ASSOCIATION" beside "... ASSOCIATION PC"
+    // is two committees; "... ALLIANCE IN" beside "... ALLIANCE INC" is one.
+    const [shorter, longer] =
+      holder.name.length <= sp.raw.length ? [holder, { name: sp.raw, normalized: sp.normalized }] : [{ name: sp.raw, normalized: sp.normalized }, holder];
+    if (looksTruncated(shorter.name) && longer.normalized.startsWith(shorter.normalized)) {
+      reviewRow(sp.holder, holder.name, sp.raw, sp.n, 'untagged, and one name is the other cut short');
+      continue;
+    }
+    await move(sp, (date) => (owners.length === 1 ? owners[0] : registrationInForce(owners, date)));
+  }
+  report.owners = touched.size;
+
+  for (const [holderId, h] of holders) {
+    for (const spelling of h.spellings) {
+      const anyRows = matched.some((m) => m.holder === holderId && m.normalized === spelling);
+      if (!anyRows) reviewRow(holderId, h.name, spelling, 0, 'no rows under this spelling');
+    }
+  }
+  report.review = review.length;
+
+  if (opts.apply) {
+    for (const [holderId, h] of holders) {
+      const dropped = await db.execute(sql`
+        DELETE FROM entity_aliases
+         WHERE entity_id = ${holderId} AND origin = 'resolved'
+           AND normalized_alias = ANY(${sql.param([...h.spellings])}::text[])
+      `);
+      report.aliasesDropped += (dropped as unknown as { count?: number }).count ?? 0;
+    }
+  }
+
+  if (opts.movesPath) {
+    mkdirSync(dirname(opts.movesPath), { recursive: true });
+    writeFileSync(
+      opts.movesPath,
+      ['holder_id,holder,owner_id,owner,side,filed_as,rows,dollars', ...moves].join('\n') + '\n',
+    );
+  }
+  if (opts.reviewPath) {
+    mkdirSync(dirname(opts.reviewPath), { recursive: true });
+    writeFileSync(opts.reviewPath, ['holder_id,holder,filed_as,rows,why', ...review].join('\n') + '\n');
   }
   return report;
 }

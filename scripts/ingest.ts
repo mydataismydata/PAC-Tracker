@@ -37,6 +37,8 @@
  *   pnpm ingest backfill-candidate-accounts       # dry run: committee money paid to a candidate's look-alike node, onto the candidate
  *     --apply --review=.working/candidate-accounts-review.csv --moves=.working/candidate-accounts-moves.csv
  *   pnpm ingest collapse-mirrors                  # dry run of the mirror rule: committee-to-committee transfers filed by both sides
+ *   pnpm ingest backfill-registered-names         # dry run: rows a fuzzy guess placed before the committee named in them was registered
+ *     --apply --review=.working/registered-names-review.csv --moves=.working/registered-names-moves.csv
  *     --recipient-lag=60 --payer-lag=14 --scope=keepers --apply
  *                                                 (days the recipient may trail the payer; the reverse; only merge survivors; delete)
  *   pnpm ingest verify                            # confirm no merged-away entity is still present or referenced
@@ -83,6 +85,7 @@ import {
   backfillQuotes,
   backfillCandidateAccounts,
   collapseMirrors,
+  backfillRegisteredNames,
   MIRROR_WINDOW,
   mergeEntities,
   splitEntity,
@@ -170,6 +173,9 @@ async function main() {
       }
     }
     process.exit(0);
+      console.log(
+        '\nMove those rows with `pnpm ingest backfill-registered-names --apply`, then `pnpm ingest rebuild`.',
+      );
   }
 
   if (mode === 'committee-details') {
@@ -417,6 +423,24 @@ async function main() {
     }
     console.log(
       `${apply ? 'Collapsing' : 'Dry run:'} mirrors, recipient up to ${window.recipientLag} days after the payer, ` +
+  if (mode === 'backfill-registered-names') {
+    const apply = flags.apply === 'true';
+    const reviewPath = flags.review ?? '.working/registered-names-review.csv';
+    const movesPath = flags.moves ?? '.working/registered-names-moves.csv';
+    console.log(
+      apply
+        ? 'Moving rows onto the committees registered under the names they were filed as…'
+        : 'Dry run: rows a fuzzy guess placed before the committee named in them was registered',
+    );
+    const r = await backfillRegisteredNames(db, { apply, reviewPath, movesPath });
+    console.log(`  ${r.aliases} guessed spellings a registered committee now holds exactly, on ${r.holders} entities`);
+    console.log(`  ${r.rowsMoved} rows ${apply ? 'moved' : 'would move'} onto ${r.owners} committees, ${fmt(r.dollars)}`);
+    if (apply) console.log(`  ${r.aliasesDropped} stale aliases dropped`);
+    console.log(`  every move listed in ${movesPath}; ${r.review} left for review in ${reviewPath}`);
+    if (apply) console.log('  Run `pnpm ingest rebuild`, then sync.');
+    process.exit(0);
+  }
+
         `payer up to ${window.payerLag} days after the recipient` +
         (scope ? `, ${scope.length} merge survivors only` : ', whole graph'),
     );
