@@ -6,7 +6,17 @@
  * which organization, when, and whether it was a statement, an update or a
  * withdrawal. It is an ASP.NET form with no export, but one search with every
  * field left blank returns the whole list on one page — 1,396 rows in
- * November 2026 — so a sweep is two requests.
+ * November 2026.
+ *
+ * The table leaves out one thing the form asked for: how the officeholder
+ * described their relationship to the organization. The statute covers
+ * organizations they "in whole or in part, establish, maintain, or control",
+ * and the form makes them pick: established, maintained, controlled, or a
+ * pair. It matters. Chris Sprowls established and controls Floridians for
+ * Economic Freedom; Paul Renner filed for it as "maintained", which is raising
+ * money for someone else's committee. The search filters on that choice, so a
+ * sweep runs it once per answer and tags each row with the one it came back
+ * under.
  *
  * The rows are stored as published. Matching an organization to a committee is
  * a separate step (`linkSolicitations`) so it can be re-run after the
@@ -33,7 +43,19 @@ export interface SolicitationRow {
   received: string | null;
   orgName: string;
   orgNormalized: string;
+  /** As the form words it: "Established/Controlled", "Maintained", ... */
+  relationship: string | null;
 }
+
+/** The relationship filter's codes and the words the form uses for them. */
+export const RELATIONSHIPS: Record<string, string> = {
+  CON: 'Controlled',
+  'E/C': 'Established/Controlled',
+  'E/M': 'Established/Maintained',
+  EST: 'Established',
+  'M/C': 'Maintained/Controlled',
+  MNT: 'Maintained',
+};
 
 const SUFFIX = /\b(?:JR|SR|II|III|IV|V)\b/g;
 
@@ -111,22 +133,14 @@ export function parseSolicitations(html: string): SolicitationRow[] {
       received: isoDate(received),
       orgName,
       orgNormalized: normalizeName(orgName),
+      relationship: null,
     });
   }
   return out;
 }
 
-/**
- * Fetch the whole published list.
- *
- * The form wants its view state echoed back, so the first request reads it and
- * the second posts the organization search with every field blank, which the
- * state answers with every row it holds.
- */
-export async function fetchSolicitations(
-  userAgent = process.env.FLDOE_USER_AGENT ??
-    'PACTracker/0.1 (+https://github.com/mydataismydata/PAC-Tracker)',
-): Promise<SolicitationRow[]> {
+/** One organization search, every field blank but the relationship. */
+async function searchOnce(userAgent: string, relationship: string): Promise<SolicitationRow[]> {
   const first = await fetch(SOLICITATIONS_URL, { headers: { 'User-Agent': userAgent } });
   if (!first.ok) throw new Error(`solicitations page: HTTP ${first.status}`);
   const page = await first.text();
@@ -134,12 +148,13 @@ export async function fetchSolicitations(
     .map((c) => c.split(';')[0])
     .join('; ');
 
+  // The form wants its view state echoed back.
   const form = new URLSearchParams();
   for (const m of page.matchAll(/<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)"/gi)) {
     form.set(m[1], decode(m[2]));
   }
   // Each select's first option is "All".
-  for (const name of ['ddlSolOffice', 'ddlOrgType', 'ddlOrgStatus']) {
+  for (const name of ['ddlSolOffice', 'ddlOrgType']) {
     const value = page.match(
       new RegExp(`name="ctl00\\$MainContent\\$${name}"[\\s\\S]*?<option[^>]*value="([^"]*)"`, 'i'),
     )?.[1];
@@ -147,6 +162,7 @@ export async function fetchSolicitations(
   }
   const button = page.match(/name="ctl00\$MainContent\$btnOrgSearch"[^>]*value="([^"]*)"/i)?.[1];
   if (!button) throw new Error('solicitations page: no organization search button');
+  form.set('ctl00$MainContent$ddlOrgStatus', relationship);
   form.set('ctl00$MainContent$txtSolicitorName', '');
   form.set('ctl00$MainContent$txtOrgName', '');
   form.set('ctl00$MainContent$btnOrgSearch', button);
@@ -170,6 +186,30 @@ export async function fetchSolicitations(
   return rows;
 }
 
+const rowKey = (r: SolicitationRow) => [r.solicitorName, r.orgName, r.formType, r.received].join('|');
+
+/**
+ * Fetch the whole published list, each row tagged with the relationship it
+ * was filed under.
+ *
+ * Seven searches: every row, then the rows for each answer the form allows.
+ * A row none of those returns keeps a null relationship. Requests are spaced
+ * like the rest of the state feed's.
+ */
+export async function fetchSolicitations(
+  userAgent = process.env.FLDOE_USER_AGENT ??
+    'PACTracker/0.1 (+https://github.com/mydataismydata/PAC-Tracker)',
+  delayMs = Number(process.env.FLDOE_REQUEST_DELAY_MS ?? 1500),
+): Promise<SolicitationRow[]> {
+  const rows = await searchOnce(userAgent, '');
+  const tagged = new Map<string, string>();
+  for (const [code, words] of Object.entries(RELATIONSHIPS)) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    for (const r of await searchOnce(userAgent, code)) tagged.set(rowKey(r), words);
+  }
+  return rows.map((r) => ({ ...r, relationship: tagged.get(rowKey(r)) ?? null }));
+}
+
 /**
  * Write the published rows, updating any already held.
  *
@@ -183,7 +223,7 @@ export async function storeSolicitations(
 ): Promise<number> {
   const rows = [
     ...new Map(
-      published.map((r) => [[r.solicitorName, r.orgName, r.formType, r.received].join('|'), r]),
+      published.map((r) => [rowKey(r), r]),
     ).values(),
   ];
   let written = 0;
@@ -204,6 +244,7 @@ export async function storeSolicitations(
           solicitorLast: sql`excluded.solicitor_last`,
           solicitorFirst: sql`excluded.solicitor_first`,
           orgNormalized: sql`excluded.org_normalized`,
+          relationship: sql`excluded.relationship`,
           observedAt: sql`now()`,
         },
       });

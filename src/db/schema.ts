@@ -605,6 +605,13 @@ export const solicitations = pgTable(
     /** Statement of Solicitation, Solicitation Update or Solicitation Withdrawal. */
     formType: text('form_type').notNull(),
     received: date('received'),
+    /**
+     * How they described their tie to the organization, in the form's words:
+     * Established, Maintained, Controlled, or a pair of them. Only someone who
+     * established or controls it can call it theirs; "Maintained" alone is
+     * raising money for it.
+     */
+    relationship: text('relationship'),
 
     orgName: text('org_name').notNull(),
     orgNormalized: text('org_normalized').notNull(),

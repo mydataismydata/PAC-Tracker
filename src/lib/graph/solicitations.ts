@@ -15,6 +15,16 @@
  * surname exact, given name agreeing. Agreement here also accepts the common
  * nicknames, because the state lists "Leek, Thomas" for one committee and
  * "Leek, Tom" for the next.
+ *
+ * A statement is not always a claim of ownership. The form asks whether the
+ * officeholder established, maintains or controls the organization, and
+ * "maintained" alone means raising money for it. When another officeholder
+ * says they established or control the same committee, and has not withdrawn,
+ * it is that person's committee, and a maintain-only statement does not put
+ * it on anyone else's page: Floridians for Economic Freedom belongs to Chris
+ * Sprowls, not to Paul Renner, who raised for it from 2016 to 2018. A
+ * maintain-only statement still counts where nobody claims the committee, and
+ * a person who chairs a committee runs it whatever they filed.
  */
 
 import { sql } from 'drizzle-orm';
@@ -36,6 +46,36 @@ export interface TiedCommittee {
   withdrawn: string | null;
   /** Named chair on the committee's current registration. */
   chair: boolean;
+  /** How their latest statement described the tie: "Established/Controlled", ... */
+  relationship: string | null;
+}
+
+/**
+ * Did they say the organization is theirs: that they set it up or run it?
+ * The form's answers are Established, Maintained, Controlled, or a pair.
+ */
+export function owns(relationship: string | null): boolean {
+  return relationship != null && /established|controlled/i.test(relationship);
+}
+
+/** One filing as the state lists it, enough to tell who holds a committee. */
+interface Filing {
+  solicitor: string;
+  formType: string;
+  received: string | null;
+  relationship: string | null;
+}
+
+/**
+ * Where one solicitor stands with one organization: the relationship their
+ * latest statement or update declared, or null once they have withdrawn.
+ */
+function standing(filings: Filing[]): string | null | 'withdrawn' {
+  const ordered = [...filings].sort((a, b) => (a.received ?? '').localeCompare(b.received ?? ''));
+  const latest = ordered.at(-1);
+  if (!latest) return null;
+  if (/withdraw/i.test(latest.formType)) return 'withdrawn';
+  return latest.relationship;
 }
 
 /**
@@ -120,15 +160,18 @@ export async function committeesTiedTo(
   // A surname may be one word of a longer filed one: the state files
   // "Bracy Davis, LaVon", and her page is named for Davis.
   const statements = await db.execute<{
+    solicitor_name: string;
     solicitor_first: string;
     form_type: string;
     received: string | null;
+    relationship: string | null;
     org_name: string;
+    org_normalized: string;
     entity_id: string | null;
     committee: string | null;
   }>(sql`
-    SELECT s.solicitor_first, s.form_type, s.received::text AS received, s.org_name,
-           s.entity_id, e.name AS committee
+    SELECT s.solicitor_name, s.solicitor_first, s.form_type, s.received::text AS received,
+           s.relationship, s.org_name, s.org_normalized, s.entity_id, e.name AS committee
       FROM solicitations s
       LEFT JOIN entities e ON e.id = s.entity_id
      WHERE s.solicitor_last = ${last}
@@ -136,6 +179,44 @@ export async function committeesTiedTo(
         OR s.solicitor_last LIKE ${`${last} %`}
      ORDER BY s.received ASC NULLS FIRST
   `);
+  const mine = statements.filter((s) => givenNamesAgree(s.solicitor_first, person.first));
+  const myNames = new Set(mine.map((s) => s.solicitor_name));
+
+  // Everyone else's filings for the same organizations, to see whether one of
+  // them says the committee is theirs.
+  const ids = [...new Set(mine.flatMap((s) => (s.entity_id ? [s.entity_id] : [])))];
+  const names = [...new Set(mine.filter((s) => !s.entity_id).map((s) => s.org_normalized))];
+  const others = await db.execute<{
+    solicitor_name: string;
+    form_type: string;
+    received: string | null;
+    relationship: string | null;
+    entity_id: string | null;
+    org_normalized: string;
+  }>(sql`
+    SELECT s.solicitor_name, s.form_type, s.received::text AS received, s.relationship,
+           s.entity_id, s.org_normalized
+      FROM solicitations s
+     WHERE s.entity_id = ANY(${sql.param(ids)}::uuid[])
+        OR (s.entity_id IS NULL AND s.org_normalized = ANY(${sql.param(names)}::text[]))
+  `);
+  const orgKey = (entityId: string | null, normalized: string) => entityId ?? `name:${normalized}`;
+  const bySolicitor = new Map<string, Map<string, Filing[]>>();
+  for (const o of others) {
+    if (myNames.has(o.solicitor_name)) continue;
+    const key = orgKey(o.entity_id, o.org_normalized);
+    const people = bySolicitor.get(key) ?? new Map<string, Filing[]>();
+    const list = people.get(o.solicitor_name) ?? [];
+    list.push({ solicitor: o.solicitor_name, formType: o.form_type, received: o.received, relationship: o.relationship });
+    people.set(o.solicitor_name, list);
+    bySolicitor.set(key, people);
+  }
+  /** Someone else established or controls it, and has not withdrawn. */
+  const ownedByAnother = (key: string) =>
+    [...(bySolicitor.get(key)?.values() ?? [])].some((filings) => {
+      const now = standing(filings);
+      return now !== 'withdrawn' && owns(now);
+    });
 
   const chairs = await db.execute<{ entity_id: string; committee: string; name_first: string | null; full_name: string }>(sql`
     SELECT o.entity_id, e.name AS committee, o.name_first, o.full_name
@@ -145,14 +226,14 @@ export async function committeesTiedTo(
        AND upper(regexp_replace(coalesce(o.name_last, ''), '[^A-Za-z ]+', ' ', 'g')) = ${last}
   `);
 
+  // Keyed as the filings are: by committee where one is linked, by the
+  // organization's name where none is.
   const own = new Set(person.entityIds);
   const tied = new Map<string, TiedCommittee>();
-  const keyOf = (entityId: string | null, orgName: string) => entityId ?? `name:${letters(orgName)}`;
 
-  for (const s of statements) {
-    if (!givenNamesAgree(s.solicitor_first, person.first)) continue;
+  for (const s of mine) {
     if (s.entity_id && own.has(s.entity_id)) continue;
-    const key = keyOf(s.entity_id, s.org_name);
+    const key = orgKey(s.entity_id, s.org_normalized);
     const t =
       tied.get(key) ??
       ({
@@ -162,7 +243,9 @@ export async function committeesTiedTo(
         since: null,
         withdrawn: null,
         chair: false,
+        relationship: null,
       } satisfies TiedCommittee);
+    if (!/withdraw/i.test(s.form_type) && s.relationship) t.relationship = s.relationship;
     if (s.committee && letters(s.org_name) !== letters(s.committee) && !t.filedAs.includes(s.org_name)) {
       t.filedAs.push(s.org_name);
     }
@@ -184,10 +267,21 @@ export async function committeesTiedTo(
     if (own.has(c.entity_id)) continue;
     const t =
       tied.get(c.entity_id) ??
-      ({ entityId: c.entity_id, name: c.committee, filedAs: [], since: null, withdrawn: null, chair: false } satisfies TiedCommittee);
+      ({
+        entityId: c.entity_id,
+        name: c.committee,
+        filedAs: [],
+        since: null,
+        withdrawn: null,
+        chair: false,
+        relationship: null,
+      } satisfies TiedCommittee);
     t.chair = true;
     tied.set(c.entity_id, t);
   }
 
-  return [...tied.values()];
+  // Raising money for a committee someone else owns does not make it yours.
+  return [...tied.entries()]
+    .filter(([key, t]) => t.chair || owns(t.relationship) || t.relationship === null || !ownedByAnother(key))
+    .map(([, t]) => t);
 }

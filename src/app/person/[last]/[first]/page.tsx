@@ -77,10 +77,12 @@ interface Filing {
 function tiedBecause(t: TiedCommittee): string {
   const parts: string[] = [];
   if (t.since) {
+    // What they told the state their tie is, in the form's own words.
+    const declared = t.relationship ? ` (${t.relationship.toLowerCase().replace('/', ' and ')})` : '';
     parts.push(
       t.withdrawn
-        ? `Statement of solicitation ${showDay(t.since)}, withdrawn ${showDay(t.withdrawn)}`
-        : `Statement of solicitation ${showDay(t.since)}`,
+        ? `Statement of solicitation ${showDay(t.since)}${declared}, withdrawn ${showDay(t.withdrawn)}`
+        : `Statement of solicitation ${showDay(t.since)}${declared}`,
     );
   }
   if (t.chair) parts.push('chair on the registration');
